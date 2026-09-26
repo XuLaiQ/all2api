@@ -1,0 +1,29 @@
+:root {
+  color-scheme: light;
+  --app-bg: #dce6ef;
+  --sidebar-bg: #dce6ef;
+  --sidebar-active: #d4e0ea;
+  --surface: #e2ebf3;
+  --surface-raised: #e2ebf3;
+  --surface-inset: #d8e3ed;
+  --text-primary: #334155;
+  --text-secondary: #52657a;
+  --text-muted: #8192a5;
+  --border-soft: rgb(255 255 255 / 58%);
+  --primary: #4b5fd6;
+  --primary-highlight: #7588ee;
+  --teal: #55a9a2;
+  --success: #4f9b7a;
+  --warning: #b7863c;
+  --danger: #b86167;
+  --info: #4f82b9;
+  --shadow-raised: 8px 8px 18px rgb(156 171 185 / 42%), -8px -8px 18px rgb(255 255 255 / 78%);
+  --shadow-soft: 5px 5px 12px rgb(156 171 185 / 30%), -5px -5px 12px rgb(255 255 255 / 64%);
+  --shadow-inset: inset 4px 4px 9px rgb(157 174 188 / 32%), inset -4px -4px 9px rgb(255 255 255 / 72%);
+  --radius-control: 5px;
+  --radius-panel: 8px;
+  --space-page: 26px;
+  --space-section: 22px;
+  --sidebar-width: 238px;
+  --header-height: 64px;
+}

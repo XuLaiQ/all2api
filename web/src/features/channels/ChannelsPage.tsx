@@ -1,0 +1,216 @@
+import { useEffect, useState } from "react";
+import { ApiClientError } from "../../api/client";
+import { fetchChannelRuntime, testChannel, type ChannelRuntime, type ChannelTestResult } from "./channelsApi";
+import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
+
+function runtimeLabel(state: string): { label: string; tone: string } {
+  if (state === "breaker_open") return { label: "熔断", tone: "danger" };
+  if (state === "cooldown") return { label: "冷却", tone: "warning" };
+  return { label: "无冷却 / 熔断", tone: "success" };
+}
+
+function timestamp(value: number | null | undefined): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  }).format(new Date(value * 1000));
+}
+
+function remaining(seconds: number | null): string {
+  if (!seconds || seconds <= 0) return "—";
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.ceil(seconds / 60)} 分钟`;
+}
+
+export function ChannelsPage() {
+  const [channels, setChannels] = useState<ChannelOverview[]>([]);
+  const [selected, setSelected] = useState("");
+  const [states, setStates] = useState<ChannelRuntime[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [runtimeError, setRuntimeError] = useState("");
+  const [testResult, setTestResult] = useState<ChannelTestResult | null>(null);
+  const [testLoading, setTestLoading] = useState(false);
+  const [testError, setTestError] = useState("");
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    fetchChannels(controller.signal)
+      .then((items) => {
+        setChannels(items);
+        setSelected((current) => current && items.some((item) => item.slug === current)
+          ? current
+          : items[0]?.slug ?? "");
+      })
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(cause instanceof ApiClientError ? cause.message : "读取渠道失败");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [retry]);
+
+  useEffect(() => {
+    if (!selected) {
+      setStates([]);
+      return;
+    }
+    const controller = new AbortController();
+    setRuntimeLoading(true);
+    setRuntimeError("");
+    fetchChannelRuntime(selected, controller.signal)
+      .then(setStates)
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) {
+          setRuntimeError(cause instanceof ApiClientError ? cause.message : "读取渠道运行态失败");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRuntimeLoading(false);
+      });
+    return () => controller.abort();
+  }, [selected, retry]);
+
+  useEffect(() => {
+    setTestResult(null);
+    setTestError("");
+  }, [selected]);
+
+  async function runChannelTest() {
+    if (!selected || !selectedChannel?.enabled) return;
+    setTestLoading(true);
+    setTestError("");
+    try {
+      setTestResult(await testChannel(selected));
+    } catch (cause: unknown) {
+      setTestResult(null);
+      setTestError(cause instanceof ApiClientError ? cause.message : "渠道测试失败");
+    } finally {
+      setTestLoading(false);
+    }
+  }
+
+  const selectedChannel = channels.find((channel) => channel.slug === selected);
+  const channelRuntime = selectedChannel?.enabled ? states.find((state) => state.model === null) : undefined;
+  const currentState = selectedChannel?.enabled
+    ? runtimeLabel(channelRuntime?.state ?? "closed")
+    : { label: "未配置", tone: "neutral" };
+
+  return (
+    <main className={`page-content data-page channels-page${selectedChannel ? " has-runtime" : ""}`}>
+      <div className="page-heading">
+        <div>
+          <h1>渠道</h1>
+          <p>配置完整度与网关冷却、熔断记录</p>
+        </div>
+        <button className="secondary-action-button" type="button" onClick={() => setRetry((value) => value + 1)} disabled={loading || runtimeLoading}>
+          刷新状态
+        </button>
+      </div>
+
+      {error && (
+        <div className="notice notice-error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="table-state" aria-live="polite">正在读取渠道…</div>
+      ) : channels.length === 0 ? (
+        <div className="table-state">没有已注册渠道</div>
+      ) : (
+        <div className="table-wrap">
+          <table className="data-table channel-table">
+            <thead><tr><th>渠道</th><th>运行态</th><th>适配器</th><th>数据面配置</th><th>账号管理接口</th><th>入站协议</th><th>渠道能力声明</th></tr></thead>
+            <tbody>
+              {channels.map((channel) => {
+                const isSelected = channel.slug === selected;
+                const state = channel.enabled
+                  ? runtimeLabel(channel.slug === selected ? channelRuntime?.state ?? "closed" : channel.state)
+                  : { label: "未配置", tone: "neutral" };
+                return (
+                  <tr key={channel.slug} className={isSelected ? "selected-row" : ""}>
+                    <td><button type="button" className="channel-select-button" aria-pressed={isSelected} onClick={() => setSelected(channel.slug)}>
+                      <span className="channel-name">{channel.name}</span><span className="secondary-text">{channel.slug}</span>
+                    </button></td>
+                    <td><span className={`state-label state-${state.tone}`}><span className="status-mark" aria-hidden="true" />{state.label}</span></td>
+                    <td>{channel.adapter}</td>
+                    <td>{channel.enabled ? "已配置" : "未配置"}</td>
+                    <td>{channel.accounts_configured ? "已配置" : "未配置"}</td>
+                    <td><span className="channel-tags">{channel.protocols.join(", ")}</span></td>
+                    <td><span className="channel-tags">{channel.caps.join(", ")}</span><span className="secondary-text">渠道级声明</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {selectedChannel && (
+        <section className="data-section surface-panel" aria-labelledby="channel-runtime-title">
+          <div className="section-heading">
+            <div><h2 id="channel-runtime-title">{selectedChannel.name} 运行态</h2><p>本地网关记录；测试连接为一次性上游请求</p></div>
+            <div className="channel-runtime-actions">
+              <span className={`state-label state-${currentState.tone}`}><span className="status-mark" aria-hidden="true" />{currentState.label}</span>
+              <button
+                className="secondary-action-button"
+                type="button"
+                onClick={runChannelTest}
+                disabled={!selectedChannel.enabled || testLoading || runtimeLoading}
+              >
+                {testLoading ? "测试中…" : "测试连接"}
+              </button>
+            </div>
+          </div>
+          {runtimeError && <div className="notice notice-error" role="alert">{runtimeError}</div>}
+          {testError && <div className="notice notice-error" role="alert">{testError}</div>}
+          {testResult && (
+            <div className="inline-status" role="status">
+              <span className="status-mark status-mark-success" aria-hidden="true" />
+              已连接 · {testResult.model_count} 个模型 · {testResult.latency_ms} ms
+            </div>
+          )}
+          {runtimeLoading ? (
+            <div className="table-state" aria-live="polite">正在读取运行态…</div>
+          ) : !selectedChannel.enabled ? (
+            <div className="table-state">渠道未配置，尚无网关运行态</div>
+          ) : states.length === 0 ? (
+            <div className="table-state">暂无失败记录</div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table runtime-table">
+                <thead><tr><th>范围</th><th>状态</th><th>连续失败</th><th>HTTP</th><th>错误分类</th><th>冷却剩余</th><th>熔断截止</th><th>更新时间</th></tr></thead>
+                <tbody>
+                  {states.map((state) => {
+                    const label = runtimeLabel(state.state);
+                    return <tr key={state.model ?? "channel"}>
+                      <td><span className="channel-name">{state.model ?? "整个渠道"}</span></td>
+                      <td><span className={`state-label state-${label.tone}`}><span className="status-mark" aria-hidden="true" />{label.label}</span></td>
+                      <td>{state.consecutive_failures}</td>
+                      <td>{state.last_status ?? "—"}</td>
+                      <td>{state.last_error_kind ?? "—"}</td>
+                      <td>{remaining(state.retry_after)}</td>
+                      <td>{timestamp(state.breaker_until)}</td>
+                      <td>{timestamp(state.updated_at)}</td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+    </main>
+  );
+}

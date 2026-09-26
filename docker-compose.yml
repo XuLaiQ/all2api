@@ -1,0 +1,70 @@
+services:
+  api:
+    build:
+      context: ./services/api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: "8080"
+      A2A_DB_PATH: /app/data/all2api.db
+      A2A_STATE_PATH: /app/data/gateway/state.json
+      A2A_LOG_RETENTION_DAYS: ${A2A_LOG_RETENTION_DAYS:-30}
+      A2A_USAGE_RETENTION_DAYS: ${A2A_USAGE_RETENTION_DAYS:-365}
+      A2A_SESSION_SECRET: ${A2A_SESSION_SECRET:-dev-only-change-me}
+      A2A_ADMIN_USERNAME: ${A2A_ADMIN_USERNAME:-admin}
+      A2A_ADMIN_PASSWORD: ${A2A_ADMIN_PASSWORD:-}
+      A2A_ALLOW_WEAK_ADMIN_PASSWORD: ${A2A_ALLOW_WEAK_ADMIN_PASSWORD:-false}
+      A2A_ADMIN_TOKEN: ${A2A_ADMIN_TOKEN:-}
+      A2A_BOOTSTRAP_API_KEY: ${A2A_BOOTSTRAP_API_KEY:-}
+      A2A_BOOTSTRAP_RPM: ${A2A_BOOTSTRAP_RPM:-60}
+      A2A_TRUST_PROXY: ${A2A_TRUST_PROXY:-true}
+      A2A_TRUSTED_PROXIES: ${A2A_TRUSTED_PROXIES:-127.0.0.1,::1}
+      A2A_WB_UPSTREAM_BASE: ${A2A_WB_UPSTREAM_BASE:-http://host.docker.internal:7864}
+      A2A_WB_ADMIN_TOKEN: ${A2A_WB_ADMIN_TOKEN:-}
+      A2A_WB_DATA_KEY: ${A2A_WB_DATA_KEY:-}
+      A2A_WB_TRACE_SECRET: ${A2A_WB_TRACE_SECRET:-}
+      A2A_DOUBAO_UPSTREAM_BASE: ${A2A_DOUBAO_UPSTREAM_BASE:-http://host.docker.internal:9090}
+      A2A_DOUBAO_API_KEY: ${A2A_DOUBAO_API_KEY:-}
+      A2A_DOUBAO_PUBLIC_DATA_PLANE: ${A2A_DOUBAO_PUBLIC_DATA_PLANE:-false}
+      A2A_CHATGPT_UPSTREAM_BASE: ${A2A_CHATGPT_UPSTREAM_BASE:-http://host.docker.internal:8000}
+      A2A_CHATGPT_AUTH_KEY: ${A2A_CHATGPT_AUTH_KEY:-}
+      A2A_CORS_ORIGINS: http://localhost:${WEB_PORT:-5173},http://127.0.0.1:${WEB_PORT:-5173}
+    volumes:
+      - ./services/api:/app
+      - api_venv:/app/.venv
+      - api_data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/admin/api/healthz')"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    image: node:24-bookworm-slim
+    working_dir: /workspace
+    command: >-
+      sh -lc "corepack enable && pnpm install && pnpm dev:web"
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    environment:
+      VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://api:8080}
+    volumes:
+      - .:/workspace
+      - workspace_node_modules:/workspace/node_modules
+      - web_node_modules:/workspace/web/node_modules
+    init: true
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  api_data:
+  api_venv:
+  workspace_node_modules:
+  web_node_modules:

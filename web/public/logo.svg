@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="logo-title logo-desc">
+  <title id="logo-title">All2API</title>
+  <desc id="logo-desc">A2 gateway mark combining an API entry and a fallback route.</desc>
+  <rect width="64" height="64" rx="18" fill="#334155"/>
+  <path d="M14.5 44 24.5 19.5 34.5 44M18.5 35h12" fill="none" stroke="#91a0ff" stroke-linecap="round" stroke-linejoin="round" stroke-width="5"/>
+  <path d="M39 25.5c1.9-5.2 10.7-5.3 12.1.4 1.2 5-4.1 7.2-7.8 10.1L39 40.5h13" fill="none" stroke="#78c7c0" stroke-linecap="round" stroke-linejoin="round" stroke-width="5"/>
+  <circle cx="34.5" cy="35" r="3" fill="#e2ebf3"/>
+</svg>
