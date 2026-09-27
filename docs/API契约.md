@@ -1,51 +1,49 @@
 # API 契约
 
-本文规定前后端共同遵循的 HTTP 约定。业务端点清单、领域字段和数据关系以[系统设计与实现文档](系统设计与实现文档.md)为准；实现中如需改变契约，先更新本文和 OpenAPI，再改调用方。
+本文是前后端共同遵循的 HTTP 契约。目标是让 All2API 成为一个独立交付物：调用方只面对 All2API 的 URL 和 Key；渠道 adapter/provisioner 在服务端执行平台私有逻辑。三个源项目不出现在目标态 API 的服务边界中。
 
-## 服务边界
+## 1. 服务边界和认证
 
 | 前缀 | 用途 | 调用方 | 认证 |
 |---|---|---|---|
-| `/admin/api/*` | 管理控制台与管理自动化 | `web/`、管理脚本 | Session Cookie 或管理令牌 `wbt_` |
-| `/v1/*` | OpenAI/Anthropic 兼容数据面 | 外部 API 客户端 | `Authorization: Bearer sk-a2a-*` |
+| `/admin/api/*` | 管理控制台、运维和账号流程 | `web/`、管理脚本 | HttpOnly Session Cookie 或管理令牌 |
+| `/v1/*` | OpenAI/Anthropic/Responses 兼容数据面 | 外部客户端 | `Authorization: Bearer sk-a2a-*` 或协议允许的 `x-api-key` |
 
-两类密钥不可互换。浏览器只使用管理会话 Cookie；数据面密钥只在创建时返回明文一次，前端不得持久化。
+管理 Cookie 不能调用数据面；Gateway Key 不能调用管理面。管理面写操作按角色校验：`admin` 可写，`viewer` 只读（显式上游探测、账号授权、Key 管理、清日志等均视为写/副作用操作）。
 
-## 统一调用地址与 API Key
-
-所有调用方配置同一个 Gateway Base URL，默认 `http://localhost:8080/v1`，并使用由 All2API 管理面创建的 `sk-a2a-*` Key：
+## 2. 统一调用地址和模型
 
 ```http
-GET  http://localhost:8080/v1/models
-POST http://localhost:8080/v1/chat/completions
+GET  https://gateway.example/v1/models
+POST https://gateway.example/v1/chat/completions
 Authorization: Bearer sk-a2a-<gateway-issued-key>
 ```
 
-模型 ID 使用 `渠道 slug/上游模型 ID` 直达单一渠道，或使用管理面配置的别名由路由规则选渠道。调用方不传 WorkBuddy/doubao/chatgpt 的上游地址、Cookie 或上游 Key；适配器在服务端访问这三个既有反代项目。初版验收要求同一个 Base URL 和网关 Key 能按授权访问三家渠道的可用模型。
+默认本地地址为 `http://localhost:8080/v1`。模型 ID 使用：
 
-当前可调用的数据面包括 `GET /v1/models`、`POST /v1/chat/completions`、`POST /v1/messages` 和文本切片 `POST /v1/responses`（非流式与 SSE 流式）。Messages 使用 `x-api-key` 或兼容的 Bearer Key，要求 `model`、正整数 `max_tokens` 与非空 `messages`，可带文本 `system`、`temperature`、`top_p`、`stop_sequences`、`stream`、`metadata.user_id`、function `tools` 与 `tool_choice`。assistant `tool_use` 和 user `tool_result` 会映射到 OpenAI function calls；图像/多模态内容、错误 tool_result、未知字段返回 Anthropic `invalid_request_error`，不会静默丢弃。SSE 输出 Anthropic message 与 content block 事件；流中断输出 `error` 后以 `message_stop` 收尾。若上游不提供 Token 用量，Messages 响应字段按协议以 0 填充；管理统计会将该请求标为用量未知，0 不是估值。
+- `<channel>/<upstream_model>`：直接指定渠道，例如 `wb/cn:glm-5.2`；
+- 管理面配置的 alias：展开为有序渠道/模型目标，并在每个目标上重新执行 Key scope 校验。
 
-Responses 首版支持 `model` 与纯文本 `input`（字符串，或 system/developer/user/assistant 消息数组），可带 `instructions`、`max_output_tokens`、`temperature`、`top_p`、`stream`、string-valued `metadata` 和 `store:false`。tools、previous response continuation、background、reasoning、自定义 text format 与图像/音频/文件输入返回标准 OpenAI `invalid_request_error`。非流式返回 `response` 对象；流式输出 `response.created` / `response.in_progress`、文本 delta 与完成或失败终态。上游未报告 Token 时 wire usage 以 0 填充，管理统计保留未知标记。图像、视频、音频、检索和文件生成端点仍未实现。
+调用方不传渠道内部地址、上游管理令牌、Cookie、OAuth token 或浏览器 profile。`GET /v1/models` 只返回当前 Key 授权且 adapter 确认可用的模型。
 
-首版统一入口验收方式：
+当前数据面端点：
 
-1. 管理面分别配置三家现有反代的 upstream URL 与各自管理凭据；调用侧不得取得这些配置。
-2. `GET /v1/models` 返回密钥授权范围内、由适配器确认可用的模型。
-3. 同一个 Gateway Base URL 与同一把被授权的网关 Key，使用 `wb/<model>`、`doubao/<model>`、`chatgpt/<model>` 或配置别名分别调用成功。
-4. 每个请求日志记录实际命中的渠道、模型、状态和 request ID，便于确认路由结果。
+```text
+GET  /v1/models
+POST /v1/chat/completions
+POST /v1/messages
+POST /v1/responses
+```
 
-## 通用格式
+协议能力由渠道 manifest 声明；未声明的图像/视频/音频/文件能力必须返回明确的 `invalid_request_error` 或 `capability_not_supported`，不能静默丢弃字段。
 
-- UTF-8 JSON；字段使用 `snake_case`。
-- 数据库时间戳统一使用 UTC Unix 秒；HTTP 时间统一序列化为 RFC 3339 UTC，例如 `2026-09-25T08:00:00Z`。时长字段明确使用 `*_ms` 或 `*_seconds` 后缀。
-- 每个响应带 `X-Request-ID`。客户端可提交该 header；服务端校验格式并回传，用于日志排查。
-- JSON 列表使用 `page`（默认 `1`）与 `page_size`（默认 `50`，最大 `200`），返回稳定排序后的结果。
-- 管理面成功响应统一为 `{ "data": ... }`。分页列表形态为 `{ "data": [...], "pagination": { "page": 1, "page_size": 50, "total": 0, "total_pages": 0 } }`。
-- 创建资源返回 `201`；成功但无响应体返回 `204`。资源缺失返回 `404`，版本/状态冲突返回 `409`。
+## 3. 通用格式
 
-## 管理面错误
-
-错误体固定为：
+- JSON 使用 UTF-8 和 `snake_case`；时间为 UTC Unix 秒或 RFC 3339 UTC；
+- 每个响应带 `X-Request-ID`，客户端可提交合法 request id；
+- 管理成功响应为 `{ "data": ... }`；分页为 `{data, pagination}`；
+- 创建返回 `201`，无响应体成功返回 `204`；
+- 管理错误固定为：
 
 ```json
 {
@@ -58,93 +56,184 @@ Responses 首版支持 `model` 与纯文本 `input`（字符串，或 system/dev
 }
 ```
 
-`details` 可为空对象；不得把 traceback、Secret、上游凭据或内部文件路径放入响应。
+`details` 不得包含 traceback、Secret、token、Cookie、绝对路径或平台原始错误体。
 
-| HTTP | 含义 | 前端行为 |
+## 4. 数据面授权和错误
+
+请求执行顺序：解析 Key → 校验 enabled/expiry/RPM → 规范化 model/alias → 校验 channel/model scope → scheduler → adapter。Key scope 规则见[密钥与渠道授权规范](密钥与渠道授权规范.md)。
+
+统一错误建议：
+
+| HTTP | code | 语义 |
 |---|---|---|
-| `400` | 业务参数错误 | 显示字段/操作错误，不自动重试 |
-| `401` | 会话缺失或过期 | 清理内存身份状态并转登录页 |
-| `403` | 角色或资源权限不足 | 显示无权限状态，不重试 |
-| `404` | 资源不存在 | 更新列表或展示资源已移除 |
-| `409` | 重复创建、状态冲突、版本冲突 | 提示刷新并重新确认 |
-| `422` | 请求 schema 校验失败 | 映射 `details` 到对应字段 |
-| `429` | 限流 | 尊重 `Retry-After`，用户可见倒计时 |
-| `500` | 未处理服务错误 | 显示 request ID，允许人工重试 |
-| `502` / `503` / `504` | 上游错误、服务不可用或超时 | 保留输入，显示恢复操作；写请求不自动重试 |
+| 400 | `invalid_request` | 请求结构或参数错误 |
+| 401 | `invalid_api_key` | Key 缺失/无效 |
+| 403 | `channel_not_allowed` / `model_not_allowed` | Key 未授权，不尝试目标 |
+| 404 | `model_not_found` / `channel_not_found` | 目标不存在 |
+| 409 | `account_unavailable` / `state_conflict` | 账号或流程状态冲突 |
+| 429 | `rate_limited` | Key、渠道或平台限流 |
+| 502 | `adapter_error` / `protocol_error` | adapter 或平台响应不可解析 |
+| 503 | `channel_disabled` / `adapter_unavailable` | 本地配置/worker 不可用 |
+| 504 | `upstream_timeout` | 平台请求超时 |
 
-数据面 `/v1` 错误遵循系统设计 §8.3 的 OpenAI `error` 结构，不套用管理面 envelope。
-若 SSE 响应头已发送后上游断流，HTTP 状态无法再改写；网关以 `data: {"error": ...}` 终止流，不发送伪造的 `[DONE]`，并在请求日志中记录 502。
+数据面错误遵循对应 OpenAI/Anthropic error shape，不套管理 envelope。SSE 已开始后无法修改 HTTP 状态；发送协议错误帧并记录一次失败，不伪造 `[DONE]`。
 
-## 管理会话
+## 5. 渠道目录和能力
 
-系统设计 §9.1 的认证方案需要以下端点，作为管理面端点清单的补充：
+```http
+GET /admin/api/channels
+GET /admin/api/channels/adapters
+GET /admin/api/channels/{channel}/provision-schema
+GET /admin/api/channels/{channel}/runtime
+POST /admin/api/channels/{channel}/test
+```
+
+`channels` 返回 registry/manifest 的安全视图：slug、名称、adapter version、enabled、protocols、capabilities、账号流程摘要、配置状态和健康状态。不得返回 Secret 或内部路径。`/test` 只由用户显式触发，不在页面初次加载时自动探测。
+
+## 6. 账号新增和渠道 dispatch
+
+### 6.1 目标 API
+
+```http
+POST /admin/api/channels/{channel}/accounts/provision/start
+GET  /admin/api/channels/{channel}/accounts/provision/{session_id}
+POST /admin/api/channels/{channel}/accounts/provision/{session_id}/complete
+POST /admin/api/channels/{channel}/accounts/provision/import
+POST /admin/api/channels/{channel}/accounts/provision/{session_id}/cancel
+```
+
+body：
+
+```json
+{
+  "flow": "oauth-pkce",
+  "payload": {},
+  "idempotency_key": "acc_01J..."
+}
+```
+
+接口只做：校验 channel/flow/schema/权限/幂等、调用 registry 中的 `account_provisioner`、持久化脱敏 session、写审计和归一化账号。禁止在 router 里按平台写 `if/elif`。
+
+### 6.2 迁移兼容路径
+
+当前代码已有：
+
+```text
+POST /admin/api/accounts/{channel}/onboarding/start
+GET  /admin/api/accounts/{channel}/onboarding/poll
+POST /admin/api/accounts/{channel}/onboarding/finish
+```
+
+迁移期可以继续提供这些路径，但它们必须成为目标 provision API 的兼容别名，并最终由 registry dispatch；不能继续调用三个源项目的管理 HTTP 接口。字段和状态详见[账号新增流程](账号新增流程.md)。
+
+### 6.3 账号列表/同步
+
+```http
+GET  /admin/api/accounts?page=1&page_size=50&channel=wb&status=ready&search=x
+POST /admin/api/accounts/sync
+```
+
+列表只返回 canonical Account 安全字段和网关运行态。`sync` 是管理员显式触发的 adapter 内部同步，不读取源项目数据库或文件；同步结果不得回传凭据。
+
+## 7. 网关 Key 管理
+
+```http
+GET    /admin/api/keys
+POST   /admin/api/keys
+PATCH  /admin/api/keys/{id}
+POST   /admin/api/keys/{id}/rotate
+DELETE /admin/api/keys/{id}
+```
+
+创建/编辑 body 至少包含：`name`、`channels`、`models`、`expires_at`、`limit_rpm`。`channels=[]` 表示全部当前已启用渠道；模型范围必须与渠道交叉校验。明文只在创建/轮换响应出现一次，响应 `Cache-Control: no-store`，数据库仅存 hash/prefix。
+
+## 8. 路由、模型和日志
+
+```http
+GET   /admin/api/models
+PATCH /admin/api/models/{model_id}
+GET   /admin/api/routes
+PUT   /admin/api/routes/{alias}
+DELETE /admin/api/routes/{alias}
+GET   /admin/api/logs
+POST  /admin/api/logs/clear
+```
+
+alias target 为 `{channel, model}` 数组，顺序决定优先级。只对 429、连接失败、502/503/504 等可重试错误降级；流开始后不重放。日志至少记录 request_id、key_id、实际 channel/model、fallback_depth、status、error_kind、stream、usage 和 latency；不返回 token、Cookie、平台原始错误体或未脱敏账号标识。
+
+## 9. 会话、幂等和安全
+
+- `POST /admin/api/auth/login`、`GET /admin/api/auth/session`、`POST /admin/api/auth/logout` 管理会话；Cookie 使用 HttpOnly/SameSite/Secure 策略；
+- Cookie 写请求校验 Origin/Host 和 CSRF；脚本管理令牌只供服务端；
+- GET 可有限重试；写操作默认不自动重试，必须依赖幂等键或资源版本；
+- provision start/import/complete/cancel 必须有幂等键和 TTL；重复请求返回同一结果或明确 `409`；
+- 所有写操作审计 actor/action/target/result，审计摘要不含 Secret。
+
+## 10. 页面 API 映射
+
+| 页面 | 主要 API |
+|---|---|
+| 登录 | `/auth/login`、`/auth/session`、`/auth/logout` |
+| 渠道 | `/channels`、`/channels/adapters`、`/channels/{channel}/provision-schema`、`/channels/{channel}/test` |
+| 账号池 | `/accounts`、`/accounts/sync`、`/channels/{channel}/accounts/provision/*` |
+| 模型/路由 | `/models`、`/routes` |
+| Key | `/keys`、`/keys/{id}/rotate` |
+| 日志/审计/用量 | `/logs`、`/audit-logs`、`/stats/*` |
+
+前端类型必须从 OpenAPI 或同一变更中的 DTO 同步，不在组件中复制渠道枚举、授权规则或调度逻辑。
+
+## 11. 契约交付和兼容性
+
+FastAPI OpenAPI 是机器可读来源。改变字段、状态、错误码、scope 语义或 onboarding 路径时，必须同时更新：OpenAPI、本文、前端类型、适配器契约测试、迁移说明和兼容性窗口。新平台不得通过修改通用 API 增加平台专用端点，除非先记录 ADR 并证明无法用 manifest/provision schema 表达。
+
+## 12. 当前 bridge 兼容契约（迁移期间）
+
+本节只记录当前代码已经提供的兼容行为，方便迁移时做回归测试；它不表示这些实现满足
+内置渠道目标。接口/字段以运行中的 FastAPI OpenAPI 为准。
+
+### 12.1 Messages 与 Responses
+
+`POST /v1/messages` 接受 Bearer 或 `x-api-key`，要求 `model`、正整数 `max_tokens` 和非空
+`messages`。当前支持文本 `system`、`temperature`、`top_p`、`stop_sequences`、`stream`、
+`metadata.user_id`、function `tools` 和 `tool_choice`；assistant `tool_use` 与 user
+`tool_result` 映射为 OpenAI function calls。图像/多模态内容、错误 `tool_result` 与未知字段
+返回 Anthropic `invalid_request_error`，不会静默丢弃。SSE 输出 Anthropic message/content
+block 事件；断流输出 `error` 后以 `message_stop` 收尾。未报告 token usage 时 wire 值为 0，
+但管理统计必须标记为 usage unknown。
+
+`POST /v1/responses` 当前支持纯文本 `input`（字符串或 system/developer/user/assistant
+消息数组）、`instructions`、`max_output_tokens`、`temperature`、`top_p`、`stream`、
+string-valued `metadata` 和 `store:false`。tools、previous response continuation、background、
+reasoning、自定义 text format 与图像/音频/文件输入返回 `invalid_request_error`。流式输出
+`response.created`、`response.in_progress`、文本 delta 和完成/失败终态。上述能力需要随着
+内置 adapter 的 manifest 重新验证，而不是由 bridge 自动继承。
+
+### 12.2 管理会话与安全
+
+当前会话端点为：
 
 | 方法 | 路径 | 行为 |
 |---|---|---|
-| `POST` | `/admin/api/auth/login` | 校验用户名/密码；成功设置 HttpOnly Session Cookie |
+| `POST` | `/admin/api/auth/login` | 校验用户名/密码，设置 HttpOnly Session Cookie |
 | `GET` | `/admin/api/auth/session` | 返回当前用户、角色和会话到期时间 |
-| `POST` | `/admin/api/auth/logout` | 撤销当前会话并清除 Cookie，返回 `204` |
+| `POST` | `/admin/api/auth/logout` | 撤销当前会话并清 Cookie，返回 `204` |
 
-Cookie 使用 `HttpOnly`、`SameSite=Lax`、按 HTTPS 配置 `Secure`，作用路径限定为 `/admin/api`。Cookie 是签名会话，不是业务数据。登录与 Cookie 会话认证的非安全方法校验 `Origin` 与 `Host`；不使用 Cookie 的脚本 Bearer 请求不执行 CSRF 检查。CORS 仅允许显式列出的源并启用 credentials。登录按 IP 和用户名双维度限速。管理令牌只供服务端脚本/CI 使用，不进入浏览器。
+Cookie 使用 `HttpOnly`、`SameSite=Lax`，HTTPS 按配置启用 `Secure`，作用路径为 `/admin/api`。
+Cookie 写操作校验 `Origin` 与 `Host`；脚本 Bearer 管理令牌不进入浏览器且不使用 Cookie CSRF
+逻辑。`A2A_TRUSTED_PROXIES` 仅允许直接连接 API 的代理 IP/CIDR；不可信连接提交的
+`X-Forwarded-*` 必须忽略。管理员密码至少 12 字符，`A2A_SESSION_SECRET` 至少 32 字符且
+生产不得使用默认值。
 
-经反向代理部署时，应设置 `A2A_TRUSTED_PROXIES` 为直接连接 API 的代理 IP/CIDR，并确保代理覆盖客户端提交的 `X-Forwarded-For` 与 `X-Forwarded-Proto`。只有 TCP 对端匹配该列表时才采信这些头；`A2A_TRUST_PROXY=false` 时完全忽略转发头。代理应保留原始外部 `Host`，使其与浏览器 `Origin` authority 一致。不要把公网地址或任意来源加入可信代理列表。
+### 12.3 当前只读运维接口
 
-首个管理员由 API 环境变量 `A2A_ADMIN_USERNAME` 与 `A2A_ADMIN_PASSWORD` 配置；密码至少 12 字符，签名密钥 `A2A_SESSION_SECRET` 至少 32 字符且不得使用默认值。会话同时受总寿命与空闲时限约束，登出会撤销当前服务进程内的会话；API 进程重启后旧会话失效。
+| 接口 | 当前行为 | 迁移要求 |
+|---|---|---|
+| `GET /admin/api/accounts` | 读取本地账号快照，支持 `channel/status/search` | 改为内置 adapter 同步结果，不能读取源项目文件/DB |
+| `POST /admin/api/accounts/sync` | 管理员显式同步账号 | 由内置 adapter 执行，不访问源项目管理 HTTP |
+| `GET /admin/api/models` | 读取已观测模型缓存 | manifest/model mapper 持续维护缓存语义 |
+| `GET /admin/api/channels` | 读取当前 registry/config，不自动探测 | 升级为 manifest 安全视图和 provision schema 入口 |
+| `GET /admin/api/logs` | 服务端分页、请求/渠道/模型/状态/时间筛选 | 保留脱敏，不泄露 token、账号原值、IP/UA |
+| `GET /admin/api/metrics` | 读取本地请求/账号运行态，不主动探测 | 区分 adapter/config/platform/worker 健康 |
 
-角色固定为 `admin` 与 `viewer`。`viewer` 只能读；任何更改、探测、登录上游、重置用量和清日志等有副作用的操作均要求 `admin`。后端每次请求执行授权，前端隐藏控件只是辅助体验。
-
-## 幂等与重试
-
-- GET/HEAD 可由客户端按网络错误策略有限重试。
-- POST/PATCH/DELETE 默认不自动重试。用户确认重试前，前端必须能说明操作结果未知的风险。
-- 账号批量探测按 `ids[]` 去重，并对每个 ID 返回独立结果；不得把一次批量动作实现成单账号探测。
-- 创建密钥等只返回一次明文的操作必须明确展示结果，关闭后不再提供明文读取。
-- 状态型写操作应验证当前资源状态；发生并发冲突返回 `409`，不静默覆盖。
-
-## 页面与 API 映射
-
-页面字段以响应 DTO 为准；不在前端复制调度、额度或权限判定。
-
-| 页面/区域 | 首要 API |
-|---|---|
-| 登录 / 会话 | `/auth/login`、`/auth/session`、`/auth/logout` |
-| 运行总览 | `/overview`、`/stats/summary`、`/logs` |
-| 渠道 | `/channels`、`/channels/adapters`、`POST /channels/{slug}/test` |
-| 账号池 | `/accounts`（本地快照）、`POST /accounts/sync`（管理员显式上游同步） |
-| 模型 / 路由 | `/models`、`PATCH /models/{model_id}`、`/routes` |
-| 密钥 | `/keys`、`/keys/{id}/rotate` |
-| 请求日志 / 用量 | `/logs`、`POST /logs/clear`、`/stats/*` |
-| 调试台 | `/playground/chat` |
-| 系统设置 | `/settings`、`/users`、`/audit-logs`、`/sysinfo`、`/storage/health`、`/metrics` |
-
-审计日志：`GET /admin/api/audit-logs` 供 admin/viewer 读取审计摘要，支持 `page`、`page_size`（最大 200）、`actor`、`action`、`target` 以及 RFC 3339 UTC 半开时间筛选。结果按 `ts DESC, id DESC` 稳定排序，返回 `id`、时间、actor、action、target、detail 和统一分页 envelope；不返回来源 IP。该端点只读，不改变任何写操作权限。
-
-系统信息：`GET /admin/api/sysinfo` 返回服务版本、Python 运行时、SQLite schema 版本、数据库是否存在/大小、运行态文件是否初始化及各渠道是否完成模型/账号配置；不返回绝对路径、环境变量或 Secret。存储健康：`GET /admin/api/storage/health` 检查 SQLite 可读性、运行态文件状态和数据库所在磁盘容量，返回 `status` 为 `ok` 或 `degraded`；运行态文件状态可为 `not_initialized`、`ok`、`invalid` 或 `unreadable`，未初始化不单独导致失败。
-
-指标：`GET /admin/api/metrics` 接受 `days`（1-366，默认 1），只读取网关本地 `request_logs`、账号快照和运行态表，返回请求数、错误数/比例、流式请求数、平均/P95 延迟、按渠道聚合，以及账号总数/启用数/可用数/已观测运行态数。该端点不探测上游、不返回请求明细、账号标识或 IP；空数据返回零值和空渠道列表。
-
-渠道测试：`POST /admin/api/channels/{slug}/test` 由 admin/viewer 显式触发一次模型目录请求，不写模型缓存、运行态或审计日志。未知渠道返回 `404`，未配置渠道返回 `409`，上游超时返回 `504`，其他上游/适配器错误返回 `502` 且不透传原始错误体；成功响应包含 `channel`、`status`、`latency_ms`、`model_count` 和 UTC `tested_at`。
-
-运行总览：`GET /admin/api/overview` 接受 `days`（1-366，默认 30），单次返回 `summary`（同 `/stats/summary`）、`daily`（同 `/stats/daily`）、`channels`（同 `/channels`）与 `todos`。待办只由本地已配置状态和渠道熔断/冷却状态生成，包含 `id`、`code`、`severity`、`channel`、`title`、`description`、`href`；此接口不探测上游。空数据库时统计为零、每日记录为空，渠道与待办仍按本地注册表和配置返回。
-
-账号池：`GET /admin/api/accounts` 只读已同步的本地账号快照，支持分页及 channel/status/search 筛选；不请求上游，不返回 native ID、错误原文或 ext。`gateway_runtime` 是网关独立计数，仅在请求 ID 与 WorkBuddy 回传账号 ID 均通过校验后更新，包含 `state`、成功/失败数、连续失败数、冷却/熔断截止、最近状态与更新时间；未观测账号为 `unobserved`。该运行态保存在 SQLite，重启后保留，并参与 WorkBuddy 的候选过滤。配置共享追踪密钥且已有账号同步快照时，网关最多展开 3 个最近较少使用的 WB 候选，每个 API 进程每账号最多 1 个在途租约；上游只接受经 `X-A2A-Trace-Secret` 与 `X-A2A-Request-ID` 校验的 `X-A2A-Account-ID: <realm>:<uid>`，对不健康、模型受限或满载账号返回 `409 account_unavailable`，不会静默换号。成功或失败响应的可信账号 ID 必须与目标一致，否则网关返回 502。没有本地 WB 快照时为兼容旧部署保留上游自行选号。管理员显式调用 `POST /admin/api/accounts/sync` 时，网关才并发请求已配置上游账号接口、更新上游快照并记录审计摘要；viewer 返回 403。Doubao/ChatGPT 尚无可信逐请求账号选择/身份契约，其 `gateway_runtime` 保持 `unobserved` 且不参与选号。额度展示必须按 `quota_unit` 解释，例如 `credits_remaining` 是剩余 credits，不是已用额度；`none` 表示不适用/不可比较。
-
-模型目录：`GET /admin/api/models` 只读网关已观测模型缓存，不请求上游；数据可能不完整或陈旧。`PATCH /admin/api/models/{model_id}`（model_id 可含 `/`）仅允许 admin 修改 `enabled` 并写审计日志。禁用状态由模型发现刷新保留，同时从 `GET /v1/models` 隐藏，直连聊天返回 404，别名路由跳过该目标。缺失模型表示尚未观测，不表示上游不可用。模型刷新只会在调用方显式请求 `GET /v1/models` 时发生，管理页挂载不触发刷新。
-
-渠道目录：`GET /admin/api/channels` 与 `/channels/adapters` 读取本地注册表和配置，不会探测上游；`enabled` 表示数据面配置齐全，不等同于上游在线。`GET /admin/api/channels/{slug}/runtime` 只读本地 SQLite，返回该渠道与模型级冷却/熔断状态、截止时间、最近 HTTP 状态与失败分类；无记录表示暂无网关运行数据，不代表上游探活成功。模型发现 `/v1/models` 会请求上游，管理页面不得在渠道目录初次加载时自动调用。
-
-用量统计端点为 `/admin/api/stats/summary`、`/daily`、`/by-channel`、`/by-model` 和 `/by-key`；可传 `days`（1-366，默认 30），日期按 UTC 记账日期计算，汇总包含 requests、已报告 Token 数和 `usage_unknown_requests`。网关被动解析完整的 OpenAI SSE usage 帧，不改写转发字节；上游未报告 usage 的流式或非流式请求会计入未知用量。当前没有可信 credits/价格来源，响应中的 `credits` 为 `null` 且 `credits_available` 为 `false`。
-
-请求日志：`GET /admin/api/logs` 支持 `page` / `page_size`（最大 200）、`request_id`、`channel`、`model`（包含匹配）、`status`、`error_kind`、`key_id`、`stream`、`from` / `to`（RFC 3339 UTC 半开区间）。结果按 `ts DESC, id DESC` 稳定排序，返回统一分页 envelope。日志列表只暴露排障必要字段；不返回上游原始错误体、账号 ID、IP 或 User-Agent。
-
-日志清理：`POST /admin/api/logs/clear` 仅 admin 可调用，不接受自定义 cutoff。它使用 `A2A_LOG_RETENTION_DAYS`（默认 30）删除早于当前时间减去 N×24 小时的 `request_logs`，使用 `A2A_USAGE_RETENTION_DAYS`（默认 365）删除早于最近 N 个 UTC 日（含今天）的 `usage_daily`；两个删除和一条 `clear_logs` 审计记录在同一事务中完成。清理依赖请求写入时已完成的 `usage_daily` 聚合，不从旧明细回填，避免重复计量；重复调用是幂等的。响应返回删除行数和两个 cutoff，不返回明细、IP 或 Secret。
-
-网关密钥：`GET /admin/api/keys` 分页返回安全元数据；`POST /admin/api/keys` 创建后在响应中一次返回明文并设置 `Cache-Control: no-store`；`PATCH /admin/api/keys/{id}` 更新名称、渠道/模型范围、RPM、过期时间和启用状态；`POST /admin/api/keys/{id}/rotate` 立即替换旧密钥并一次返回新值；`DELETE /admin/api/keys/{id}` 软撤销。明文只在创建/轮换响应出现，数据库仅存哈希；不提供旧密钥 reveal。写操作只允许 admin，bootstrap Key 由环境配置管理，不能经 API 编辑、轮换或撤销。
-
-路由别名管理：`GET /admin/api/routes` 列出路由；`PUT /admin/api/routes/{alias}` 创建或替换路由；`DELETE /admin/api/routes/{alias}` 删除路由并返回 `204`。PUT body 为 `{ "strategy": "priority", "enabled": true, "targets": [{ "channel": "wb", "model": "glm-5.2" }] }`，支持 1-8 个不同渠道目标，顺序决定优先级。PUT/DELETE 仅允许 admin，viewer 只读。别名作为模型 ID 暴露于 `GET /v1/models`；聊天请求按目标顺序尝试，只有 429、500、502、503、504 或建立上游连接失败时才回退到下一目标。流式响应开始后不重放请求。
-
-管理面完整 method/path 清单见系统设计 §9.2。流式请求必须保留 SSE 事件顺序，支持浏览器取消；代理层不得缓存或缓冲流。
-
-## 契约交付
-
-FastAPI 的 OpenAPI schema 是机器可读契约源。每个后端路由用 Pydantic request/response schema；前端类型从稳定的 OpenAPI 产物生成或在同一变更中同步维护。变更需附兼容性说明和前后端联调结果。
+管理页不能通过初次加载触发模型发现、账号同步或真实平台登录。所有兼容路径都必须在 M5
+切换前迁移到目标 adapter/provisioner，或明确删除。
