@@ -168,40 +168,40 @@ export function AppShell() {
           <div className="nav-group">
               <span className="side-label">概览</span>
               <NavLink end to="/" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">▦</span>运行总览
+                <span className="side-icon side-icon-overview" aria-hidden="true" />运行总览
               </NavLink>
             </div>
             <div className="nav-group">
               <span className="side-label">资源</span>
               <NavLink to="/channels" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">◈</span>渠道
+                <span className="side-icon side-icon-channels" aria-hidden="true" />渠道
               </NavLink>
               <NavLink to="/accounts" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">◎</span>账号池
+                <span className="side-icon side-icon-accounts" aria-hidden="true" />账号池
               </NavLink>
               <NavLink to="/models" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">◇</span>模型目录
+                <span className="side-icon side-icon-models" aria-hidden="true" />模型目录
               </NavLink>
               <NavLink to="/routes" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">⇄</span>路由规则
+                <span className="side-icon side-icon-routes" aria-hidden="true" />路由规则
               </NavLink>
               <NavLink to="/keys" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">◇</span>网关密钥
+                <span className="side-icon side-icon-keys" aria-hidden="true" />网关密钥
               </NavLink>
             </div>
             <div className="nav-group">
               <span className="side-label">观测</span>
               <NavLink to="/logs" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">≡</span>请求日志
+                <span className="side-icon side-icon-logs" aria-hidden="true" />请求日志
               </NavLink>
               <NavLink to="/audit-logs" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">⌁</span>审计日志
+                <span className="side-icon side-icon-audit" aria-hidden="true" />审计日志
               </NavLink>
               <NavLink to="/system" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">◌</span>健康检查
+                <span className="side-icon side-icon-health" aria-hidden="true" />健康检查
               </NavLink>
               <NavLink to="/usage" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon" aria-hidden="true">◔</span>用量统计
+                <span className="side-icon side-icon-usage" aria-hidden="true" />用量统计
               </NavLink>
             </div>
           </nav>

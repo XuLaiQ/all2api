@@ -1,0 +1,67 @@
+name: all2api-ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.29"
+          enable-cache: true
+
+      - name: Install backend dependencies
+        run: uv sync --frozen --project services/api --extra dev
+
+      - name: Check documentation links and release invariants
+        run: |
+          python scripts/check-doc-links.py
+          python scripts/verify-clean-build.py --skip-health
+
+      - name: Run backend lint and tests
+        working-directory: services/api
+        run: |
+          uv run ruff check app tests
+          uv run pytest -q
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install frontend dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Run frontend checks
+        run: |
+          pnpm --dir web typecheck
+          pnpm --dir web lint
+          pnpm --dir web build
+
+      - name: Verify source-project isolation and clean startup
+        run: python scripts/verify-clean-build.py --docker
+
+      - name: Build API image
+        run: docker build --tag all2api-api:ci services/api

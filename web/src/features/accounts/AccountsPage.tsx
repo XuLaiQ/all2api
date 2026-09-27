@@ -4,11 +4,13 @@ import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
+  deleteAccount,
   fetchAccounts,
-  syncAccounts,
+  setAccountEnabled,
   type AccountFilters,
   type AccountRecord,
 } from "./accountsApi";
+import { Select } from "../../app/controls/Select";
 import { AccountOnboardingDialog } from "./AccountOnboardingDialog";
 
 type FilterDraft = { channel: string; status: string; search: string };
@@ -67,43 +69,25 @@ function channelDisplayName(slug: string, channels: ChannelOverview[]): string {
   return channels.find((channel) => channel.slug === slug)?.name ?? slug;
 }
 
-function syncResultMessage(
-  synced: number,
-  unavailableChannels: string[],
-  unconfiguredChannels: string[],
-  channels: ChannelOverview[],
-): string {
-  const parts = [`同步完成，共更新 ${synced} 个账号`];
-  if (unavailableChannels.length) {
-    parts.push(`上游暂不可用：${unavailableChannels.map((slug) => channelDisplayName(slug, channels)).join("、")}`);
-  }
-  if (unconfiguredChannels.length) {
-    parts.push(`未配置账号管理接口：${unconfiguredChannels.map((slug) => channelDisplayName(slug, channels)).join("、")}`);
-  }
-  return parts.join("；");
-}
-
 export function AccountsPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
-  const canSync = role === "admin";
+  const canManageAccounts = role === "admin";
   const [rows, setRows] = useState<AccountRecord[]>([]);
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [channelsLoading, setChannelsLoading] = useState(true);
   const [channelsError, setChannelsError] = useState("");
   const [channelsRetry, setChannelsRetry] = useState(0);
   const [unconfiguredChannels, setUnconfiguredChannels] = useState<string[]>([]);
-  const [lastSynced, setLastSynced] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState<FilterDraft>(emptyFilters);
   const [filters, setFilters] = useState<AccountFilters>({});
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [confirmSync, setConfirmSync] = useState(false);
   const [error, setError] = useState("");
-  const [syncMessage, setSyncMessage] = useState("");
+  const [noticeMessage, setNoticeMessage] = useState("");
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [accountActionId, setAccountActionId] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -133,7 +117,6 @@ export function AccountsPage() {
         setRows(result.data);
         setTotal(result.pagination.total);
         setTotalPages(result.pagination.total_pages);
-        setLastSynced(result.last_synced);
         setUnconfiguredChannels(result.unconfigured_channels ?? []);
       })
       .catch((cause: unknown) => {
@@ -163,46 +146,41 @@ export function AccountsPage() {
     setPage(1);
   }
 
-  async function runSync() {
-    setConfirmSync(false);
-    setSyncing(true);
+  const handleOnboardingComplete = useCallback((message: string) => {
+    setOnboardingOpen(false);
+    setNoticeMessage(message);
+    setPage(1);
+    setRetry((value) => value + 1);
+  }, []);
+
+  async function handleAccountEnabled(account: AccountRecord) {
+    setAccountActionId(account.id);
     setError("");
-    setSyncMessage("");
     try {
-      const result = await syncAccounts();
-      const unavailable = result.data.unavailable_channels ?? result.unavailable_channels ?? [];
-      const unconfigured = result.data.unconfigured_channels ?? result.unconfigured_channels ?? [];
-      setUnconfiguredChannels(unconfigured);
-      setSyncMessage(syncResultMessage(result.data.synced, unavailable, unconfigured, channels));
-      setPage(1);
+      await setAccountEnabled(account.id, !account.enabled);
+      setNoticeMessage(account.enabled ? "账号已停用" : "账号已启用");
       setRetry((value) => value + 1);
-    } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "账号同步失败");
+    } catch (cause: unknown) {
+      setError(cause instanceof ApiClientError ? cause.message : "更新账号状态失败");
     } finally {
-      setSyncing(false);
+      setAccountActionId(null);
     }
   }
 
-  const handleOnboardingComplete = useCallback((message: string) => {
-    setOnboardingOpen(false);
-    setSyncMessage(message);
-    setPage(1);
-    setRetry((value) => value + 1);
-    void syncAccounts()
-      .then((result) => {
-        const unavailable = result.data.unavailable_channels ?? result.unavailable_channels ?? [];
-        const unconfigured = result.data.unconfigured_channels ?? result.unconfigured_channels ?? [];
-        setUnconfiguredChannels(unconfigured);
-        const outcome = syncResultMessage(result.data.synced, unavailable, unconfigured, channels);
-        setSyncMessage(`${message}；${outcome}`);
-        setRetry((value) => value + 1);
-      })
-      .catch((cause: unknown) => {
-        setError(cause instanceof ApiClientError ? cause.message : "账号已授权，但同步账号快照失败，请稍后重试");
-      });
-  }, [channels]);
-
-  const latestSync = Math.max(0, ...Object.values(lastSynced));
+  async function handleAccountDelete(account: AccountRecord) {
+    if (!window.confirm(`确定删除账号“${displayName(account.name)}”吗？加密凭据和本地 profile 会一并销毁。`)) return;
+    setAccountActionId(account.id);
+    setError("");
+    try {
+      await deleteAccount(account.id);
+      setNoticeMessage("账号及其凭据已删除");
+      setRetry((value) => value + 1);
+    } catch (cause: unknown) {
+      setError(cause instanceof ApiClientError ? cause.message : "删除账号失败");
+    } finally {
+      setAccountActionId(null);
+    }
+  }
 
   return (
     <main className="page-content data-page accounts-page">
@@ -210,28 +188,15 @@ export function AccountsPage() {
         <div>
           <span className="page-eyebrow">ACCOUNT POOL</span>
           <h1>账号池</h1>
-          <p>
-            {total} 个本地快照
-            {latestSync ? ` · 最近同步 ${formatTimestamp(latestSync)} UTC` : " · 尚未同步"}
-          </p>
+          <p>{total} 个本地账号</p>
         </div>
-        {canSync && (
+        {canManageAccounts && (
           <div className="page-actions">
-            <button className="secondary-action-button" type="button" disabled={syncing} onClick={() => setOnboardingOpen(true)}>新增账号</button>
-            <button className="key-primary-action" type="button" disabled={syncing} onClick={() => setConfirmSync(true)}>{syncing ? "同步中…" : "同步账号"}</button>
+            <button className="secondary-action-button" type="button" onClick={() => setOnboardingOpen(true)}>新增账号</button>
           </div>
         )}
       </div>
 
-      {confirmSync && (
-        <div className="notice notice-confirm" role="alertdialog" aria-label="确认同步账号">
-          <span>同步会向已配置渠道的上游账号管理接口发送请求，并更新本地账号快照。继续？</span>
-          <div className="log-filter-actions">
-            <button type="button" disabled={syncing} onClick={() => void runSync()}>确认同步</button>
-            <button type="button" className="secondary-action" onClick={() => setConfirmSync(false)}>取消</button>
-          </div>
-        </div>
-      )}
       {error && (
         <div className="notice notice-error" role="alert">
           <span>{error}</span>
@@ -244,25 +209,33 @@ export function AccountsPage() {
           <button type="button" onClick={() => setChannelsRetry((value) => value + 1)}>重试</button>
         </div>
       )}
-      {syncMessage && <div className="notice notice-info" role="status">{syncMessage}</div>}
+      {noticeMessage && <div className="notice notice-info" role="status">{noticeMessage}</div>}
       {unconfiguredChannels.length > 0 && (
         <div className="notice notice-warning account-configuration-notice" role="status">
           <span>
-            部分渠道暂不能新增或同步账号：未配置账号管理接口（{unconfiguredChannels.map((slug) => channelDisplayName(slug, channels)).join("、")}）。
+            部分渠道暂不能新增账号：未配置账号管理接口（{unconfiguredChannels.map((slug) => channelDisplayName(slug, channels)).join("、")}）。
             请在服务端补齐对应的上游地址和管理凭据后重试。
           </span>
         </div>
       )}
 
       <form className="log-filter-form account-filter-form" onSubmit={applyFilters}>
-        <label><span>渠道</span><select value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value })}>
-          <option value="">全部渠道</option>
-          {channels.map((channel) => <option key={channel.slug} value={channel.slug}>{channel.name}</option>)}
-        </select></label>
-        <label><span>状态</span><select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>
-          <option value="">全部状态</option>
-          {Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select></label>
+        <label><span>渠道</span><Select
+          value={draft.channel}
+          onChange={(channel) => setDraft({ ...draft, channel })}
+          options={[
+            { value: "", label: "全部渠道" },
+            ...channels.map((channel) => ({ value: channel.slug, label: channel.name })),
+          ]}
+        /></label>
+        <label><span>状态</span><Select
+          value={draft.status}
+          onChange={(status) => setDraft({ ...draft, status })}
+          options={[
+            { value: "", label: "全部状态" },
+            ...Object.entries(statusLabels).map(([value, label]) => ({ value, label })),
+          ]}
+        /></label>
         <label><span>名称</span><input value={draft.search} onChange={(event) => setDraft({ ...draft, search: event.target.value })} placeholder="搜索账号名称" /></label>
         <div className="log-filter-actions">
           <button type="submit">筛选</button>
@@ -275,14 +248,21 @@ export function AccountsPage() {
       ) : rows.length === 0 ? (
         <div className="table-state">
           <span>没有符合条件的账号</span>
-          {canSync && <span className="secondary-text">需要从上游同步时，请使用“同步账号”。</span>}
+          {canManageAccounts && <span className="secondary-text">完成渠道授权后，账号会自动出现在本地账号池。</span>}
         </div>
       ) : (
         <div className="table-wrap">
           <table className="data-table account-table">
-            <thead><tr><th>账号</th><th>渠道</th><th>状态</th><th>额度说明</th><th>到期</th><th>快照时间</th></tr></thead>
+            <thead><tr><th>账号</th><th>渠道</th><th>状态</th><th>额度说明</th><th>到期</th><th>快照时间</th>{canManageAccounts && <th>操作</th>}</tr></thead>
             <tbody>{rows.map((account) => (
-              <AccountRow key={account.id} account={account} />
+              <AccountRow
+                key={account.id}
+                account={account}
+                canManage={canManageAccounts}
+                busy={accountActionId === account.id}
+                onToggle={() => void handleAccountEnabled(account)}
+                onDelete={() => void handleAccountDelete(account)}
+              />
             ))}</tbody>
           </table>
         </div>
@@ -308,7 +288,19 @@ export function AccountsPage() {
   );
 }
 
-function AccountRow({ account }: { account: AccountRecord }) {
+function AccountRow({
+  account,
+  canManage,
+  busy,
+  onToggle,
+  onDelete,
+}: {
+  account: AccountRecord;
+  canManage: boolean;
+  busy: boolean;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
   const status = statusLabels[account.status] ?? account.status;
   const tone = statusTone(account.status);
   const runtime = account.gateway_runtime;
@@ -330,6 +322,14 @@ function AccountRow({ account }: { account: AccountRecord }) {
       <td>{quotaLabel(account)}</td>
       <td>{formatTimestamp(account.expires_at)}</td>
       <td>{formatTimestamp(account.updated_at)}</td>
+      {canManage && <td className="account-actions">
+        <button type="button" className="secondary-action compact-action" onClick={onToggle} disabled={busy}>
+          {busy ? "处理中…" : account.enabled ? "停用" : "启用"}
+        </button>
+        <button type="button" className="danger-action compact-action" onClick={onDelete} disabled={busy}>
+          删除
+        </button>
+      </td>}
     </tr>
   );
 }

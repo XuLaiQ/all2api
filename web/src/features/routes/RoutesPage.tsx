@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Select } from "../../app/controls/Select";
 import {
   deleteRoute,
   fetchRouteChannels,
@@ -92,6 +93,10 @@ export function RoutesPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editor) return;
+    if (editor.targets.some((target) => !target.channel)) {
+      setError("请为每个目标选择渠道");
+      return;
+    }
     setSaving(true);
     setError("");
     const input: RouteInput = {
@@ -223,12 +228,18 @@ export function RoutesPage() {
                       <button type="button" aria-label="移除目标" disabled={editor.targets.length <= 1} onClick={() => setEditor({ ...editor, targets: editor.targets.filter((_, item) => item !== index) })}>×</button>
                     </div></div>
                     <div className="key-form-grid">
-                      <label><span>渠道</span><select required value={target.channel} onChange={(event) => updateTarget(index, { channel: event.target.value })}>
-                        <option value="" disabled>选择渠道</option>
-                        {channels.filter((channel) => !usedChannels.includes(channel.slug) || channel.slug === target.channel).map((channel) => (
-                          <option key={channel.slug} value={channel.slug}>{channel.name} ({channel.slug}){channel.enabled ? "" : " · 未配置"}</option>
-                        ))}
-                      </select></label>
+                      <label><span>渠道</span><Select
+                        required
+                        value={target.channel}
+                        onChange={(channel) => updateTarget(index, { channel })}
+                        placeholder="选择渠道"
+                        options={channels
+                          .filter((channel) => !usedChannels.includes(channel.slug) || channel.slug === target.channel)
+                          .map((channel) => ({
+                            value: channel.slug,
+                            label: `${channel.name} (${channel.slug})${channel.enabled ? "" : " · 未配置"}`,
+                          }))}
+                      /></label>
                       <label><span>模型 ID</span><input required maxLength={256} value={target.model} placeholder="例如 glm-5.2" onChange={(event) => updateTarget(index, { model: event.target.value })} /></label>
                     </div>
                   </div>

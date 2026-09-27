@@ -3,6 +3,7 @@ import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import { fetchModels, setModelEnabled, type ModelFilters, type ModelRecord } from "./modelsApi";
+import { Select } from "../../app/controls/Select";
 
 type DraftFilters = { channel: string; kind: string; enabled: string; search: string };
 const emptyFilters: DraftFilters = { channel: "", kind: "", enabled: "", search: "" };
@@ -112,17 +113,31 @@ export function ModelsPage() {
       )}
 
       <div className="log-filter-form model-filter-form">
-        <label><span>渠道</span><select value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value })}>
-          <option value="">全部渠道</option>
-          {channels.map((channel) => <option key={channel.slug} value={channel.slug}>{channel.name}</option>)}
-        </select></label>
-        <label><span>类型</span><select value={draft.kind} onChange={(event) => setDraft({ ...draft, kind: event.target.value })}>
-          <option value="">全部类型</option>
-          {kinds.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
-        </select></label>
-        <label><span>状态</span><select value={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.value })}>
-          <option value="">全部状态</option><option value="true">启用</option><option value="false">停用</option>
-        </select></label>
+        <label><span>渠道</span><Select
+          value={draft.channel}
+          onChange={(channel) => setDraft({ ...draft, channel })}
+          options={[
+            { value: "", label: "全部渠道" },
+            ...channels.map((channel) => ({ value: channel.slug, label: channel.name })),
+          ]}
+        /></label>
+        <label><span>类型</span><Select
+          value={draft.kind}
+          onChange={(kind) => setDraft({ ...draft, kind })}
+          options={[
+            { value: "", label: "全部类型" },
+            ...kinds.map((kind) => ({ value: kind, label: kind })),
+          ]}
+        /></label>
+        <label><span>状态</span><Select
+          value={draft.enabled}
+          onChange={(enabled) => setDraft({ ...draft, enabled })}
+          options={[
+            { value: "", label: "全部状态" },
+            { value: "true", label: "启用" },
+            { value: "false", label: "停用" },
+          ]}
+        /></label>
         <label><span>模型</span><input value={draft.search} onChange={(event) => setDraft({ ...draft, search: event.target.value })} placeholder="模型 ID 或名称" onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }} /></label>
         <div className="log-filter-actions">
           <button type="button" onClick={applyFilters}>筛选</button>

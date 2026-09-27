@@ -44,7 +44,7 @@ def _items(payload: Any, *keys: str) -> list[dict[str, Any]]:
 
 
 async def list_models(base_url: str, auth_key: str) -> list[dict[str, Any]]:
-    """Fetch ChatGPT2API's advertised models through its authenticated data API."""
+    """Fetch the compatibility upstream's advertised models through its authenticated data API."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         response = await client.get(_url(base_url, "/v1/models"), headers=_headers(auth_key))
         response.raise_for_status()
@@ -53,7 +53,7 @@ async def list_models(base_url: str, auth_key: str) -> list[dict[str, Any]]:
 
 
 async def list_accounts(base_url: str, auth_key: str) -> list[dict[str, Any]]:
-    """Fetch and normalize accounts from ChatGPT2API's admin API.
+    """Fetch and normalize accounts from the compatibility upstream's admin API.
 
     OAuth tokens are deliberately excluded from the normalized record. The upstream
     uses access_token as its dictionary key, so a one-way digest provides a stable ID.

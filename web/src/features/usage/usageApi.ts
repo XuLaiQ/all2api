@@ -70,6 +70,7 @@ export type ChannelOverview = {
   enabled: boolean;
   state: string;
   accounts_configured: boolean;
+  provision_configured?: boolean;
   account_config?: {
     configured: boolean;
     required_env: string[];

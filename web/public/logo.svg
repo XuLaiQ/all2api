@@ -1,8 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="logo-title logo-desc">
-  <title id="logo-title">All2API</title>
-  <desc id="logo-desc">A2 gateway mark combining an API entry and a fallback route.</desc>
-  <rect width="64" height="64" rx="18" fill="#334155"/>
-  <path d="M14.5 44 24.5 19.5 34.5 44M18.5 35h12" fill="none" stroke="#91a0ff" stroke-linecap="round" stroke-linejoin="round" stroke-width="5"/>
-  <path d="M39 25.5c1.9-5.2 10.7-5.3 12.1.4 1.2 5-4.1 7.2-7.8 10.1L39 40.5h13" fill="none" stroke="#78c7c0" stroke-linecap="round" stroke-linejoin="round" stroke-width="5"/>
-  <circle cx="34.5" cy="35" r="3" fill="#e2ebf3"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="All2API">
+  <defs>
+    <filter id="neu-shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="2.6" stdDeviation="2.3" flood-color="#92a3b4" flood-opacity="0.55" result="dark"/>
+      <feDropShadow in="dark" dx="0" dy="-2.2" stdDeviation="2" flood-color="#ffffff" flood-opacity="0.95"/>
+    </filter>
+    <linearGradient id="tile-sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="15" fill="#dfe8f2" filter="url(#neu-shadow)"/>
+  <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#tile-sheen)"/>
+  <rect x="4.5" y="4.5" width="55" height="55" rx="14.5" stroke="#f4f8fc" stroke-width="1"/>
+  <g stroke="#4b5fd6" stroke-width="3.4" stroke-linecap="round">
+    <path d="M20.8 21.8C25.4 23.5 28.2 27.4 30.7 30.5"/>
+    <path d="M20.8 32H31.4"/>
+    <path d="M20.8 42.2C25.4 40.5 28.2 36.6 30.7 33.5"/>
+  </g>
+  <g fill="#4b5fd6">
+    <circle cx="17.6" cy="20.6" r="3"/>
+    <circle cx="17.6" cy="32" r="3"/>
+    <circle cx="17.6" cy="43.4" r="3"/>
+  </g>
+  <circle cx="41" cy="32" r="9.6" fill="#dfe8f2" stroke="#4b5fd6" stroke-width="3.6"/>
+  <g stroke="#48a39c" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M37.2 32H45"/>
+    <path d="M42.2 29.2L45.8 32L42.2 34.8"/>
+  </g>
 </svg>

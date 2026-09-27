@@ -2,11 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { ApiClientError } from "../../api/client";
 import type { ChannelOverview } from "../usage/usageApi";
+import { Select } from "../../app/controls/Select";
 import {
-  finishAccountOnboarding,
-  pollAccountOnboarding,
-  startAccountOnboarding,
+  cancelProvision,
+  completeProvision,
+  fetchProvisionSchema,
+  importProvision,
+  pollProvision,
+  startProvision,
   type AccountOnboardingSession,
+  type ProvisionFieldSchema,
+  type ProvisionFlowSpec,
+  type ProvisionSchema,
 } from "./accountsApi";
 
 type Props = {
@@ -19,33 +26,84 @@ type Props = {
   onComplete: (message: string) => void;
 };
 
-type Mode = "oauth" | "token";
-
-const globalRegions = ["HK", "MO", "SG", "TH", "PH", "MY", "ID"];
+const terminalStatuses = new Set(["success", "succeeded", "expired", "invalid", "failed", "cancelled"]);
 
 function errorMessage(cause: unknown): string {
   return cause instanceof ApiClientError ? cause.message : cause instanceof Error ? cause.message : "账号授权失败";
 }
 
 function configuredChannels(channels: ChannelOverview[]): ChannelOverview[] {
-  return channels.filter((channel) => channel.accounts_configured);
+  return channels.filter((channel) => channel.provision_configured ?? channel.accounts_configured);
 }
 
 function channelStatusText(channel: ChannelOverview): string {
-  if (!channel.accounts_configured) return "未配置账号管理接口";
-  if (!channel.enabled) return "账号接口已配置，可新增（渠道未启用模型服务）";
-  return "账号接口已配置，可新增";
+  if (!(channel.provision_configured ?? channel.accounts_configured)) return "未配置账号管理能力";
+  if (!channel.enabled) return "账号能力已配置，渠道当前未启用模型服务";
+  return "账号能力已配置";
 }
 
 function sessionStatusText(status: string | undefined): string {
   switch (status) {
-    case "success": return "授权成功";
+    case "success":
+    case "succeeded": return "授权成功";
     case "expired": return "授权已过期";
     case "invalid": return "授权已失效";
     case "failed": return "授权失败";
-    case "pending": return "等待授权";
+    case "cancelled": return "已取消";
+    case "pending":
+    case "waiting_user": return "等待授权";
+    case "validating": return "正在校验";
+    case "storing": return "正在保存";
     default: return status || "等待授权";
   }
+}
+
+function newIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `acc_${crypto.randomUUID()}`;
+  }
+  return `acc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+function defaultPayload(flow: ProvisionFlowSpec | undefined): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const [name, field] of Object.entries(flow?.schema.properties ?? {})) {
+    if (field.default !== undefined) values[name] = field.default;
+    else if (field.type === "boolean") values[name] = false;
+    else if (field.type === "array") values[name] = [];
+    else values[name] = "";
+  }
+  return values;
+}
+
+function fieldLabel(name: string, field: ProvisionFieldSchema): string {
+  return field.title || name.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function isMultiline(field: ProvisionFieldSchema): boolean {
+  return field.format === "textarea" || field.format === "json" || field.type === "object" || field.type === "array";
+}
+
+function parseFieldValue(value: string, field: ProvisionFieldSchema): unknown {
+  if (field.type === "number" || field.type === "integer") {
+    if (value.trim() === "") return "";
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  if (field.type === "boolean") return value === "true";
+  if (field.type === "object" || field.type === "array" || field.format === "json") {
+    if (!value.trim()) return field.type === "array" ? [] : {};
+    try { return JSON.parse(value); } catch { return value; }
+  }
+  return value;
+}
+
+function stringifyFieldValue(value: unknown, field: ProvisionFieldSchema): string {
+  if (value === undefined || value === null) return "";
+  if (field.type === "object" || field.type === "array" || field.format === "json") {
+    return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  }
+  return String(value);
 }
 
 export function AccountOnboardingDialog({
@@ -58,110 +116,170 @@ export function AccountOnboardingDialog({
   onComplete,
 }: Props) {
   const available = useMemo(() => configuredChannels(channels), [channels]);
-  const unavailable = useMemo(() => channels.filter((item) => !item.accounts_configured), [channels]);
+  const unavailable = useMemo(
+    () => channels.filter((item) => !(item.provision_configured ?? item.accounts_configured)),
+    [channels],
+  );
   const [channel, setChannel] = useState("");
-  const [realm, setRealm] = useState<"cn" | "global">("cn");
-  const [region, setRegion] = useState("");
-  const [mode, setMode] = useState<Mode>("oauth");
-  const [accountId, setAccountId] = useState("");
-  const [accountName, setAccountName] = useState("");
-  const [emailHint, setEmailHint] = useState("");
-  const [token, setToken] = useState("");
+  const [schema, setSchema] = useState<ProvisionSchema | null>(null);
+  const [schemaLoading, setSchemaLoading] = useState(false);
+  const [schemaError, setSchemaError] = useState("");
+  const [flowId, setFlowId] = useState("");
+  const [payload, setPayload] = useState<Record<string, unknown>>({});
   const [callback, setCallback] = useState("");
   const [session, setSession] = useState<AccountOnboardingSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  const selectedChannel = channels.find((item) => item.slug === channel);
+  const selectedFlow = schema?.flows.find((item) => item.id === flowId);
+  // Some channels expose a small setup flow before the actual login flow.
+  // Doubao's profile setup is one example: once the profile has been created,
+  // the dialog starts qr-login automatically and the returned session owns the
+  // rest of the interaction.  Keep the user's selected flow intact so the
+  // generic form reset effect does not discard the QR session.
+  const activeFlow = session?.flow
+    ? schema?.flows.find((item) => item.id === session.flow) ?? selectedFlow
+    : selectedFlow;
+  const canStart = Boolean(
+    (selectedChannel?.provision_configured ?? selectedChannel?.accounts_configured)
+      && selectedFlow
+      && !schemaLoading,
+  );
+
   useEffect(() => {
-    if (!open) return;
-    const initial = available[0]?.slug ?? "";
-    setChannel(initial);
-    setRealm("cn");
-    setRegion("");
-    setMode("oauth");
-    setAccountId("");
-    setAccountName("");
-    setEmailHint("");
-    setToken("");
+    if (open) return;
+    setChannel("");
+    setSchema(null);
+    setSchemaError("");
+    setFlowId("");
+    setPayload({});
     setCallback("");
     setSession(null);
     setBusy(false);
     setMessage("");
     setError("");
-  }, [open, available]);
+  }, [open]);
 
   useEffect(() => {
-    if (!open || !session || session.flow !== "qr") return undefined;
-    if (session.status === "success" || session.status === "expired" || session.status === "invalid" || session.status === "failed") return undefined;
+    if (!open || !channel || !(selectedChannel?.provision_configured ?? selectedChannel?.accounts_configured)) return undefined;
+    const controller = new AbortController();
+    setSchema(null);
+    setFlowId("");
+    setPayload({});
+    setCallback("");
+    setSession(null);
+    setSchemaLoading(true);
+    setSchemaError("");
+    setError("");
+    fetchProvisionSchema(channel, controller.signal)
+      .then((next) => setSchema(next))
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) setSchemaError(errorMessage(cause));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSchemaLoading(false);
+      });
+    return () => controller.abort();
+  }, [open, channel, selectedChannel?.provision_configured, selectedChannel?.accounts_configured]);
+
+  useEffect(() => {
+    setPayload(defaultPayload(selectedFlow));
+    setCallback("");
+    setSession(null);
+    setMessage("");
+    setError("");
+  }, [selectedFlow]);
+
+  useEffect(() => {
+    if (!open || !channel || !session?.session_id || !activeFlow?.supports?.poll || terminalStatuses.has(session.status ?? "")) return undefined;
     let active = true;
-    const timer = window.setInterval(() => {
-      if (busy) return;
-      const params = session.channel === "wb"
-        ? { state: session.state, realm, region: region || undefined }
-        : { account_id: session.account_id };
-      pollAccountOnboarding(session.channel, params)
+    let timer: number | undefined;
+    const poll = () => {
+      pollProvision(channel, session.session_id as string)
         .then((next) => {
           if (!active) return;
           setSession((current) => ({ ...current, ...next }));
           if (next.message) setMessage(next.message);
-          if (next.status === "success") {
-            onComplete(`${session.channel === "doubao" ? "Doubao" : "WorkBuddy"} 账号授权成功，正在同步账号`);
+          if (next.status === "success" || next.status === "succeeded") {
+            onComplete(`${selectedChannel?.name ?? channel} 账号授权成功，账号列表已更新`);
           }
-          if (["expired", "invalid", "failed"].includes(next.status ?? "")) {
-            setError(next.error || next.message || "二维码授权失败");
+          if (next.status && terminalStatuses.has(next.status) && next.status !== "success" && next.status !== "succeeded") {
+            setError(next.error || next.message || "账号授权失败");
           }
         })
-        .catch((cause: unknown) => {
-          if (active) setError(errorMessage(cause));
+        .catch((cause: unknown) => { if (active) setError(errorMessage(cause)); })
+        .finally(() => {
+          if (active) timer = window.setTimeout(poll, Math.max(2, session.poll_after_seconds ?? 2) * 1000);
         });
-    }, 2000);
+    };
+    timer = window.setTimeout(poll, Math.max(2, session.poll_after_seconds ?? 2) * 1000);
     return () => {
       active = false;
-      window.clearInterval(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [open, session, realm, region, busy, onComplete]);
+  }, [open, channel, session, activeFlow, selectedChannel?.name, onComplete]);
 
   if (!open) return null;
 
-  const selectedChannel = channels.find((item) => item.slug === channel);
-  const canStart = Boolean(selectedChannel?.accounts_configured);
-  const isWorkBuddy = channel === "wb";
-  const isDoubao = channel === "doubao";
-  const isChatGPT = channel === "chatgpt";
-  const qrImage = session?.qr_image_base64 ? `data:image/png;base64,${session.qr_image_base64}` : "";
-  const authUrl = session?.auth_url || session?.authorize_url || "";
+  function setField(name: string, field: ProvisionFieldSchema, value: string) {
+    setPayload((current) => ({ ...current, [name]: parseFieldValue(value, field) }));
+  }
 
-  function resetAuthorization() {
-    setSession(null);
-    setCallback("");
-    setMessage("");
-    setError("");
+  function missingRequiredFields(): string[] {
+    return (selectedFlow?.schema.required ?? []).filter((name) => {
+      const value = payload[name];
+      return value === undefined || value === null || (typeof value === "string" && !value.trim());
+    });
   }
 
   async function startFlow() {
-    if (!selectedChannel || !selectedChannel.accounts_configured) {
-      setError("请选择一个已配置账号管理接口的渠道");
+    if (!channel || !selectedFlow || !(selectedChannel?.provision_configured ?? selectedChannel?.accounts_configured)) {
+      setError("请先选择已配置账号能力的渠道和新增方式");
+      return;
+    }
+    const missing = missingRequiredFields();
+    if (missing.length > 0) {
+      setError(`请填写必填字段：${missing.join("、")}`);
       return;
     }
     setBusy(true);
     setError("");
     setMessage("");
     try {
-      if (isChatGPT && mode === "token") {
-        if (!token.trim()) throw new Error("请先粘贴 Access Token");
-        const result = await finishAccountOnboarding("chatgpt", { tokens: [token.trim()] });
-        onComplete(`ChatGPT 已新增 ${result.added ?? 0} 个账号，正在同步账号`);
+      const envelope = { flow: selectedFlow.id, payload, idempotency_key: newIdempotencyKey() };
+      const importFlow = selectedFlow.supports?.import || selectedFlow.kind === "token_import" || selectedFlow.kind === "import";
+      const result = importFlow
+        ? await importProvision(channel, envelope)
+        : await startProvision(channel, envelope);
+
+      // Doubao's account is not usable until its browser profile has been
+      // authenticated.  Chain the two native operations here so choosing the
+      // normal "create profile" flow immediately produces a QR challenge in
+      // this dialog instead of closing after creating an empty profile.
+      if (
+        channel === "doubao"
+        && selectedFlow.id === "create-profile"
+        && (result.status === "success" || result.status === "succeeded")
+      ) {
+        const accountId = String(payload.account_id ?? "").trim();
+        const qrResult = await startProvision(channel, {
+          flow: "qr-login",
+          payload: { account_id: accountId },
+          idempotency_key: newIdempotencyKey(),
+        });
+        setPayload({ account_id: accountId });
+        setSession(qrResult);
+        setMessage(qrResult.message || "账号 profile 已创建，请使用二维码完成登录");
         return;
       }
-      const result = await startAccountOnboarding(channel, {
-        realm,
-        account_id: accountId.trim(),
-        name: accountName.trim(),
-        email_hint: emailHint.trim(),
-      });
+
       setSession(result);
-      setMessage(result.message || (result.flow === "oauth" ? "请打开授权链接完成登录" : "请完成扫码授权"));
+      setMessage(result.message || "流程已开始，请按页面提示继续操作");
+      if (result.status === "success" || result.status === "succeeded") {
+        onComplete(`${selectedChannel.name} 账号新增成功，账号列表已更新`);
+      }
     } catch (cause: unknown) {
       setError(errorMessage(cause));
     } finally {
@@ -169,22 +287,55 @@ export function AccountOnboardingDialog({
     }
   }
 
-  async function finishOAuth() {
-    if (!session?.session_id || !callback.trim()) return;
+  async function finishFlow() {
+    if (!session?.session_id || !channel || !activeFlow) return;
     setBusy(true);
     setError("");
     try {
-      const result = await finishAccountOnboarding("chatgpt", {
-        session_id: session.session_id,
-        callback: callback.trim(),
+      const result = await completeProvision(channel, session.session_id, {
+        payload: callback.trim() ? { ...payload, callback: callback.trim() } : payload,
+        idempotency_key: newIdempotencyKey(),
       });
-      onComplete(`ChatGPT 已新增 ${result.added ?? 0} 个账号，正在同步账号`);
+      setSession((current) => ({ ...current, ...result }));
+      if (result.status === "success" || result.status === "succeeded") {
+        onComplete(`${selectedChannel?.name ?? channel} 账号新增成功，账号列表已更新`);
+      } else if (result.message) setMessage(result.message);
     } catch (cause: unknown) {
       setError(errorMessage(cause));
     } finally {
       setBusy(false);
     }
   }
+
+  async function cancelFlow() {
+    if (!session?.session_id || !channel || !activeFlow?.supports?.cancel) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await cancelProvision(channel, session.session_id, newIdempotencyKey());
+      setSession((current) => ({ ...current, ...result }));
+      setMessage(result.message || "账号新增流程已取消");
+    } catch (cause: unknown) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const authUrl = session?.auth_url || session?.authorize_url || "";
+  const qrCode = session?.qr_code?.trim() || "";
+  const qrImageValue = session?.qr_image_base64?.trim() || "";
+  // Browser workers can return either raw base64, a data URI, or (for a
+  // remote worker) an image URL. Normalize all three forms before rendering.
+  const qrImage = qrImageValue
+    ? (/^(?:data:image\/|https?:\/\/)/i.test(qrImageValue)
+      ? qrImageValue
+      : `data:image/png;base64,${qrImageValue.replace(/\s+/g, "")}`)
+    : /^data:image\//i.test(qrCode)
+      ? qrCode
+      : "";
+  const qrValue = qrImage ? "" : authUrl || qrCode;
+  const flowNeedsCompletion = Boolean(session && activeFlow?.supports?.complete);
 
   return (
     <div className="key-modal-backdrop account-onboarding-backdrop" role="presentation" onMouseDown={(event) => {
@@ -192,7 +343,7 @@ export function AccountOnboardingDialog({
     }}>
       <section className="key-editor account-onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="account-onboarding-title">
         <div className="section-heading">
-          <div><h2 id="account-onboarding-title">新增账号</h2><p>调用对应渠道原生的授权流程，凭据不会写入 All2API。</p></div>
+          <div><h2 id="account-onboarding-title">新增账号</h2><p>先选择渠道和新增方式，表单字段由该渠道能力声明动态提供。</p></div>
           <button type="button" className="icon-close" aria-label="关闭" onClick={onClose} disabled={busy}>×</button>
         </div>
 
@@ -200,65 +351,58 @@ export function AccountOnboardingDialog({
         {message && <div className="notice notice-info" role="status">{message}</div>}
 
         <div className="onboarding-form">
-          <label><span>渠道</span><select value={channel} onChange={(event) => { setChannel(event.target.value); setSession(null); setMessage(""); setError(""); }} disabled={busy || channelsLoading || Boolean(session)}>
-            <option value="" disabled>{channelsLoading ? "正在读取渠道配置…" : "请选择可新增账号的渠道"}</option>
-            {available.length > 0 && <optgroup label="可新增账号">
-              {available.map((item) => <option key={item.slug} value={item.slug}>{item.name}</option>)}
-            </optgroup>}
-            {unavailable.length > 0 && <optgroup label="需要先配置账号接口">
-              {unavailable.map((item) => <option key={item.slug} value={item.slug} disabled>{item.name}（未配置）</option>)}
-            </optgroup>}
-          </select></label>
+          <label><span>渠道</span><Select
+            value={channel}
+            onChange={setChannel}
+            disabled={busy || channelsLoading || Boolean(session)}
+            placeholder={channelsLoading ? "正在读取渠道配置…" : "请选择渠道"}
+            options={[
+              { group: "可新增账号", options: available.map((item) => ({ value: item.slug, label: item.name })) },
+              {
+                group: "需要先配置账号能力",
+                options: unavailable.map((item) => ({ value: item.slug, label: `${item.name}（未配置）`, disabled: true })),
+              },
+            ]}
+          /></label>
 
-          {channelsLoading && <div className="onboarding-channel-status" role="status">正在读取渠道的账号管理能力…</div>}
-          {!channelsLoading && channelsError && <div className="notice notice-error onboarding-channel-notice" role="alert">
-            <span>{channelsError}，暂时无法判断哪些渠道可以新增账号。</span>
-            {onRetryChannels && <button type="button" onClick={onRetryChannels} disabled={busy}>重试</button>}
-          </div>}
-          {!channelsLoading && !channelsError && channels.length === 0 && <div className="notice notice-warning onboarding-channel-notice" role="status">
-            <span>暂未读取到已注册渠道，请检查服务端渠道配置后重试。</span>
-            {onRetryChannels && <button type="button" onClick={onRetryChannels} disabled={busy}>重新读取</button>}
-          </div>}
-          {!channelsLoading && !channelsError && channels.length > 0 && available.length === 0 && <div className="notice notice-warning onboarding-channel-notice" role="status">
-            <span>当前没有可直接新增账号的渠道。下方渠道都缺少账号管理接口配置，请先补齐上游地址和管理凭据。</span>
-          </div>}
-          {!channelsLoading && !channelsError && selectedChannel && <div className={`onboarding-channel-status ${canStart ? "is-ready" : "is-unavailable"}`} role="status">
-            <span className={`status-pill ${canStart ? "success" : "warning"}`}><i />{channelStatusText(selectedChannel)}</span>
-            <small>{canStart
-              ? "凭据只会交给对应上游服务处理，不会写入本地账号快照。"
-              : `缺少配置：${selectedChannel.account_config?.missing_env?.join("、") || "账号管理凭据"}。补齐后重新读取渠道。`}</small>
-          </div>}
+          {channelsLoading && <div className="onboarding-channel-status" role="status">正在读取渠道账号能力…</div>}
+          {!channelsLoading && channelsError && <div className="notice notice-error onboarding-channel-notice" role="alert"><span>{channelsError}</span>{onRetryChannels && <button type="button" onClick={onRetryChannels} disabled={busy}>重试</button>}</div>}
+          {!channelsLoading && !channelsError && channels.length === 0 && <div className="notice notice-warning onboarding-channel-notice" role="status">暂未读取到已注册渠道。</div>}
+          {!channelsLoading && !channelsError && channels.length > 0 && available.length === 0 && <div className="notice notice-warning onboarding-channel-notice" role="status">当前没有已配置账号能力的渠道。</div>}
+          {!channelsLoading && !channelsError && selectedChannel && <div className={`onboarding-channel-status ${(selectedChannel.provision_configured ?? selectedChannel.accounts_configured) ? "is-ready" : "is-unavailable"}`} role="status"><span className={`status-pill ${(selectedChannel.provision_configured ?? selectedChannel.accounts_configured) ? "success" : "warning"}`}><i />{channelStatusText(selectedChannel)}</span></div>}
 
-          {isWorkBuddy && <>
-            <label><span>账号版本</span><select value={realm} onChange={(event) => { setRealm(event.target.value as "cn" | "global"); setRegion(""); }} disabled={busy || Boolean(session)}><option value="cn">国内版</option><option value="global">国际版</option></select></label>
-            {realm === "global" && <label><span>地区</span><select value={region} onChange={(event) => setRegion(event.target.value)} disabled={busy || Boolean(session)}><option value="">选择地区</option>{globalRegions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
-          </>}
-          {isDoubao && <div className="onboarding-two-columns"><label><span>账号 ID</span><input value={accountId} onChange={(event) => setAccountId(event.target.value)} placeholder="留空自动生成" disabled={busy || Boolean(session)} /></label><label><span>显示名称</span><input value={accountName} onChange={(event) => setAccountName(event.target.value)} placeholder="可选" disabled={busy || Boolean(session)} /></label></div>}
-          {isChatGPT && <>
-            <div className="segmented-tabs onboarding-mode-tabs" role="tablist" aria-label="ChatGPT 新增方式"><button type="button" className={mode === "oauth" ? "active" : ""} onClick={() => setMode("oauth")} disabled={busy || Boolean(session)}>OAuth 登录</button><button type="button" className={mode === "token" ? "active" : ""} onClick={() => setMode("token")} disabled={busy || Boolean(session)}>Token 导入</button></div>
-            {mode === "oauth" ? <label><span>邮箱提示（可选）</span><input value={emailHint} onChange={(event) => setEmailHint(event.target.value)} placeholder="用于预填登录邮箱" disabled={busy || Boolean(session)} /></label> : <label><span>Access Token</span><textarea value={token} onChange={(event) => setToken(event.target.value)} placeholder="粘贴 ChatGPT access token" rows={4} disabled={busy || Boolean(session)} /></label>}
-          </>}
+          {channel && schemaLoading && <div className="table-state" role="status">正在读取该渠道的新增方式…</div>}
+          {channel && !schemaLoading && schemaError && <div className="notice notice-error" role="alert">读取渠道新增能力失败：{schemaError}</div>}
+          {channel && !schemaLoading && !schemaError && schema && schema.flows.length === 0 && <div className="notice notice-warning" role="status">该渠道当前没有可用的账号新增方式。</div>}
+          {schema && schema.flows.length > 0 && <label><span>新增方式</span><Select value={flowId} onChange={setFlowId} disabled={busy || Boolean(session)} placeholder="请选择新增方式" options={schema.flows.map((flow) => ({ value: flow.id, label: flow.title || flow.id }))} /></label>}
+          {activeFlow?.description && <p className="secondary-text">{activeFlow.description}</p>}
 
-          {session?.flow === "qr" && <div className="onboarding-authorize-box">
-            {qrImage ? <img className="onboarding-qr-image" src={qrImage} alt="账号授权二维码" /> : authUrl ? <QRCodeSVG value={authUrl} size={210} level="M" /> : <div className="table-state onboarding-waiting">正在准备授权…</div>}
-            {authUrl && <a href={authUrl} target="_blank" rel="noreferrer" className="text-link onboarding-auth-link">打开授权链接</a>}
-            <span className="onboarding-session-status">{sessionStatusText(session.status)}</span>
-            <small>{isDoubao ? "请使用豆包 App 扫码，页面会自动轮询登录状态。" : "请完成扫码或浏览器授权，页面会自动轮询登录状态。"}</small>
-          </div>}
+          {activeFlow && Object.entries(activeFlow.schema.properties ?? {}).map(([name, field]) => {
+            const value = payload[name];
+            const label = fieldLabel(name, field);
+            const required = activeFlow.schema.required?.includes(name) ?? false;
+            if (field.enum?.length) return <label key={name}><span>{label}{required ? " *" : ""}</span><Select value={String(value ?? "")} onChange={(selected) => setField(name, field, selected)} disabled={busy || Boolean(session)} placeholder="请选择" options={field.enum.map((option) => ({ value: String(option), label: String(option) }))} />{field.description && <small>{field.description}</small>}</label>;
+            if (field.type === "boolean") return <label key={name} className="checkbox-label"><input type="checkbox" checked={Boolean(value)} onChange={(event) => setPayload((current) => ({ ...current, [name]: event.target.checked }))} disabled={busy || Boolean(session)} /><span>{label}{required ? " *" : ""}</span>{field.description && <small>{field.description}</small>}</label>;
+            return <label key={name}><span>{label}{required ? " *" : ""}</span>{isMultiline(field) ? <textarea value={stringifyFieldValue(value, field)} onChange={(event) => setField(name, field, event.target.value)} rows={4} disabled={busy || Boolean(session)} /> : <input type={field.secret || field.format === "password" ? "password" : field.type === "number" || field.type === "integer" ? "number" : "text"} value={stringifyFieldValue(value, field)} onChange={(event) => setField(name, field, event.target.value)} minLength={field.minLength} maxLength={field.maxLength} disabled={busy || Boolean(session)} />}{field.description && <small>{field.description}</small>}</label>;
+          })}
 
-          {session?.flow === "oauth" && <div className="onboarding-oauth-box">
+          {session && (qrValue || qrImage) && <div className="onboarding-authorize-box">
             {authUrl && <a href={authUrl} target="_blank" rel="noreferrer" className="onboarding-url">{authUrl}</a>}
-            <label><span>授权回调 URL / code</span><textarea value={callback} onChange={(event) => setCallback(event.target.value)} rows={3} placeholder="完成登录后粘贴回调 URL 或 code" disabled={busy} /></label>
+            {qrImage ? <img className="onboarding-qr-image" src={qrImage} alt="账号授权二维码" /> : <QRCodeSVG value={qrValue} size={210} level="M" />}
+            <span className="onboarding-session-status">{sessionStatusText(session.status)}</span>
           </div>}
+          {session && !qrValue && !qrImage && <div className="onboarding-authorize-box"><span className="onboarding-session-status">{sessionStatusText(session.status)}</span></div>}
+          {flowNeedsCompletion && session && <label><span>授权回调（如有）</span><textarea value={callback} onChange={(event) => setCallback(event.target.value)} rows={3} placeholder="按渠道提示粘贴回调 URL 或 code" disabled={busy} /></label>}
         </div>
 
         <div className="log-filter-actions onboarding-actions">
-          {!session && <button type="button" onClick={() => void startFlow()} disabled={busy || !canStart}>{busy ? "准备中…" : isChatGPT && mode === "token" ? "导入账号" : "开始授权"}</button>}
-          {session?.flow === "oauth" && <button type="button" onClick={() => void finishOAuth()} disabled={busy || !callback.trim()}>{busy ? "提交中…" : "完成授权"}</button>}
-          {session && (error || ["expired", "invalid", "failed"].includes(session.status ?? "")) && <button type="button" className="secondary-action" onClick={resetAuthorization} disabled={busy}>重新开始</button>}
+          {!session && <button type="button" onClick={() => void startFlow()} disabled={busy || !canStart}>{busy ? "准备中…" : "开始授权"}</button>}
+          {flowNeedsCompletion && session && <button type="button" onClick={() => void finishFlow()} disabled={busy}>{busy ? "提交中…" : "完成授权"}</button>}
+          {session && activeFlow?.supports?.cancel && !terminalStatuses.has(session.status ?? "") && <button type="button" className="secondary-action" onClick={() => void cancelFlow()} disabled={busy}>取消流程</button>}
+          {session && (error || terminalStatuses.has(session.status ?? "")) && <button type="button" className="secondary-action" onClick={() => { setSession(null); setMessage(""); setError(""); }} disabled={busy}>重新开始</button>}
           <button type="button" className="secondary-action" onClick={onClose} disabled={busy}>关闭</button>
         </div>
-        {unavailable.length > 0 && <p className="onboarding-channel-footnote">标记为“未配置”的渠道只代表当前服务端没有可调用的账号管理接口；补齐配置后重新打开此窗口即可使用。</p>}
+        {unavailable.length > 0 && <p className="onboarding-channel-footnote">标记为“未配置”的渠道需要先在服务端补齐账号能力配置。</p>}
       </section>
     </div>
   );

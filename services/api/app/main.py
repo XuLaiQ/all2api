@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.adapters.registry import get_registry
 from app.config import get_settings
 from app.db import database, migrate
 from app.protocols.anthropic import anthropic_error_payload
@@ -58,7 +59,21 @@ def _admin_error_code(status_code: int) -> str:
 async def lifespan(_: FastAPI):
     migrate(settings.db_path)
     initialize_bootstrap_key()
-    yield
+    # Browser workers are opt-in; the default registry uses NullBrowserWorker.
+    # Starting here gives explicitly enabled Playwright workers one owned
+    # lifecycle and ensures shutdown closes contexts before process exit.
+    registry = get_registry(settings)
+    for adapter in registry.values():
+        startup = getattr(getattr(adapter, "provisioner", None), "startup", None)
+        if callable(startup):
+            await startup()
+    try:
+        yield
+    finally:
+        for adapter in registry.values():
+            shutdown = getattr(getattr(adapter, "provisioner", None), "shutdown", None)
+            if callable(shutdown):
+                await shutdown()
 
 
 app = FastAPI(title="All2API Gateway", version="0.1.0", lifespan=lifespan)

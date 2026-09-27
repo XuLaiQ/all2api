@@ -45,6 +45,7 @@ from app.scheduler.runtime import (
     record_transient_failure,
     retry_after_seconds,
 )
+from app.scope import decode_key_scope, model_allowed, scope_decision
 from app.security import require_api_key
 
 router = APIRouter(prefix="/v1")
@@ -53,14 +54,13 @@ _upstream_slots = asyncio.Semaphore(64)
 
 
 def _allowed(key: dict[str, Any], channel: str, model_id: str) -> bool:
-    try:
-        channels = json.loads(key["channels"])
-        models = json.loads(key["models"])
-    except (TypeError, json.JSONDecodeError):
-        return False
-    if not isinstance(channels, list) or not isinstance(models, list):
-        return False
-    return (not channels or channel in channels) and ("*" in models or model_id in models)
+    """Backward-compatible boolean scope check for model listings."""
+
+    upstream_model = model_id
+    prefix, separator, suffix = model_id.partition("/")
+    if separator and prefix == channel:
+        upstream_model = suffix
+    return scope_decision(key, channel, upstream_model) == "allowed"
 
 
 def _model_disabled(channel: str, upstream_model: str) -> bool:
@@ -183,15 +183,18 @@ def _resolve_targets(
     if separator:
         adapter = adapters.get(channel)
         if adapter is None:
-            raise HTTPException(status_code=404, detail="model channel is not registered")
+            raise HTTPException(status_code=404, detail="channel_not_found")
         if not upstream_model:
             raise HTTPException(status_code=400, detail="model name after channel prefix is empty")
-        if not _allowed(key, channel, model_id):
-            raise HTTPException(status_code=403, detail="API key is not authorized for this model")
+        decision = scope_decision(key, channel, upstream_model)
+        if decision == "invalid_scope":
+            raise HTTPException(status_code=401, detail="invalid_api_key_scope")
+        if decision != "allowed":
+            raise HTTPException(status_code=403, detail=decision)
         if not adapter.models_configured:
-            raise HTTPException(status_code=503, detail=f"{adapter.name} is not configured")
+            raise HTTPException(status_code=503, detail="channel_disabled")
         if _model_disabled(channel, upstream_model):
-            raise HTTPException(status_code=404, detail="model is disabled by an administrator")
+            raise HTTPException(status_code=404, detail="model_not_found")
         if respect_runtime:
             blocked_until = block_until(channel, upstream_model)
             if blocked_until:
@@ -215,31 +218,31 @@ def _resolve_targets(
             (model_id,),
         ).fetchall()
 
-    try:
-        channels = json.loads(key["channels"])
-        allowed_models = json.loads(key["models"])
-    except (TypeError, json.JSONDecodeError):
-        raise HTTPException(status_code=401, detail="API key scope is invalid") from None
-    if not isinstance(channels, list) or not isinstance(allowed_models, list):
-        raise HTTPException(status_code=401, detail="API key scope is invalid")
-
-    alias_allowed = "*" in allowed_models or model_id in allowed_models
+    decoded_scope = decode_key_scope(key)
+    if decoded_scope is None:
+        raise HTTPException(status_code=401, detail="invalid_api_key_scope")
+    channels, allowed_models = decoded_scope
     targets: list[dict[str, str]] = []
     has_authorized_target = False
     blocked_deadlines: list[int] = []
+    disabled_channels: set[str] = set()
     for row in rows:
         target_channel = str(row["channel"])
         adapter = adapters.get(target_channel)
         target_model = str(row["model"])
         if target_model.startswith(f"{target_channel}/"):
             target_model = target_model[len(target_channel) + 1:]
-        full_model = f"{target_channel}/{target_model}"
         channel_allowed = not channels or target_channel in channels
-        model_allowed = alias_allowed or full_model in allowed_models
-        if not channel_allowed or not model_allowed:
+        target_allowed = model_allowed(allowed_models, target_channel, target_model)
+        # Alias names never grant access by themselves.  Every expanded target
+        # must independently satisfy both channel and model scopes.
+        if not channel_allowed or not target_allowed:
             continue
         has_authorized_target = True
-        if adapter and adapter.models_configured and target_model:
+        if adapter and not adapter.models_configured:
+            disabled_channels.add(target_channel)
+            continue
+        if adapter and target_model:
             if _model_disabled(target_channel, target_model):
                 continue
             blocked_until = (
@@ -261,6 +264,8 @@ def _resolve_targets(
                 detail="all route targets are cooling down",
                 headers={"Retry-After": str(retry_after)},
             )
+        if disabled_channels:
+            raise HTTPException(status_code=503, detail="channel_disabled")
         raise HTTPException(
             status_code=503,
             detail="no configured targets are available for this route",
@@ -697,7 +702,7 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
     expanded_targets: list[dict[str, str]] = []
     for route_depth, target in enumerate(targets):
         base_target = {**target, "route_depth": str(route_depth)}
-        if target["channel"] != "wb" or not trace_secret:
+        if target["channel"] != "wb":
             expanded_targets.append(base_target)
             continue
         has_snapshot, candidates = workbuddy_candidates(target["upstream_model"])
@@ -721,7 +726,7 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
             upstream_model=first["upstream_model"],
             status=503,
             started=started,
-            error="no eligible WorkBuddy accounts in the synchronized snapshot",
+            error="no eligible WorkBuddy accounts in the local account snapshot",
             error_kind="account_unavailable",
             stream=payload.get("stream") is True,
         )
@@ -785,12 +790,27 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
                     last_status = 503
                     continue
             adapter, body, headers, url = prepare_attempt(target)
+            runtime_adapter = getattr(adapter, "runtime", None)
             client = httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10))
             try:
-                upstream_request = client.build_request(
-                    "POST", url, content=body, headers=headers
-                )
-                upstream = await client.send(upstream_request, stream=True)
+                if runtime_adapter is not None:
+                    upstream_handle = await runtime_adapter.open_stream(
+                        {
+                            "model": target["upstream_model"],
+                            "payload": json.loads(body),
+                            "headers": headers,
+                            "stream": True,
+                        },
+                        target,
+                    )
+                    await client.aclose()
+                    client = upstream_handle.client
+                    upstream = upstream_handle.response
+                else:
+                    upstream_request = client.build_request(
+                        "POST", url, content=body, headers=headers
+                    )
+                    upstream = await client.send(upstream_request, stream=True)
             except asyncio.CancelledError:
                 await client.aclose()
                 _upstream_slots.release()
@@ -1107,8 +1127,19 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
                 continue
         adapter, body, headers, url = prepare_attempt(target)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
-                upstream = await client.post(url, content=body, headers=headers)
+            runtime_adapter = getattr(adapter, "runtime", None)
+            if runtime_adapter is not None:
+                upstream = await runtime_adapter.invoke(
+                    {
+                        "model": target["upstream_model"],
+                        "payload": json.loads(body),
+                        "headers": headers,
+                    },
+                    target,
+                )
+            else:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
+                    upstream = await client.post(url, content=body, headers=headers)
         except asyncio.CancelledError:
             if account_lease is not None:
                 account_lease.release()

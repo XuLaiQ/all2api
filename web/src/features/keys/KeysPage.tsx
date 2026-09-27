@@ -3,6 +3,8 @@ import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
+import { Select } from "../../app/controls/Select";
+import { DateInput } from "../../app/controls/DateInput";
 import {
   createKey,
   fetchKeys,
@@ -256,14 +258,15 @@ export function KeysPage() {
         </label>
         <label>
           <span>状态</span>
-          <select
+          <Select
             value={draftFilters.enabled}
-            onChange={(event) => setDraftFilters({ ...draftFilters, enabled: event.target.value })}
-          >
-            <option value="">全部状态</option>
-            <option value="true">启用</option>
-            <option value="false">停用</option>
-          </select>
+            onChange={(enabled) => setDraftFilters({ ...draftFilters, enabled })}
+            options={[
+              { value: "", label: "全部状态" },
+              { value: "true", label: "启用" },
+              { value: "false", label: "停用" },
+            ]}
+          />
         </label>
         <div className="log-filter-actions">
           <button type="submit">筛选</button>
@@ -356,7 +359,7 @@ export function KeysPage() {
               <label><span>模型范围</span><input required value={editor.modelsText} onChange={(event) => setEditor({ ...editor, modelsText: event.target.value })} /><small>用逗号分隔；`*` 表示全部模型</small></label>
               <div className="key-form-grid">
                 <label><span>每分钟请求上限</span><input type="number" min="0" max="1000000" required value={editor.rpm} onChange={(event) => setEditor({ ...editor, rpm: event.target.value })} /><small>0 表示不限</small></label>
-                <label><span>到期日 (UTC)</span><input type="date" value={editor.expires} onChange={(event) => setEditor({ ...editor, expires: event.target.value })} /><small>留空表示永不过期</small></label>
+                <label><span>到期日 (UTC)</span><DateInput value={editor.expires} onChange={(expires) => setEditor({ ...editor, expires })} /><small>留空表示永不过期</small></label>
               </div>
               <div className="log-filter-actions">
                 <button type="submit" disabled={saving}>{saving ? "保存中…" : "保存"}</button>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiClientError } from "../../api/client";
+import { Select } from "../../app/controls/Select";
 import {
   fetchUsageRows,
   fetchUsageSummary,
@@ -72,16 +73,17 @@ export function UsagePage() {
         </div>
         <label className="range-control">
           <span>统计范围</span>
-          <select
-            value={days}
-            onChange={(event) => setDays(Number(event.target.value))}
-            aria-label="统计范围"
-          >
-            <option value={7}>最近 7 天</option>
-            <option value={30}>最近 30 天</option>
-            <option value={90}>最近 90 天</option>
-            <option value={366}>最近 366 天</option>
-          </select>
+          <Select
+            value={String(days)}
+            onChange={(value) => setDays(Number(value))}
+            ariaLabel="统计范围"
+            options={[
+              { value: "7", label: "最近 7 天" },
+              { value: "30", label: "最近 30 天" },
+              { value: "90", label: "最近 90 天" },
+              { value: "366", label: "最近 366 天" },
+            ]}
+          />
         </label>
       </div>
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiClientError } from "../../api/client";
+import { Select } from "../../app/controls/Select";
 import {
   fetchStorageHealth,
   fetchSystemInfo,
@@ -78,11 +79,11 @@ export function SystemPage() {
           <p>本地网关、存储和请求观测 · 不自动探测上游</p>
         </div>
         <div className="system-page-actions">
-          <label><span className="visually-hidden">指标窗口</span><select value={days} onChange={(event) => setDays(Number(event.target.value))}>
-            <option value={1}>最近 24 小时</option>
-            <option value={7}>最近 7 天</option>
-            <option value={30}>最近 30 天</option>
-          </select></label>
+          <label><span className="visually-hidden">指标窗口</span><Select value={String(days)} onChange={(value) => setDays(Number(value))} options={[
+            { value: "1", label: "最近 24 小时" },
+            { value: "7", label: "最近 7 天" },
+            { value: "30", label: "最近 30 天" },
+          ]} /></label>
           <button className="secondary-action-button" type="button" onClick={() => setRetry((value) => value + 1)} disabled={loading}>刷新</button>
         </div>
       </div>

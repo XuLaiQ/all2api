@@ -26,6 +26,17 @@ Authorization: Bearer sk-a2a-<gateway-issued-key>
 
 调用方不传渠道内部地址、上游管理令牌、Cookie、OAuth token 或浏览器 profile。`GET /v1/models` 只返回当前 Key 授权且 adapter 确认可用的模型。
 
+同一地址和 Key 的最小调用示例（模型前缀决定渠道）：
+
+```powershell
+curl "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" `
+  -d '{"model":"wb/cn:glm-5.2","messages":[{"role":"user","content":"hello"}]}'
+curl "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" `
+  -d '{"model":"doubao/doubao-pro","messages":[{"role":"user","content":"hello"}]}'
+curl "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" `
+  -d '{"model":"chatgpt/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}'
+```
+
 当前数据面端点：
 
 ```text
@@ -88,7 +99,7 @@ GET /admin/api/channels/{channel}/runtime
 POST /admin/api/channels/{channel}/test
 ```
 
-`channels` 返回 registry/manifest 的安全视图：slug、名称、adapter version、enabled、protocols、capabilities、账号流程摘要、配置状态和健康状态。不得返回 Secret 或内部路径。`/test` 只由用户显式触发，不在页面初次加载时自动探测。
+`channels` 返回 registry/manifest 的安全视图：slug、名称、adapter version、enabled、protocols、capabilities、账号流程摘要、legacy `accounts_configured`、native `provision_configured` 和健康状态。不得返回 Secret 或内部路径。`/test` 只由用户显式触发，不在页面初次加载时自动探测。
 
 ## 6. 账号新增和渠道 dispatch
 
@@ -114,6 +125,10 @@ body：
 
 接口只做：校验 channel/flow/schema/权限/幂等、调用 registry 中的 `account_provisioner`、持久化脱敏 session、写审计和归一化账号。禁止在 router 里按平台写 `if/elif`。
 
+`provision/import` 只接收管理员在本次新增流程中主动提交的账号材料（例如 ChatGPT token
+三件套）；它不从任何外部项目读取或同步账号列表。旧的 `POST /admin/api/accounts/sync` 已
+删除，客户端不得依赖该路径。
+
 ### 6.2 迁移兼容路径
 
 当前代码已有：
@@ -126,14 +141,13 @@ POST /admin/api/accounts/{channel}/onboarding/finish
 
 迁移期可以继续提供这些路径，但它们必须成为目标 provision API 的兼容别名，并最终由 registry dispatch；不能继续调用三个源项目的管理 HTTP 接口。字段和状态详见[账号新增流程](账号新增流程.md)。
 
-### 6.3 账号列表/同步
+### 6.3 账号列表
 
 ```http
 GET  /admin/api/accounts?page=1&page_size=50&channel=wb&status=ready&search=x
-POST /admin/api/accounts/sync
 ```
 
-列表只返回 canonical Account 安全字段和网关运行态。`sync` 是管理员显式触发的 adapter 内部同步，不读取源项目数据库或文件；同步结果不得回传凭据。
+列表只返回 canonical Account 安全字段和网关运行态。账号新增由渠道 provision API 完成并直接写入本地账号表；该接口不会读取源项目数据库、文件或管理端口，也不会触发外部账号同步。
 
 ## 7. 网关 Key 管理
 
@@ -145,7 +159,21 @@ POST   /admin/api/keys/{id}/rotate
 DELETE /admin/api/keys/{id}
 ```
 
-创建/编辑 body 至少包含：`name`、`channels`、`models`、`expires_at`、`limit_rpm`。`channels=[]` 表示全部当前已启用渠道；模型范围必须与渠道交叉校验。明文只在创建/轮换响应出现一次，响应 `Cache-Control: no-store`，数据库仅存 hash/prefix。
+创建/编辑 body 至少包含：`name`、`channels`、`models`、`expires_at`、`limit_rpm`。`channels=[]` 表示全部当前已启用且已配置渠道；模型范围必须与渠道交叉校验。明文只在创建/轮换响应出现一次，响应 `Cache-Control: no-store`，数据库仅存 hash/prefix。
+
+创建 Key 的最小请求：
+
+```json
+{
+  "name": "team-a",
+  "channels": ["wb", "chatgpt"],
+  "models": ["wb/*", "chatgpt/gpt-4o-mini"],
+  "limit_rpm": 60,
+  "expires_at": null
+}
+```
+
+验收要求：Key 只授权 `wb` 时调用 `doubao/*` 必须返回 `403 channel_not_allowed`；渠道已注册但被禁用时返回 `503 channel_disabled`；alias 展开后不能绕过这两项检查。上面的通道前缀和通配符属于目标契约；迁移期间若当前 validator 只接受 `models:["*"]`，必须先更新 OpenAPI、后端校验和前端 DTO，再启用按渠道模型列表。
 
 ## 8. 路由、模型和日志
 
@@ -175,7 +203,7 @@ alias target 为 `{channel, model}` 数组，顺序决定优先级。只对 429�
 |---|---|
 | 登录 | `/auth/login`、`/auth/session`、`/auth/logout` |
 | 渠道 | `/channels`、`/channels/adapters`、`/channels/{channel}/provision-schema`、`/channels/{channel}/test` |
-| 账号池 | `/accounts`、`/accounts/sync`、`/channels/{channel}/accounts/provision/*` |
+| 账号池 | `/accounts`、`/channels/{channel}/accounts/provision/*` |
 | 模型/路由 | `/models`、`/routes` |
 | Key | `/keys`、`/keys/{id}/rotate` |
 | 日志/审计/用量 | `/logs`、`/audit-logs`、`/stats/*` |
@@ -228,12 +256,11 @@ Cookie 写操作校验 `Origin` 与 `Host`；脚本 Bearer 管理令牌不进入
 
 | 接口 | 当前行为 | 迁移要求 |
 |---|---|---|
-| `GET /admin/api/accounts` | 读取本地账号快照，支持 `channel/status/search` | 改为内置 adapter 同步结果，不能读取源项目文件/DB |
-| `POST /admin/api/accounts/sync` | 管理员显式同步账号 | 由内置 adapter 执行，不访问源项目管理 HTTP |
+| `GET /admin/api/accounts` | 读取本地账号快照，支持 `channel/status/search` | 账号仅由本项目的 provision 流程写入，不能读取源项目文件/DB |
 | `GET /admin/api/models` | 读取已观测模型缓存 | manifest/model mapper 持续维护缓存语义 |
 | `GET /admin/api/channels` | 读取当前 registry/config，不自动探测 | 升级为 manifest 安全视图和 provision schema 入口 |
 | `GET /admin/api/logs` | 服务端分页、请求/渠道/模型/状态/时间筛选 | 保留脱敏，不泄露 token、账号原值、IP/UA |
 | `GET /admin/api/metrics` | 读取本地请求/账号运行态，不主动探测 | 区分 adapter/config/platform/worker 健康 |
 
-管理页不能通过初次加载触发模型发现、账号同步或真实平台登录。所有兼容路径都必须在 M5
+管理页不能通过初次加载触发模型发现或真实平台登录。所有兼容路径都必须在 M5
 切换前迁移到目标 adapter/provisioner，或明确删除。

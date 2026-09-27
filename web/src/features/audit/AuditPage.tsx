@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiClientError } from "../../api/client";
 import { fetchAuditLogs, type AuditFilters, type AuditRecord } from "./auditApi";
+import { DateInput } from "../../app/controls/DateInput";
 
 type FilterDraft = { actor: string; action: string; target: string; from: string; to: string };
 const emptyFilters: FilterDraft = { actor: "", action: "", target: "", from: "", to: "" };
@@ -88,8 +89,8 @@ export function AuditPage() {
         <label><span>操作者</span><input value={draft.actor} onChange={(event) => setDraft({ ...draft, actor: event.target.value })} placeholder="精确匹配" /></label>
         <label><span>操作</span><input value={draft.action} onChange={(event) => setDraft({ ...draft, action: event.target.value })} placeholder="精确匹配" /></label>
         <label><span>目标</span><input value={draft.target} onChange={(event) => setDraft({ ...draft, target: event.target.value })} placeholder="精确匹配" /></label>
-        <label><span>从日期</span><input type="date" value={draft.from} onChange={(event) => setDraft({ ...draft, from: event.target.value })} /></label>
-        <label><span>到日期</span><input type="date" value={draft.to} onChange={(event) => setDraft({ ...draft, to: event.target.value })} /></label>
+        <label><span>从日期</span><DateInput value={draft.from} onChange={(from) => setDraft({ ...draft, from })} /></label>
+        <label><span>到日期</span><DateInput value={draft.to} onChange={(to) => setDraft({ ...draft, to })} /></label>
         <div className="log-filter-actions">
           <button type="submit">筛选</button>
           <button type="button" className="secondary-action" onClick={clearFilters}>清除</button>

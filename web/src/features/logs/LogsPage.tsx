@@ -4,6 +4,8 @@ import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import { clearExpiredLogs, fetchLogs, type LogFilters, type RequestLog } from "./logsApi";
+import { Select } from "../../app/controls/Select";
+import { DateInput } from "../../app/controls/DateInput";
 
 type DraftFilters = {
   request_id: string;
@@ -188,13 +190,14 @@ export function LogsPage() {
         </label>
         <label>
           <span>渠道</span>
-          <select
+          <Select
             value={draft.channel}
-            onChange={(event) => setDraft({ ...draft, channel: event.target.value })}
-          >
-            <option value="">全部渠道</option>
-            {channels.map((channel) => <option key={channel.slug} value={channel.slug}>{channel.name}</option>)}
-          </select>
+            onChange={(channel) => setDraft({ ...draft, channel })}
+            options={[
+              { value: "", label: "全部渠道" },
+              ...channels.map((channel) => ({ value: channel.slug, label: channel.name })),
+            ]}
+          />
         </label>
         <label>
           <span>模型</span>
@@ -225,22 +228,23 @@ export function LogsPage() {
         </label>
         <label>
           <span>流式</span>
-          <select
+          <Select
             value={draft.stream}
-            onChange={(event) => setDraft({ ...draft, stream: event.target.value })}
-          >
-            <option value="">全部</option>
-            <option value="true">是</option>
-            <option value="false">否</option>
-          </select>
+            onChange={(stream) => setDraft({ ...draft, stream })}
+            options={[
+              { value: "", label: "全部" },
+              { value: "true", label: "是" },
+              { value: "false", label: "否" },
+            ]}
+          />
         </label>
         <label>
           <span>从日期</span>
-          <input type="date" value={draft.from} onChange={(event) => setDraft({ ...draft, from: event.target.value })} />
+          <DateInput value={draft.from} onChange={(from) => setDraft({ ...draft, from })} />
         </label>
         <label>
           <span>到日期</span>
-          <input type="date" value={draft.to} onChange={(event) => setDraft({ ...draft, to: event.target.value })} />
+          <DateInput value={draft.to} onChange={(to) => setDraft({ ...draft, to })} />
         </label>
         <div className="log-filter-actions">
           <button type="submit">筛选</button>

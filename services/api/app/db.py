@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.config import API_DIR
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels (
@@ -48,6 +48,16 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_channel ON accounts(channel);
 CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
+CREATE TABLE IF NOT EXISTS credentials (
+    credential_ref TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    encrypted_payload TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(channel, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_credentials_account ON credentials(channel, account_id);
 CREATE TABLE IF NOT EXISTS channel_runtime_state (
     channel TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT '',

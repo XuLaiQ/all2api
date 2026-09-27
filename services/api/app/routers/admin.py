@@ -1,30 +1,48 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import platform
 import re
 import shutil
-import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from starlette.convertors import StringConvertor, register_url_convertor
 
 from app.adapters import provisioning
+from app.adapters.provisioner import ProvisioningUnsupportedError
 from app.adapters.registry import AdapterSpec, get_registry
+from app.application.accounts.lifecycle import (
+    AccountLifecycleError,
+    AccountLifecycleService,
+)
+from app.application.accounts.service import (
+    AccountProvisionService,
+    ProvisionDispatchError,
+    ProvisionSchemaError,
+)
+from app.application.channels.service import ChannelNotFoundError, ChannelService
 from app.config import get_settings
+from app.credentials import AccountNotFoundError
 from app.db import SCHEMA_VERSION, database, resolve_db_path
 from app.scheduler.runtime import account_runtime_snapshot, channel_state, runtime_states
 from app.security import require_admin_request
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(require_admin_request)])
 AdminContext = Annotated[dict, Depends(require_admin_request)]
-_account_sync_lock = threading.Lock()
+
+
+class _AccountIdConvertor(StringConvertor):
+    # Canonical IDs always include their channel prefix.  Keeping the removed
+    # legacy ``sync`` URL outside this route also preserves a real 404 response.
+    regex = r"(?!sync$)[^/]+"
+
+
+register_url_convertor("account_id", _AccountIdConvertor())
 
 
 class AccountOnboardingStart(BaseModel):
@@ -42,10 +60,50 @@ class AccountOnboardingFinish(BaseModel):
     accounts: list[dict[str, object]] = Field(default_factory=list)
 
 
-def _provision_adapter(channel: str) -> AdapterSpec:
+class ProvisionStartRequest(BaseModel):
+    """Generic M1 provision envelope.
+
+    Platform fields stay inside ``payload`` and are validated against the
+    selected channel's manifest before the provisioner is called.
+    """
+
+    flow: str = Field(min_length=1, max_length=64)
+    payload: dict[str, object] = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class ProvisionPayloadRequest(BaseModel):
+    payload: dict[str, object] = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class AccountStatePatch(BaseModel):
+    enabled: bool
+
+
+def _require_admin_role(user: AdminContext) -> dict:
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    return user
+
+
+def _idempotency_key(body_key: str | None, header_key: str | None) -> str:
+    key = (body_key or header_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=422, detail="idempotency_key is required")
+    return key
+
+
+def _provision_adapter(channel: str, *, legacy_route: bool = False) -> AdapterSpec:
     adapter = get_registry().get(channel)
     if adapter is None:
         raise HTTPException(status_code=404, detail="channel is not registered")
+    if (
+        legacy_route
+        and hasattr(adapter, "provision_configured")
+        and not bool(getattr(get_settings(), "legacy_bridge_enabled", False))
+    ):
+        return adapter
     if not adapter.accounts_configured:
         missing = list(getattr(adapter, "account_config_missing", ()))
         if missing:
@@ -57,6 +115,27 @@ def _provision_adapter(channel: str) -> AdapterSpec:
             detail = f"{adapter.name} 账号管理接口未配置"
         raise HTTPException(status_code=409, detail=detail)
     return adapter
+
+
+def _require_legacy_bridge() -> None:
+    """Guard the migration-only HTTP onboarding endpoints.
+
+    Native provision routes dispatch directly to the channel provisioner.  The
+    older routes below are retained solely for compatibility and must never
+    contact a source project's management port unless explicitly enabled.
+    """
+
+    settings = get_settings()
+    # Older test/deployment settings objects may not expose the new switch;
+    # preserve their legacy validation behavior while real Settings defaults
+    # the bridge to disabled.
+    if not hasattr(settings, "legacy_bridge_enabled"):
+        return
+    if not bool(settings.legacy_bridge_enabled):
+        raise HTTPException(
+            status_code=410,
+            detail="legacy bridge is disabled; use the native channel provision API",
+        )
 
 
 def _raise_provision_error(cause: Exception) -> None:
@@ -687,7 +766,7 @@ def _unconfigured_account_channels() -> tuple[list[str], dict[str, dict[str, obj
     channels: list[str] = []
     details: dict[str, dict[str, object]] = {}
     for adapter in get_registry().values():
-        if adapter.accounts_configured:
+        if bool(getattr(adapter, "provision_configured", adapter.accounts_configured)):
             continue
         channels.append(adapter.slug)
         details[adapter.slug] = _adapter_account_config(adapter)
@@ -738,9 +817,6 @@ def list_accounts(
             ORDER BY a.channel, a.name, a.id LIMIT ? OFFSET ?""",
             [*values, page_size, offset],
         ).fetchall()
-        last_synced = conn.execute(
-            "SELECT channel, MAX(updated_at) AS synced_at FROM accounts GROUP BY channel"
-        ).fetchall()
     unconfigured_channels, unconfigured_channel_details = _unconfigured_account_channels()
     return {
         "data": [_account_snapshot(row) for row in rows],
@@ -750,140 +826,84 @@ def list_accounts(
             "total": total,
             "total_pages": (total + page_size - 1) // page_size,
         },
-        "last_synced": {row["channel"]: row["synced_at"] for row in last_synced},
         "unconfigured_channels": unconfigured_channels,
         "unconfigured_channel_details": unconfigured_channel_details,
     }
 
 
-@router.post("/accounts/sync", tags=["accounts"])
-async def sync_accounts(request: Request, user: AdminContext) -> dict:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="admin role required")
-    if not _account_sync_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="account sync is already running")
-    adapters = get_registry()
-    configured = [adapter for adapter in adapters.values() if adapter.accounts_configured]
-    unconfigured = [
-        adapter.slug for adapter in adapters.values() if not adapter.accounts_configured
-    ]
-    unconfigured_details = {
-        adapter.slug: _adapter_account_config(adapter)
-        for adapter in adapters.values()
-        if not adapter.accounts_configured
-    }
-    now = int(time.time())
-    audit_id = None
+def _account_lifecycle_service() -> AccountLifecycleService:
+    settings = get_settings()
+    return AccountLifecycleService(
+        get_registry(),
+        db_path=settings.db_path,
+        master_key=getattr(settings, "credential_master_key", ""),
+    )
+
+
+@router.patch(
+    "/accounts/{account_id:account_id}",
+    tags=["accounts"],
+    dependencies=[Depends(_require_admin_role)],
+)
+async def update_account_state(
+    account_id: str,
+    body: AccountStatePatch,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    """Enable or disable a local account and its provider profile."""
+
     try:
-        with database(get_settings().db_path) as conn:
-            cursor = conn.execute(
-                "INSERT INTO audit_logs(ts, actor, action, target, detail, ip) "
-                "VALUES (?, ?, 'sync_accounts', 'all', 'started', ?)",
-                (
-                    now,
-                    str(user.get("username") or "admin")[:128],
-                    str(request.client.host if request.client else "")[:64],
-                ),
-            )
-            audit_id = cursor.lastrowid
-        results = await asyncio.gather(
-            *(adapter.list_accounts() for adapter in configured),
-            return_exceptions=True,
+        result = await _account_lifecycle_service().set_enabled(
+            account_id,
+            body.enabled,
+            actor=str(user.get("username") or "admin"),
+            ip=request.client.host if request.client else "",
         )
-        accounts: list[dict] = []
-        unavailable = [
-            adapter.slug
-            for adapter, result in zip(configured, results, strict=True)
-            if isinstance(result, Exception)
-        ]
-        for adapter, result in zip(configured, results, strict=True):
-            if isinstance(result, Exception):
-                continue
-            for upstream_account in result:
-                native_id = str(upstream_account.get("native_id") or "").strip()
-                if not native_id:
-                    continue
-                account = dict(upstream_account)
-                account["channel"] = adapter.slug
-                account["native_id"] = native_id
-                account["id"] = f"{adapter.slug}:{native_id}"
-                accounts.append(account)
-        if not accounts and unavailable and not unconfigured:
-            with database(get_settings().db_path) as conn:
-                conn.execute(
-                    "UPDATE audit_logs SET detail = ? WHERE id = ?",
-                    (f"failed channels={','.join(unavailable)}", audit_id),
-                )
-            raise HTTPException(
-                status_code=502,
-                detail="all configured account services are unavailable",
-            )
-        with database(get_settings().db_path) as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            for account in accounts:
-                ext = account.get("ext") if isinstance(account.get("ext"), dict) else {}
-                quota_used = account.get("quota_used")
-                quota_total = account.get("quota_total")
-                conn.execute(
-                    """INSERT INTO accounts
-                    (id, channel, native_id, name, kind, tier, status, enabled, quota_used,
-                     quota_total, quota_unit, expires_at, success_count, fail_count, streak,
-                     cooldown_until, last_error, priority, ext, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind,
-                    tier=excluded.tier, status=excluded.status, enabled=excluded.enabled,
-                    quota_used=excluded.quota_used, quota_total=excluded.quota_total,
-                    quota_unit=excluded.quota_unit, success_count=excluded.success_count,
-                    fail_count=excluded.fail_count, streak=excluded.streak,
-                    cooldown_until=excluded.cooldown_until, last_error=excluded.last_error,
-                    expires_at=excluded.expires_at, priority=excluded.priority,
-                    ext=excluded.ext, updated_at=excluded.updated_at""",
-                    (
-                        account["id"], account["channel"], account["native_id"],
-                        str(account.get("name") or account["native_id"]),
-                        str(account.get("kind") or "account"), account.get("tier"),
-                        str(account.get("status") or "unknown"),
-                        int(bool(account.get("enabled", True))),
-                        float(quota_used) if quota_used is not None else 0,
-                        float(quota_total) if quota_total is not None else 0,
-                        str(account.get("quota_unit") or "none"), account.get("expires_at"),
-                        int(account.get("success_count") or 0), int(account.get("fail_count") or 0),
-                        int(account.get("streak") or 0), account.get("cooldown_until"),
-                        str(account.get("last_error") or "")[:1000],
-                        int(account.get("priority") or 0), json.dumps(ext, ensure_ascii=False),
-                        now, now,
-                    ),
-                )
-            detail = f"synced={len(accounts)} unavailable={','.join(unavailable)}"
-            conn.execute("UPDATE audit_logs SET detail = ? WHERE id = ?", (detail[:128], audit_id))
-        return {
-            "data": {
-                "synced": len(accounts),
-                "unavailable_channels": unavailable,
-                "unconfigured_channels": unconfigured,
-                "unconfigured_channel_details": unconfigured_details,
-            },
-            "unconfigured_channels": unconfigured,
-            "unconfigured_channel_details": unconfigured_details,
-            "unavailable_channels": unavailable,
-            "last_synced_at": now,
+    except AccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="account was not found") from exc
+    except AccountLifecycleError as exc:
+        raise HTTPException(status_code=502, detail="provider account state update failed") from exc
+    return {"data": result}
+
+
+@router.delete(
+    "/accounts/{account_id:account_id}",
+    tags=["accounts"],
+    dependencies=[Depends(_require_admin_role)],
+)
+async def delete_account(
+    account_id: str,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    """Delete local account data, encrypted credentials and provider profile."""
+
+    try:
+        result = await _account_lifecycle_service().delete(
+            account_id,
+            actor=str(user.get("username") or "admin"),
+            ip=request.client.host if request.client else "",
+        )
+    except AccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="account was not found") from exc
+    except AccountLifecycleError as exc:
+        raise HTTPException(status_code=502, detail="provider account cleanup failed") from exc
+    return {
+        "data": {
+            "id": result["id"],
+            "channel": result["channel"],
+            "deleted": True,
+            "credentials_deleted": result["credentials_deleted"],
         }
-    except Exception as exc:
-        if audit_id is not None and not isinstance(exc, HTTPException):
-            with database(get_settings().db_path) as conn:
-                conn.execute(
-                    "UPDATE audit_logs SET detail = 'failed: sync exception' WHERE id = ?",
-                    (audit_id,),
-                )
-        raise
-    finally:
-        _account_sync_lock.release()
+    }
 
 
 @router.post("/accounts/{channel}/onboarding/start", tags=["accounts"])
 async def start_account_onboarding(channel: str, body: AccountOnboardingStart) -> dict:
     """Start the native account onboarding flow exposed by an upstream adapter."""
-    adapter = _provision_adapter(channel)
+    adapter = _provision_adapter(channel, legacy_route=True)
+    _require_legacy_bridge()
     try:
         if channel == "wb":
             result = await provisioning.workbuddy_start(
@@ -938,7 +958,8 @@ async def poll_account_onboarding(
     account_id: str | None = Query(default=None, max_length=128),
 ) -> dict:
     """Poll a WorkBuddy or Doubao QR onboarding flow."""
-    adapter = _provision_adapter(channel)
+    adapter = _provision_adapter(channel, legacy_route=True)
+    _require_legacy_bridge()
     try:
         if channel == "wb":
             if not state:
@@ -970,7 +991,8 @@ async def poll_account_onboarding(
 @router.post("/accounts/{channel}/onboarding/finish", tags=["accounts"])
 async def finish_account_onboarding(channel: str, body: AccountOnboardingFinish) -> dict:
     """Finish ChatGPT OAuth or token import without returning upstream credentials."""
-    adapter = _provision_adapter(channel)
+    adapter = _provision_adapter(channel, legacy_route=True)
+    _require_legacy_bridge()
     if channel != "chatgpt":
         raise HTTPException(status_code=400, detail="该渠道不支持此完成方式")
     try:
@@ -1006,16 +1028,26 @@ async def finish_account_onboarding(channel: str, body: AccountOnboardingFinish)
 def _channel_payload(adapter: AdapterSpec) -> dict:
     enabled = adapter.models_configured
     runtime = channel_state(adapter.slug)
+    manifest = getattr(adapter, "manifest", None)
+    if manifest is None:
+        manifest = ChannelService({adapter.slug: adapter}).manifest(adapter.slug)
     return {
         "slug": adapter.slug,
         "name": adapter.name,
         "adapter": adapter.adapter,
+        "display_name": manifest.display_name,
+        "adapter_version": manifest.adapter_version,
+        "platform_base": getattr(adapter, "platform_base_url", ""),
         "upstream_base": adapter.base_url,
+        "legacy_bridge_enabled": bool(getattr(adapter, "legacy_bridge_enabled", False)),
         "enabled": enabled,
         "state": runtime["state"] if enabled else "available",
         "protocols": list(adapter.protocols),
         "caps": list(adapter.caps),
+        "capabilities": list(manifest.capabilities),
+        "provision_flows": [flow.as_dict() for flow in manifest.account_flows],
         "accounts_configured": adapter.accounts_configured,
+        "provision_configured": bool(getattr(adapter, "provision_configured", False)),
         "account_config": _adapter_account_config(adapter),
         "runtime": runtime,
     }
@@ -1025,6 +1057,179 @@ def _channel_payload(adapter: AdapterSpec) -> dict:
 def list_channels() -> dict:
     channels = [_channel_payload(adapter) for adapter in get_registry().values()]
     return {"data": channels, "total": len(channels)}
+
+
+@router.get("/channels/{slug}/provision-schema", tags=["channels", "accounts"])
+def get_provision_schema(slug: str) -> dict:
+    """Return the selected channel's declarative account flow schema.
+
+    This endpoint is intentionally independent from the legacy onboarding
+    bridge.  It only reads registry metadata, so selecting a channel never
+    causes an upstream request or exposes credentials.
+    """
+
+    try:
+        schema = ChannelService(get_registry()).provision_schema(slug)
+    except ChannelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="channel is not registered") from exc
+    adapter = get_registry()[slug]
+    return {
+        "data": {
+            **schema,
+            "configured": bool(getattr(adapter, "accounts_configured", False)),
+            "provision_configured": bool(getattr(adapter, "provision_configured", False)),
+            "account_config": _adapter_account_config(adapter),
+        }
+    }
+
+
+async def _dispatch_provision(
+    channel: str,
+    operation: str,
+    *,
+    flow: str | None = None,
+    payload: dict[str, object] | None = None,
+    session_id: str = "",
+    idempotency_key: str = "",
+) -> dict:
+    adapter = get_registry().get(channel)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="channel is not registered")
+    if not bool(getattr(adapter, "accounts_configured", True)) and not bool(
+        getattr(adapter, "provision_configured", False)
+    ):
+        missing = list(getattr(adapter, "account_config_missing", ()))
+        detail = "channel account provisioning is not configured"
+        if missing:
+            detail = f"channel account provisioning is not configured: {', '.join(missing)}"
+        raise HTTPException(status_code=409, detail=detail)
+    service = AccountProvisionService(get_registry())
+    try:
+        result = await service.dispatch(
+            channel,
+            operation,
+            flow=flow,
+            payload=payload or {},
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        )
+    except ChannelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="channel is not registered") from exc
+    except ProvisionSchemaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProvisionDispatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ProvisioningUnsupportedError as exc:
+        # Explicitly signal the M1 migration boundary.  The legacy endpoint
+        # remains available during migration, while the target API cannot
+        # silently fall back to another project's service.
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except Exception as exc:
+        # Native adapters expose a safe status/message pair for expected
+        # account-flow failures.  Never forward arbitrary exception text or
+        # upstream response bodies to the management client.
+        status = getattr(exc, "status_code", 502)
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            status = 502
+        if status < 400 or status > 599:
+            status = 502
+        detail = getattr(exc, "message", None) or "channel account provisioning failed"
+        raise HTTPException(status_code=status, detail=str(detail)) from exc
+    return {"data": {"channel": channel, "operation": operation, **(dict(result or {}))}}
+
+
+@router.post(
+    "/channels/{slug}/accounts/provision/start",
+    tags=["accounts"],
+    dependencies=[Depends(_require_admin_role)],
+)
+async def provision_start(
+    slug: str,
+    body: ProvisionStartRequest,
+    idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    return await _dispatch_provision(
+        slug,
+        "start",
+        flow=body.flow,
+        payload=body.payload,
+        idempotency_key=_idempotency_key(body.idempotency_key, idempotency_header),
+    )
+
+
+@router.get(
+    "/channels/{slug}/accounts/provision/{session_id}",
+    tags=["accounts"],
+)
+async def provision_poll(
+    slug: str,
+    session_id: str,
+) -> dict:
+    return await _dispatch_provision(
+        slug,
+        "poll",
+        session_id=session_id,
+    )
+
+
+@router.post(
+    "/channels/{slug}/accounts/provision/{session_id}/complete",
+    tags=["accounts"],
+    dependencies=[Depends(_require_admin_role)],
+)
+async def provision_complete(
+    slug: str,
+    session_id: str,
+    body: ProvisionPayloadRequest,
+    idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    return await _dispatch_provision(
+        slug,
+        "complete",
+        payload=body.payload,
+        session_id=session_id,
+        idempotency_key=_idempotency_key(body.idempotency_key, idempotency_header),
+    )
+
+
+@router.post(
+    "/channels/{slug}/accounts/provision/import",
+    tags=["accounts"],
+    dependencies=[Depends(_require_admin_role)],
+)
+async def provision_import(
+    slug: str,
+    body: ProvisionStartRequest,
+    idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    return await _dispatch_provision(
+        slug,
+        "import_accounts",
+        flow=body.flow,
+        payload=body.payload,
+        idempotency_key=_idempotency_key(body.idempotency_key, idempotency_header),
+    )
+
+
+@router.post(
+    "/channels/{slug}/accounts/provision/{session_id}/cancel",
+    tags=["accounts"],
+    dependencies=[Depends(_require_admin_role)],
+)
+async def provision_cancel(
+    slug: str,
+    session_id: str,
+    body: ProvisionPayloadRequest,
+    idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    return await _dispatch_provision(
+        slug,
+        "cancel",
+        session_id=session_id,
+        idempotency_key=_idempotency_key(body.idempotency_key, idempotency_header),
+    )
 
 
 @router.get("/channels/adapters", tags=["channels"])

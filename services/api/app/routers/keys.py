@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.adapters.registry import get_registry
 from app.config import get_settings
 from app.db import database
+from app.scope import ScopeValidationError, validate_scope
 from app.security import hash_api_key, issue_api_key, require_admin_request
 
 router = APIRouter(
@@ -52,7 +53,9 @@ class ApiKeyCreate(BaseModel):
     @field_validator("models")
     @classmethod
     def validate_models(cls, value: list[str]) -> list[str]:
-        if not value or len(value) != len(set(value)):
+        if not value:
+            return ["*"]
+        if len(value) != len(set(value)):
             raise ValueError("models must be a non-empty unique list")
         if any(not model.strip() or len(model) > 320 for model in value):
             raise ValueError("models contains an invalid model id")
@@ -64,6 +67,16 @@ class ApiKeyCreate(BaseModel):
     def validate_expiration(self):
         if self.expires_at is not None and self.expires_at <= int(time.time()):
             raise ValueError("expires_at must be in the future")
+        return self
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        try:
+            channels, models = validate_scope(self.channels, self.models, get_registry())
+        except ScopeValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        self.channels = channels
+        self.models = models
         return self
 
 
@@ -101,9 +114,10 @@ class ApiKeyPatch(BaseModel):
     def validate_models(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             raise ValueError("models cannot be null")
+        if not value:
+            return ["*"]
         if (
-            not value
-            or len(value) != len(set(value))
+            len(value) != len(set(value))
             or any(not model.strip() or len(model) > 320 for model in value)
             or ("*" in value and len(value) != 1)
         ):
@@ -244,11 +258,29 @@ def patch_api_key(key_id: int, body: ApiKeyPatch, request: Request) -> dict:
         raise HTTPException(status_code=400, detail="no key fields were provided")
     with database(get_settings().db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT name FROM api_keys WHERE id = ?", (key_id,)).fetchone()
+        row = conn.execute(
+            "SELECT name, channels, models FROM api_keys WHERE id = ?", (key_id,)
+        ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="API key not found")
         if row["name"].casefold() == "bootstrap":
             raise HTTPException(status_code=409, detail="bootstrap key is managed by configuration")
+        # Validate the merged scope on every edit.  Updating only one side of
+        # the pair must not leave a persisted cross-channel authorization.
+        existing_channels = json.loads(row["channels"] or "[]")
+        existing_models = json.loads(row["models"] or '["*"]')
+        merged_channels = changes.get("channels", existing_channels)
+        merged_models = changes.get("models", existing_models)
+        try:
+            normalized_channels, normalized_models = validate_scope(
+                merged_channels, merged_models, get_registry()
+            )
+        except (ScopeValidationError, TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if "channels" in changes:
+            changes["channels"] = normalized_channels
+        if "models" in changes:
+            changes["models"] = normalized_models
         if "name" in changes:
             if changes["name"].casefold() == "bootstrap":
                 raise HTTPException(status_code=409, detail="bootstrap key name is reserved")
