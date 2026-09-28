@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { DataTable, TableState } from "../../app/data/DataTable";
+import { Pagination } from "../../app/data/Pagination";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
   deleteAccount,
@@ -259,15 +261,14 @@ export function AccountsPage() {
       </form>
 
       {loading ? (
-        <div className="table-state" aria-live="polite">正在读取本地账号快照…</div>
+        <TableState live>正在读取本地账号快照…</TableState>
       ) : rows.length === 0 ? (
-        <div className="table-state">
+        <TableState>
           <span>没有符合条件的账号</span>
           {canManageAccounts && <span className="secondary-text">完成渠道授权后，账号会自动出现在本地账号池。</span>}
-        </div>
+        </TableState>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table account-table">
+        <DataTable className="account-table" ariaLabel="账号列表">
             <thead><tr><th>账号</th><th>渠道</th><th>状态</th><th>额度说明</th><th>到期</th><th>快照时间</th>{canManageAccounts && <th>操作</th>}</tr></thead>
             <tbody>{rows.map((account) => (
               <AccountRow
@@ -280,17 +281,10 @@ export function AccountsPage() {
                 onDelete={() => void handleAccountDelete(account)}
               />
             ))}</tbody>
-          </table>
-        </div>
+        </DataTable>
       )}
 
-      <div className="log-pagination">
-        <span>第 {page} / {Math.max(totalPages, 1)} 页</span>
-        <div>
-          <button type="button" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button>
-          <button type="button" disabled={loading || page >= totalPages} onClick={() => setPage((value) => value + 1)}>下一页</button>
-        </div>
-      </div>
+      <Pagination page={page} totalPages={totalPages} loading={loading} onPageChange={setPage} />
       <AccountOnboardingDialog
         open={onboardingOpen}
         channels={channels}

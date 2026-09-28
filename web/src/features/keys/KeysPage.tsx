@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { DataTable, TableState } from "../../app/data/DataTable";
+import { Pagination } from "../../app/data/Pagination";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import { Select } from "../../app/controls/Select";
 import { DateInput } from "../../app/controls/DateInput";
@@ -275,12 +277,11 @@ export function KeysPage() {
       </form>
 
       {loading ? (
-        <div className="table-state" aria-live="polite">正在读取密钥…</div>
+        <TableState live>正在读取密钥…</TableState>
       ) : rows.length === 0 ? (
-        <div className="table-state">没有已创建的网关密钥</div>
+        <TableState>没有已创建的网关密钥</TableState>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table key-table">
+        <DataTable className="key-table" ariaLabel="网关密钥列表">
             <thead>
               <tr><th>名称 / 前缀</th><th>状态</th><th>渠道</th><th>模型</th><th>RPM</th><th>到期</th><th>最后使用</th><th>操作</th></tr>
             </thead>
@@ -312,17 +313,10 @@ export function KeysPage() {
                 );
               })}
             </tbody>
-          </table>
-        </div>
+        </DataTable>
       )}
 
-      <div className="log-pagination">
-        <span>第 {page} / {Math.max(totalPages, 1)} 页</span>
-        <div>
-          <button type="button" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button>
-          <button type="button" disabled={loading || page >= totalPages} onClick={() => setPage((value) => value + 1)}>下一页</button>
-        </div>
-      </div>
+      <Pagination page={page} totalPages={totalPages} loading={loading} onPageChange={setPage} />
 
       {editor && (
         <div className="key-modal-backdrop" role="presentation" onMouseDown={(event) => {

@@ -14,8 +14,40 @@ export type OverviewTodo = {
 export type OverviewPayload = {
   summary: UsageSummary;
   daily: { data: UsageRow[]; from: string; to: string };
+  recent: RecentUsage;
   channels: ChannelOverview[];
   todos: OverviewTodo[];
+};
+
+export type RecentUsagePoint = {
+  ts: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  tokens: number;
+  usage_reported_requests: number;
+  usage_unknown_requests: number;
+  requests: number;
+};
+
+export type RecentUsageSeries = {
+  key_id: number | null;
+  key_name: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  tokens: number;
+  usage_reported_requests: number;
+  usage_unknown_requests: number;
+  requests: number;
+  points: RecentUsagePoint[];
+};
+
+export type RecentUsage = {
+  metric: "tokens";
+  usage_semantics: "reported_tokens";
+  bucket: "hour";
+  from: string;
+  to: string;
+  series: RecentUsageSeries[];
 };
 
 export async function fetchOverview(

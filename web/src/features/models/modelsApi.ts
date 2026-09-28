@@ -27,6 +27,13 @@ export type ModelPage = {
   facets: { kinds: string[] };
 };
 
+export type ModelRefreshResult = {
+  source: "live";
+  refreshed_at: number;
+  total: number;
+  channels: Array<{ channel: string; status: "ok" | "failed"; count?: number; error?: string }>;
+};
+
 export async function fetchModels(
   page: number,
   filters: ModelFilters,
@@ -44,5 +51,10 @@ export async function setModelEnabled(id: string, enabled: boolean): Promise<Mod
     `/models/${encodeURIComponent(id)}`,
     { enabled },
   );
+  return response.data.data;
+}
+
+export async function refreshModels(): Promise<ModelRefreshResult> {
+  const response = await apiClient.post<{ data: ModelRefreshResult }>("/models/refresh");
   return response.data.data;
 }

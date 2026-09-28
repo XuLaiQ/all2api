@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { DataTable, TableState } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
   deleteRoute,
@@ -160,12 +161,11 @@ export function RoutesPage() {
       )}
 
       {loading ? (
-        <div className="table-state" aria-live="polite">正在读取路由…</div>
+        <TableState live>正在读取路由…</TableState>
       ) : routes.length === 0 ? (
-        <div className="table-state">还没有路由规则</div>
+        <TableState>还没有路由规则</TableState>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table route-table">
+        <DataTable className="route-table" ariaLabel="路由规则列表">
             <thead><tr><th>别名</th><th>状态</th><th>目标顺序</th><th>创建时间</th>{canManage && <th>操作</th>}</tr></thead>
             <tbody>
               {routes.map((route) => (
@@ -190,8 +190,7 @@ export function RoutesPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
-        </div>
+        </DataTable>
       )}
 
       {editor && (

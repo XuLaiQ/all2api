@@ -4,6 +4,7 @@ from app.domain.channel import ChannelManifest, ProvisionFlowSpec
 
 WORKBUDDY_CHANNEL = "wb"
 WORKBUDDY_FLOW = "qr-oauth"
+WORKBUDDY_IMPORT_FLOW = "token-import"
 
 WORKBUDDY_MANIFEST = ChannelManifest(
     slug=WORKBUDDY_CHANNEL,
@@ -12,6 +13,18 @@ WORKBUDDY_MANIFEST = ChannelManifest(
     protocols=("openai", "anthropic", "responses"),
     capabilities=("chat",),
     account_flows=(
+        ProvisionFlowSpec(
+            id=WORKBUDDY_IMPORT_FLOW,
+            kind="token_import",
+            schema={
+                "type": "object",
+                "properties": {"accounts": {"type": "array"}},
+                "required": ["accounts"],
+                "additionalProperties": False,
+            },
+            supports={"import": True},
+            timeout_seconds=300,
+        ),
         ProvisionFlowSpec(
             id=WORKBUDDY_FLOW,
             kind="qr",

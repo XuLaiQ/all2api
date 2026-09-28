@@ -19,11 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.infrastructure.credentials import record_account
 from app.domain.channel import ChannelManifest
+from app.infrastructure.credentials import record_account
 from app.infrastructure.provision_state import ProvisionStateStore
 
-from .browser import BrowserWorker, NullBrowserWorker, maybe_await
+from .browser import BrowserWorker, maybe_await
 from .credentials import CredentialStore, MemoryCredentialStore, store_credentials
 from .errors import (
     BrowserWorkerError,
@@ -37,8 +37,15 @@ from .errors import (
 )
 from .manifest import DOUBAO_MANIFEST
 from .mapper import map_browser_event, map_profile
+from .native_qr import NativeDoubaoQrWorker
 
 ACCOUNT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def _new_account_id() -> str:
+    """Create an internal profile id; it is never an operator input."""
+
+    return f"doubao-{uuid.uuid4().hex[:16]}"
 
 
 def _qr_image_value(value: Any) -> str | None:
@@ -227,7 +234,10 @@ class DoubaoProvisioner:
         state_store: ProvisionStateStore | None = None,
     ) -> None:
         self.profile_store = DoubaoProfileStore(profile_root)
-        self.browser_worker = browser_worker or NullBrowserWorker()
+        self.browser_worker = browser_worker or NativeDoubaoQrWorker(
+            session_ttl_seconds=session_ttl_seconds,
+            clock=clock,
+        )
         self.credential_store = credential_store or MemoryCredentialStore()
         self.manifest = manifest or DOUBAO_MANIFEST
         self.flows = tuple(self.manifest.account_flows)
@@ -456,7 +466,7 @@ class DoubaoProvisioner:
             cached = self._idempotent("create-profile", idempotency_key)
             if cached is not None:
                 return cached
-            account_id = str(payload.get("account_id") or "").strip()
+            account_id = str(payload.get("account_id") or "").strip() or _new_account_id()
             profile = self.profile_store.create(
                 account_id,
                 name=str(payload.get("name") or ""),
@@ -482,7 +492,7 @@ class DoubaoProvisioner:
         cached = self._idempotent("qr-login", idempotency_key)
         if cached is not None:
             return cached
-        account_id = str(payload.get("account_id") or "").strip()
+        account_id = str(payload.get("account_id") or "").strip() or _new_account_id()
         try:
             profile = self.profile_store.get(account_id)
         except ProfileNotFoundError:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -9,19 +10,30 @@ from app.adapters.chatgpt.adapter import ChatGPTAdapter
 from app.adapters.chatgpt.manifest import CHATGPT_MANIFEST
 from app.adapters.chatgpt.oauth_client import OAuthClient, OAuthConfig
 from app.adapters.chatgpt.provisioner import ChatGPTProvisioner
-from app.adapters.doubao.browser import NullBrowserWorker
+from app.adapters.doubao.native_qr import NativeDoubaoQrWorker
 from app.adapters.native_runtime import NativeHttpAdapter
 from app.adapters.provisioner import DeclarativeProvisioner
 from app.adapters.workbuddy.client import WorkBuddyClient
 from app.adapters.workbuddy.manifest import WORKBUDDY_MANIFEST
 from app.adapters.workbuddy.provisioner import WorkBuddyProvisioner
 from app.config import Settings, get_settings
-from app.infrastructure.credentials import DatabaseCredentialStore
 from app.domain.channel import ChannelManifest
+from app.infrastructure.credentials import DatabaseCredentialStore
+from app.infrastructure.db import database
 from app.infrastructure.provision_state import ProvisionStateStore
 
 ModelReader = Callable[[str, str], Awaitable[list[dict[str, Any]]]]
 AccountReader = Callable[[str, str], Awaitable[list[dict[str, Any]]]]
+
+
+def _merge_models(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for item in group:
+            model_id = str(item.get("id") or "").strip()
+            if model_id and model_id not in merged:
+                merged[model_id] = dict(item)
+    return list(merged.values())
 
 
 async def _empty_accounts(_base_url: str, _key: str) -> list[dict[str, Any]]:
@@ -271,31 +283,82 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
     # not import the old wb.py/chatgpt.py bridge modules and therefore cannot
     # accidentally read a source project's environment or storage.
     wb_client = WorkBuddyClient(wb_platform_base, data_key=wb_platform_key)
-    chatgpt_client = ChatGPTAdapter()
+    chatgpt_client = ChatGPTAdapter(
+        credential_store=credential_store,
+        web_base_url="https://chatgpt.com",
+    )
 
     async def native_wb_models(_base_url: str, _key: str) -> list[dict[str, Any]]:
-        return [dict(item) for item in await wb_client.list_models()]
+        groups: list[list[dict[str, Any]]] = []
+        with database(settings.db_path) as conn:
+            rows = conn.execute(
+                "SELECT native_id FROM accounts WHERE channel = 'wb' AND enabled = 1 "
+                "ORDER BY priority DESC, updated_at DESC"
+            ).fetchall()
+        async def read_one(row: Any) -> list[dict[str, Any]]:
+            native_id = str(row["native_id"])
+            realm = native_id.split(":", 1)[0] if ":" in native_id else "cn"
+            credentials = await credential_store.read("wb", native_id)
+            if not credentials:
+                return []
+            try:
+                values = await wb_client.list_models(realm=realm, credentials=credentials)
+            except Exception:
+                return []
+            return [dict(item) for item in values]
+
+        groups = [
+            group
+            for group in await asyncio.gather(*(read_one(row) for row in rows))
+            if group
+        ]
+        if not groups:
+            if rows and not wb_platform_key:
+                raise RuntimeError("no WorkBuddy account returned a model catalogue")
+            values = await wb_client.list_models()
+            groups.append([dict(item) for item in values])
+        return _merge_models(groups)
 
     async def native_chatgpt_models(_base_url: str, _key: str) -> list[dict[str, Any]]:
-        values = await chatgpt_client.list_models(
-            {"base_url": chatgpt_platform_base, "auth_key": chatgpt_platform_key}
-        )
-        return [dict(item) for item in values]
+        groups: list[list[dict[str, Any]]] = []
+        with database(settings.db_path) as conn:
+            rows = conn.execute(
+                "SELECT native_id FROM accounts WHERE channel = 'chatgpt' AND enabled = 1 "
+                "ORDER BY priority DESC, updated_at DESC"
+            ).fetchall()
+        async def read_one(row: Any) -> list[dict[str, Any]]:
+            credentials = await credential_store.read("chatgpt", str(row["native_id"]))
+            if not credentials:
+                return []
+            try:
+                values = await chatgpt_client.list_models({"credentials": credentials})
+            except Exception:
+                return []
+            return [dict(item) for item in values]
+
+        groups = [
+            group
+            for group in await asyncio.gather(*(read_one(row) for row in rows))
+            if group
+        ]
+        if not groups and chatgpt_platform_key:
+            values = await chatgpt_client.list_models(
+                {"base_url": chatgpt_platform_base, "auth_key": chatgpt_platform_key}
+            )
+            groups.append([dict(item) for item in values])
+        if rows and not groups:
+            raise RuntimeError("no ChatGPT account returned a model catalogue")
+        return _merge_models(groups)
 
     wb_runtime = NativeHttpAdapter(
         WORKBUDDY_MANIFEST,
         wb_platform_base,
         auth_key=wb_platform_key,
+        chat_path=WorkBuddyClient.CHAT_PATH,
         credential_store=credential_store,
         channel="wb",
     )
-    chatgpt_runtime = NativeHttpAdapter(
-        CHATGPT_MANIFEST,
-        chatgpt_platform_base,
-        auth_key=chatgpt_platform_key,
-        credential_store=credential_store,
-        channel="chatgpt",
-    )
+    chatgpt_runtime = chatgpt_client
     doubao_platform_base = str(
         getattr(settings, "doubao_platform_base", "https://www.doubao.com")
         or "https://www.doubao.com"
@@ -306,10 +369,12 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
     )
     doubao_provisioner = doubao.DoubaoProvisioner(
         profile_root=getattr(settings, "doubao_profile_root", "./data/doubao/profiles"),
+        # Direct HTTP QR login is the default. Playwright remains an optional
+        # compatibility worker when explicitly enabled for browser-only flows.
         browser_worker=(
             doubao.browser_worker_from_settings(settings)
             if bool(getattr(settings, "doubao_browser_enabled", False))
-            else NullBrowserWorker()
+            else NativeDoubaoQrWorker.from_settings(settings)
         ),
         credential_store=credential_store,
         session_ttl_seconds=float(
@@ -329,7 +394,29 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
     )
 
     async def native_doubao_models(_base_url: str, _key: str) -> list[dict[str, Any]]:
-        return [dict(item) for item in await doubao_adapter.list_models()]
+        with database(settings.db_path) as conn:
+            rows = conn.execute(
+                "SELECT native_id FROM accounts WHERE channel = 'doubao' "
+                "AND enabled = 1 ORDER BY priority DESC, updated_at DESC"
+            ).fetchall()
+        groups: list[list[dict[str, Any]]] = []
+        async def read_one(row: Any) -> list[dict[str, Any]]:
+            try:
+                values = await doubao_adapter.list_models({"native_id": str(row["native_id"])})
+            except Exception:
+                return []
+            return [dict(item) for item in values]
+
+        groups = [
+            group
+            for group in await asyncio.gather(*(read_one(row) for row in rows))
+            if group
+        ]
+        if not groups:
+            if rows:
+                raise RuntimeError("no Doubao account returned a model catalogue")
+            groups.append([dict(item) for item in await doubao_adapter.list_models()])
+        return _merge_models(groups)
 
     return {
         "wb": AdapterSpec(

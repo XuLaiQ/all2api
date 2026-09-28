@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.infrastructure.credentials import record_account
-from app.ports.credentials import CredentialStore, InMemoryCredentialStore
 from app.infrastructure.provision_state import ProvisionStateStore
+from app.ports.credentials import CredentialStore, InMemoryCredentialStore
 
 from .errors import OAuthExpiredError, OAuthStateError, public_error
 from .mapper import canonical_account, token_record

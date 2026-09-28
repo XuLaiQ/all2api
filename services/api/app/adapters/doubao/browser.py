@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from .errors import BrowserWorkerError, BrowserWorkerUnavailableError
@@ -254,6 +255,7 @@ class BrowserWorkerConfig:
     login_path: str = "/"
     executable_path: str = ""
     headless: bool = True
+    persistent_profile: bool = False
     max_contexts: int = 4
     max_pages_per_context: int = 2
     operation_timeout_seconds: float = 30.0
@@ -291,6 +293,9 @@ class BrowserWorkerConfig:
             login_path=text("doubao_browser_login_path", "/") or "/",
             executable_path=text("doubao_browser_executable"),
             headless=bool(getattr(settings, "doubao_browser_headless", True)),
+            persistent_profile=bool(
+                getattr(settings, "doubao_browser_persistent_profile", False)
+            ),
             max_contexts=int(getattr(settings, "doubao_browser_max_contexts", 4)),
             max_pages_per_context=int(
                 getattr(settings, "doubao_browser_max_pages_per_context", 2)
@@ -319,6 +324,7 @@ class BrowserWorkerConfig:
             "platform_base_url": self.platform_base_url,
             "login_path": self.login_path,
             "headless": self.headless,
+            "persistent_profile": self.persistent_profile,
             "max_contexts": self.max_contexts,
             "max_pages_per_context": self.max_pages_per_context,
             "operation_timeout_seconds": self.operation_timeout_seconds,
@@ -329,6 +335,7 @@ class BrowserWorkerConfig:
 
 @dataclass
 class _PlaywrightSession:
+    session_id: str
     account_id: str
     profile_path: str
     context: Any
@@ -391,7 +398,8 @@ class PlaywrightBrowserWorker:
                     launch_kwargs["executable_path"] = self.config.executable_path
                 if self.config.launch_args:
                     launch_kwargs["args"] = list(self.config.launch_args)
-                self._browser = await maybe_await(chromium.launch(**launch_kwargs))
+                if not self.config.persistent_profile:
+                    self._browser = await maybe_await(chromium.launch(**launch_kwargs))
                 self._started = True
                 self._last_error = ""
             except BrowserWorkerUnavailableError:
@@ -433,6 +441,8 @@ class PlaywrightBrowserWorker:
         await self.start()
 
     def _is_connected(self) -> bool:
+        if self.config.persistent_profile:
+            return bool(self._started and self._playwright is not None)
         if self._browser is None:
             return False
         connected = getattr(self._browser, "is_connected", None)
@@ -489,6 +499,28 @@ class PlaywrightBrowserWorker:
         await self._ensure_running()
         if len(self._sessions) >= self.config.max_contexts:
             raise BrowserWorkerError("Doubao 浏览器 worker 已达到上下文上限")
+        if self.config.persistent_profile:
+            profile = Path(profile_path).expanduser()
+            if not profile.is_dir():
+                raise BrowserWorkerError("Doubao 浏览器 profile 目录不存在")
+            playwright = self._playwright
+            chromium = getattr(playwright, "chromium", None)
+            launch_persistent_context = getattr(chromium, "launch_persistent_context", None)
+            if not callable(launch_persistent_context):
+                raise BrowserWorkerUnavailableError()
+            launch_kwargs: dict[str, Any] = {
+                "headless": self.config.headless,
+                "timeout": int(self.config.launch_timeout_seconds * 1000),
+                "accept_downloads": False,
+                "java_script_enabled": True,
+            }
+            if self.config.executable_path:
+                launch_kwargs["executable_path"] = self.config.executable_path
+            if self.config.launch_args:
+                launch_kwargs["args"] = list(self.config.launch_args)
+            return await maybe_await(
+                launch_persistent_context(str(profile), **launch_kwargs)
+            )
         browser = self._browser
         if browser is None:
             raise BrowserWorkerUnavailableError()
@@ -502,6 +534,10 @@ class PlaywrightBrowserWorker:
         pages = getattr(context, "pages", ())
         if callable(pages):
             pages = pages()
+        if pages:
+            if len(pages) > self.config.max_pages_per_context:
+                raise BrowserWorkerError("Doubao 浏览器 worker 已达到页面上限")
+            return pages[0]
         if len(pages or ()) >= self.config.max_pages_per_context:
             raise BrowserWorkerError("Doubao 浏览器 worker 已达到页面上限")
         return await maybe_await(context.new_page())
@@ -524,6 +560,25 @@ class PlaywrightBrowserWorker:
             return result is not None
         except Exception:
             return False
+
+    async def _session_cookie_present(self, context: Any) -> bool:
+        """Check login state without reading or exposing cookie values."""
+
+        cookies = getattr(context, "cookies", None)
+        if not callable(cookies):
+            return False
+        try:
+            values = await maybe_await(cookies())
+        except Exception:
+            return False
+        if not isinstance(values, list):
+            return False
+        names = {
+            str(item.get("name") or "").lower()
+            for item in values
+            if isinstance(item, Mapping)
+        }
+        return bool(names.intersection({"sessionid", "sessionid_ss", "sessionid_secure"}))
 
     async def _qr_value(self, page: Any) -> tuple[str | None, str | None]:
         try:
@@ -562,6 +617,7 @@ class PlaywrightBrowserWorker:
             session_id = f"pw-{uuid.uuid4().hex}"
             qr_code, qr_image = await self._qr_value(page)
             self._sessions[session_id] = _PlaywrightSession(
+                session_id=session_id,
                 account_id=account_id,
                 profile_path=profile_path,
                 context=context,
@@ -608,6 +664,7 @@ class PlaywrightBrowserWorker:
             await self._goto(page)
             qr_code, qr_image = await self._qr_value(page)
             self._sessions[session_id] = _PlaywrightSession(
+                session_id=session_id,
                 account_id=account_id,
                 profile_path=profile_path,
                 context=context,
@@ -663,6 +720,34 @@ class PlaywrightBrowserWorker:
             )
         except BrowserWorkerError:
             raise
+        except Exception as exc:
+            self._failure_count += 1
+            self._last_error = type(exc).__name__
+            raise BrowserWorkerError() from exc
+
+    async def session_snapshot(self, session_id: str) -> Mapping[str, Any]:
+        """Return non-sensitive page state for browser smoke tests and health probes."""
+
+        await self._ensure_running()
+        session = self._session(session_id)
+        try:
+            url = getattr(session.page, "url", "")
+            if callable(url):
+                url = await maybe_await(url())
+            title_method = getattr(session.page, "title", None)
+            title = await maybe_await(title_method()) if callable(title_method) else ""
+            authenticated = await self._selector_exists(
+                session.page, self.config.authenticated_selector
+            )
+            if not authenticated:
+                authenticated = await self._session_cookie_present(session.context)
+            return {
+                "session_id": session.session_id,
+                "account_id": session.account_id,
+                "url": str(url or ""),
+                "title": str(title or ""),
+                "authenticated": authenticated,
+            }
         except Exception as exc:
             self._failure_count += 1
             self._last_error = type(exc).__name__

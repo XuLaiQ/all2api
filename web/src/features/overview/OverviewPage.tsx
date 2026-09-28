@@ -8,11 +8,10 @@ import { CanvasRenderer } from "echarts/renderers";
 import { Link } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { fetchAccounts, type AccountRecord } from "../accounts/accountsApi";
-import { fetchLogs, type RequestLog } from "../logs/logsApi";
 import { fetchRoutes, type ModelRoute } from "../routes/routesApi";
 import { fetchSystemMetrics, type SystemMetrics } from "../system/systemApi";
 import type { ChannelOverview, UsageRow } from "../usage/usageApi";
-import { fetchOverview, type OverviewPayload } from "./overviewApi";
+import { fetchOverview, type OverviewPayload, type RecentUsageSeries } from "./overviewApi";
 
 echarts.use([LineChart, PieChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -39,12 +38,6 @@ function accountState(account: AccountRecord): { label: string; tone: string } {
   return { label: "Ready", tone: "success" };
 }
 
-function logTone(status: number): string {
-  if (status >= 200 && status < 300) return "success";
-  if (status >= 400) return "danger";
-  return "warning";
-}
-
 function formatLatency(value: number | null): string {
   if (value === null || value === undefined) return "—";
   return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${Math.round(value)}ms`;
@@ -69,12 +62,24 @@ function fillUtcDays(rows: UsageRow[], from: string, to: string): DailyPoint[] {
   return days;
 }
 
-function recentTime(value: string): string {
+function formatMagnitude(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+  if (absolute >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (absolute >= 1_000) return `${(value / 1_000).toFixed(2)}K`;
+  return number(value);
+}
+
+function recentAxisTime(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
     timeZone: "UTC",
-  }).format(new Date(value));
+  }).format(new Date(value)).replace(/\//g, "-");
 }
 
 const accountStatusLegend = [
@@ -105,12 +110,13 @@ function EChart({
   ariaLabel: string;
 }) {
   const elementRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<ReturnType<typeof echarts.init> | null>(null);
 
   useEffect(() => {
     const element = elementRef.current;
     if (!element) return undefined;
     const chart = echarts.init(element, undefined, { renderer: "canvas" });
-    chart.setOption(option, true);
+    chartRef.current = chart;
     const resize = () => chart.resize();
     window.addEventListener("resize", resize);
     const observer = new ResizeObserver(resize);
@@ -119,7 +125,12 @@ function EChart({
       observer.disconnect();
       window.removeEventListener("resize", resize);
       chart.dispose();
+      chartRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    chartRef.current?.setOption(option, true);
   }, [option]);
 
   return <div ref={elementRef} className={className} role="img" aria-label={ariaLabel} />;
@@ -130,7 +141,6 @@ export function OverviewPage() {
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [routes, setRoutes] = useState<ModelRoute[]>([]);
-  const [logs, setLogs] = useState<RequestLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -144,14 +154,12 @@ export function OverviewPage() {
       fetchSystemMetrics(1, controller.signal),
       fetchAccounts(1, {}, controller.signal),
       fetchRoutes(controller.signal),
-      fetchLogs(1, {}, controller.signal),
-    ]).then(([overviewResult, metricsResult, accountsResult, routesResult, logsResult]) => {
+    ]).then(([overviewResult, metricsResult, accountsResult, routesResult]) => {
       if (overviewResult.status === "fulfilled") setOverview(overviewResult.value);
       if (metricsResult.status === "fulfilled") setMetrics(metricsResult.value);
       if (accountsResult.status === "fulfilled") setAccounts(accountsResult.value.data);
       if (routesResult.status === "fulfilled") setRoutes(routesResult.value.slice(0, 3));
-      if (logsResult.status === "fulfilled") setLogs(logsResult.value.data.slice(0, 12));
-      const failed = [overviewResult, metricsResult, accountsResult, routesResult, logsResult]
+      const failed = [overviewResult, metricsResult, accountsResult, routesResult]
         .find((result) => result.status === "rejected");
       if (failed?.status === "rejected" && !controller.signal.aborted) {
         setError(failed.reason instanceof ApiClientError ? failed.reason.message : "部分运行数据暂时无法读取");
@@ -195,46 +203,78 @@ export function OverviewPage() {
       areaStyle: { color: chartPalette.primarySoft, opacity: .22 },
     }],
   }), [dailySeries]);
-  const recentLogs = useMemo(() => [...logs].reverse(), [logs]);
-  const recentPoints = useMemo(() => recentLogs.map((log) => ({
-    log,
-    label: recentTime(log.ts),
-    value: Math.max(0, log.latency_ms),
-  })), [recentLogs]);
-  const recentPeak = Math.max(0, ...recentPoints.map((point) => point.value));
-  const recentChartOption = useMemo<EChartsCoreOption>(() => ({
-    animation: false,
-    grid: { left: 8, right: 8, top: 14, bottom: 28, containLabel: false },
-    tooltip: { trigger: "axis", valueFormatter: (value: string | number) => formatLatency(Number(value)) },
-    xAxis: {
-      type: "category",
-      boundaryGap: false,
-      data: recentPoints.map((point) => point.label),
-      axisLine: { lineStyle: { color: chartPalette.grid } },
-      axisTick: { show: false },
-      axisLabel: { color: chartPalette.muted, fontSize: 10, interval: Math.max(0, Math.floor(recentPoints.length / 5)) },
-    },
-    yAxis: {
-      type: "value",
-      axisLabel: { color: chartPalette.muted, fontSize: 10, formatter: (value: number) => formatLatency(value) },
-      axisTick: { show: false },
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: chartPalette.grid } },
-    },
-    series: [{
-      type: "line",
-      smooth: true,
-      symbol: "circle",
-      symbolSize: 8,
-      data: recentPoints.map((point) => ({
-        value: point.value,
-        itemStyle: { color: logTone(point.log.status) === "danger" ? chartPalette.danger : chartPalette.primary },
-      })),
-      lineStyle: { color: chartPalette.primary, width: 3 },
-      itemStyle: { color: chartPalette.primary },
-      areaStyle: { color: chartPalette.primarySoft, opacity: .2 },
-    }],
-  }), [recentPoints]);
+  const recentUsage = overview?.recent;
+  const recentSeries = useMemo(() => recentUsage?.series ?? [], [recentUsage]);
+  const hasRecentData = recentSeries.some((series) => series.points.length > 0);
+  const recentChartOption = useMemo<EChartsCoreOption>(() => {
+    const recentRange = recentUsage
+      ? [Date.parse(recentUsage.from), Date.parse(recentUsage.to)] as const
+      : [Date.now() - 48 * 60 * 60 * 1000, Date.now()] as const;
+    return {
+      animation: false,
+      color: ["#3d82f6", "#6f9ff2", "#4f9b7a", "#b7863c", "#b86167", "#7b6fd2"],
+      legend: {
+        show: recentSeries.length > 0,
+        top: 2,
+        left: "center",
+        icon: "circle",
+        itemWidth: 14,
+        itemHeight: 14,
+        itemGap: 18,
+        textStyle: { color: "#52657a", fontSize: 13 },
+        data: recentSeries.map((series) => series.key_name),
+      },
+      grid: { left: 64, right: 18, top: recentSeries.length > 0 ? 42 : 18, bottom: 44, containLabel: true },
+      tooltip: hasRecentData ? {
+        trigger: "axis",
+        axisPointer: { type: "line" },
+        valueFormatter: (value: string | number) => formatMagnitude(Number(value)),
+      } : { show: false },
+      xAxis: {
+        type: "time",
+        min: recentRange[0],
+        max: recentRange[1],
+        axisLine: { lineStyle: { color: chartPalette.grid } },
+        axisTick: { show: false },
+        axisLabel: {
+          color: chartPalette.muted,
+          fontSize: 11,
+          hideOverlap: true,
+          formatter: (value: number) => recentAxisTime(value),
+        },
+        splitLine: { show: true, lineStyle: { color: chartPalette.grid } },
+      },
+      yAxis: {
+        type: "value",
+        min: 0,
+        splitNumber: 6,
+        axisLabel: { color: chartPalette.muted, fontSize: 11, formatter: (value: number) => formatMagnitude(value) },
+        axisTick: { show: false },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: chartPalette.grid } },
+      },
+      series: recentSeries.length > 0 ? recentSeries.map((series: RecentUsageSeries) => ({
+        name: series.key_name,
+        type: "line",
+        smooth: true,
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: 7,
+        connectNulls: false,
+        data: series.points.map((point) => [Date.parse(point.ts), point.tokens]),
+        lineStyle: { width: 3 },
+        itemStyle: { borderWidth: 1, borderColor: "#ffffff" },
+        emphasis: { focus: "series" },
+      })) : [{
+        name: "",
+        type: "line",
+        data: [[recentRange[0], 0], [recentRange[1], 0]],
+        symbol: "none",
+        silent: true,
+        lineStyle: { color: chartPalette.grid, width: 1, type: "dashed" },
+      }],
+    };
+  }, [hasRecentData, recentSeries, recentUsage]);
   const accountMetrics = metrics?.accounts ?? { total: 0, available: 0 };
   const abnormalAccounts = Math.max(0, accountMetrics.total - accountMetrics.available);
   const successRate = metrics ? Math.max(0, (1 - metrics.error_rate) * 100) : 0;
@@ -347,16 +387,14 @@ export function OverviewPage() {
       </section>
 
       <section className="overview-panel recent-panel">
-        <PanelHead title="最近使用" desc="最近 12 条请求 · 延迟走势" action={<Link className="secondary-action-button compact-action" to="/logs">打开请求日志</Link>} />
+        <header className="recent-panel-head"><h2>最近使用 (Top 12)</h2></header>
         <div className="panel-content recent-visual-content">
           {loading ? <div className="table-state">正在读取请求日志…</div> : (
             <>
-              <div className="recent-chart-legend"><span className="legend-line" />Latency <strong>{recentPoints.length > 0 ? `${formatLatency(recentPeak)} peak` : "等待数据"}</strong></div>
               <div className="recent-chart-shell">
-                <EChart option={recentChartOption} className="recent-chart" ariaLabel="最近 12 条请求的延迟走势" />
-                {recentPoints.length === 0 && <span className="recent-empty-overlay">暂无请求记录</span>}
+                <EChart option={recentChartOption} className="recent-chart" ariaLabel={hasRecentData ? "最近使用 Top 12 的 token 用量趋势" : "最近使用 Top 12 暂无真实用量记录"} />
               </div>
-              {recentPoints.length > 0 ? <div className="recent-request-strip">{recentPoints.slice(-4).map((point) => <div className="recent-request-chip" key={point.log.id}><span className={`health-dot ${logTone(point.log.status)}`} /><div><strong>{point.log.model ?? "unknown"}</strong><small>{point.label} · {formatLatency(point.value)}</small></div></div>)}</div> : <div className="recent-empty-note">数据接入后显示最近 12 条请求</div>}
+              {!hasRecentData && <div className="recent-empty-note" role="status">暂无真实用量数据</div>}
             </>
           )}
         </div>

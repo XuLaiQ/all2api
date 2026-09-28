@@ -71,9 +71,6 @@ function defaultPayload(flow: ProvisionFlowSpec | undefined): Record<string, unk
   const values: Record<string, unknown> = {};
   for (const [name, field] of Object.entries(flow?.schema.properties ?? {})) {
     if (field.default !== undefined) values[name] = field.default;
-    else if (field.type === "boolean") values[name] = false;
-    else if (field.type === "array") values[name] = [];
-    else values[name] = "";
   }
   return values;
 }
@@ -221,11 +218,47 @@ export function AccountOnboardingDialog({
   useEffect(() => {
     if (!open || !channel || !session?.session_id || !activeFlow?.supports?.poll || terminalStatuses.has(session.status ?? "")) return undefined;
     let active = true;
+    let completing = false;
     let timer: number | undefined;
+    const completionPayload = (): Record<string, unknown> => {
+      const next: Record<string, unknown> = {};
+      if (channel === "wb" && typeof payload.region === "string" && payload.region.trim()) {
+        next.region = payload.region.trim();
+      }
+      if (callback.trim()) next.callback = callback.trim();
+      return next;
+    };
+    const completeReadyWorkBuddySession = async (ready: AccountOnboardingSession) => {
+      if (!ready.session_id || completing) return;
+      completing = true;
+      setBusy(true);
+      setMessage("登录成功，正在保存账号…");
+      try {
+        const completed = await completeProvision(channel, ready.session_id, {
+          payload: completionPayload(),
+          idempotency_key: newIdempotencyKey(),
+        });
+        if (!active) return;
+        setSession((current) => ({ ...current, ...completed }));
+        if (completed.status === "success" || completed.status === "succeeded") {
+          onComplete(`${selectedChannel?.name ?? channel} 账号授权成功，账号列表已更新`);
+        } else if (completed.error || completed.message) {
+          setError(completed.error || completed.message || "账号保存失败");
+        }
+      } catch (cause: unknown) {
+        if (active) setError(errorMessage(cause));
+      } finally {
+        if (active) setBusy(false);
+      }
+    };
     const poll = () => {
       pollProvision(channel, session.session_id as string)
         .then((next) => {
           if (!active) return;
+          if (channel === "wb" && next.status === "ready" && next.next_step === "complete") {
+            void completeReadyWorkBuddySession(next);
+            return;
+          }
           setSession((current) => ({ ...current, ...next }));
           if (next.message) setMessage(next.message);
           if (next.status === "success" || next.status === "succeeded") {
@@ -237,7 +270,7 @@ export function AccountOnboardingDialog({
         })
         .catch((cause: unknown) => { if (active) setError(errorMessage(cause)); })
         .finally(() => {
-          if (active) timer = window.setTimeout(poll, Math.max(2, session.poll_after_seconds ?? 2) * 1000);
+          if (active && !completing) timer = window.setTimeout(poll, Math.max(2, session.poll_after_seconds ?? 2) * 1000);
         });
     };
     timer = window.setTimeout(poll, Math.max(2, session.poll_after_seconds ?? 2) * 1000);
@@ -245,7 +278,7 @@ export function AccountOnboardingDialog({
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [open, channel, session, activeFlow, selectedChannel?.name, onComplete]);
+  }, [open, channel, session, activeFlow, payload, callback, selectedChannel?.name, onComplete]);
 
   if (!open) return null;
 
@@ -294,6 +327,7 @@ export function AccountOnboardingDialog({
 
   function missingRequiredFields(): string[] {
     return (selectedFlow?.schema.required ?? []).filter((name) => {
+      if (name === "account_id") return false;
       const value = payload[name];
       return value === undefined || value === null || (typeof value === "string" && !value.trim());
     });
@@ -328,13 +362,20 @@ export function AccountOnboardingDialog({
         && selectedFlow.id === "create-profile"
         && (result.status === "success" || result.status === "succeeded")
       ) {
-        const accountId = String(payload.account_id ?? "").trim();
+        const account = isRecord(result.account) ? result.account : {};
+        const accountId = String(
+          account.native_id
+            ?? account.account_id
+            ?? String(account.id ?? "").replace(/^doubao:/, "")
+            ?? "",
+        ).trim();
+        if (!accountId) throw new Error("豆包账号 profile 创建成功，但未返回内部账号标识");
         const qrResult = await startProvision(channel, {
           flow: "qr-login",
           payload: { account_id: accountId },
           idempotency_key: newIdempotencyKey(),
         });
-        setPayload({ account_id: accountId });
+        setPayload({});
         setSession(qrResult);
         setMessage(qrResult.message || "账号 profile 已创建，请使用二维码完成登录");
         return;
@@ -357,8 +398,13 @@ export function AccountOnboardingDialog({
     setBusy(true);
     setError("");
     try {
+      const completionPayload: Record<string, unknown> = {};
+      if (channel === "wb" && typeof payload.region === "string" && payload.region.trim()) {
+        completionPayload.region = payload.region.trim();
+      }
+      if (callback.trim()) completionPayload.callback = callback.trim();
       const result = await completeProvision(channel, session.session_id, {
-        payload: callback.trim() ? { ...payload, callback: callback.trim() } : payload,
+        payload: completionPayload,
         idempotency_key: newIdempotencyKey(),
       });
       setSession((current) => ({ ...current, ...result }));
@@ -456,6 +502,7 @@ export function AccountOnboardingDialog({
           </div>}
 
           {activeFlow && Object.entries(activeFlow.schema.properties ?? {}).map(([name, field]) => {
+            if (name === "account_id") return null;
             const value = payload[name];
             const label = fieldLabel(name, field);
             const required = activeFlow.schema.required?.includes(name) ?? false;

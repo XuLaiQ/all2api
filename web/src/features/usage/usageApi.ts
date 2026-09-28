@@ -68,6 +68,8 @@ export type ChannelOverview = {
   name: string;
   adapter: string;
   enabled: boolean;
+  management_enabled?: boolean;
+  data_plane_configured?: boolean;
   state: string;
   accounts_configured: boolean;
   provision_configured?: boolean;

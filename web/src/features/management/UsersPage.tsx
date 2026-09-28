@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { DataTable } from "../../app/data/DataTable";
+import { Select } from "../../app/controls/Select";
 import { createUser, deleteUser, fetchUsers, patchUser, type ManagedUser } from "./managementApi";
 
 export function UsersPage() {
@@ -59,11 +61,18 @@ export function UsersPage() {
     {notice && <div className="notice notice-info" role="status">{notice}</div>}
     {canManage && <form className="log-filter-form management-form" onSubmit={(event) => void submit(event)}>
       <label><span>用户名</span><input value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} placeholder="例如 operator" /></label>
-      <label><span>角色</span><select value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value as "admin" | "viewer" })}><option value="viewer">Viewer</option><option value="admin">Admin</option></select></label>
+      <label><span>角色</span><Select
+        value={draft.role}
+        onChange={(role) => setDraft({ ...draft, role: role as "admin" | "viewer" })}
+        options={[
+          { value: "viewer", label: "Viewer" },
+          { value: "admin", label: "Admin" },
+        ]}
+      /></label>
       <button type="submit" disabled={saving || !draft.username.trim()}>{saving ? "创建中…" : "创建用户"}</button>
     </form>}
-    {loading ? <div className="table-state">正在读取用户…</div> : <div className="table-wrap"><table className="data-table"><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>更新时间</th>{canManage && <th>操作</th>}</tr></thead><tbody>
+    {loading ? <div className="table-state">正在读取用户…</div> : <DataTable ariaLabel="用户列表"><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>更新时间</th>{canManage && <th>操作</th>}</tr></thead><tbody>
       {users.map((user) => <tr key={user.username}><td className="channel-name">{user.username}</td><td>{user.role}</td><td>{user.enabled ? "启用" : "停用"}</td><td>{new Date(user.updated_at * 1000).toLocaleString("zh-CN")}</td>{canManage && <td className="account-actions"><button type="button" className="secondary-action compact-action" onClick={() => void toggle(user)}>{user.enabled ? "停用" : "启用"}</button><button type="button" className="danger-action compact-action" onClick={() => void remove(user)}>删除</button></td>}</tr>)}
-    </tbody></table></div>}
+    </tbody></DataTable>}
   </main>;
 }

@@ -1,11 +1,14 @@
-"""Errors and redacted error mapping for the ChatGPT adapter."""
+"""Safe, channel-owned errors for the ChatGPT Web native client."""
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
+from typing import Any
+
+import httpx
 
 
-class ErrorKind(str, Enum):
+class ErrorKind(StrEnum):
     INVALID_REQUEST = "invalid_request"
     AUTH_REQUIRED = "auth_required"
     CREDENTIAL_EXPIRED = "credential_expired"
@@ -17,17 +20,108 @@ class ErrorKind(str, Enum):
 
 
 class ChatGPTError(Exception):
-    """Base error whose string is safe to expose to an administrator."""
+    """An exception with a message that is safe to expose to callers."""
 
     kind = ErrorKind.INTERNAL
+    status_code = 502
+    retryable = False
+    code = "chatgpt_error"
+
+    def __init__(
+        self,
+        message: str = "ChatGPT request failed",
+        *,
+        status_code: int | None = None,
+        retry_after: int | None = None,
+        code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        if status_code is not None:
+            self.status_code = int(status_code)
+        self.retry_after = retry_after
+        if code is not None:
+            self.code = code
+
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "code": self.code,
+            "kind": str(self.kind),
+            "message": str(self),
+            "retryable": self.retryable,
+            "status_code": self.status_code,
+        }
+        if self.retry_after is not None:
+            result["retry_after"] = self.retry_after
+        return result
+
+
+class ChatGPTInvalidRequestError(ChatGPTError):
+    kind = ErrorKind.INVALID_REQUEST
+    status_code = 400
+    code = "invalid_request"
 
 
 class InvalidTokenError(ChatGPTError):
     kind = ErrorKind.AUTH_REQUIRED
+    status_code = 401
+    code = "authentication_error"
+
+
+class ChatGPTAuthError(InvalidTokenError):
+    """The provider rejected the supplied browser credential."""
+
+    def __init__(self) -> None:
+        super().__init__("ChatGPT credential is invalid or expired")
+
+
+class ChatGPTRateLimitError(ChatGPTError):
+    kind = ErrorKind.RATE_LIMITED
+    status_code = 429
+    retryable = True
+    code = "rate_limited"
+
+    def __init__(self, retry_after: int | None = None) -> None:
+        super().__init__(
+            "ChatGPT is rate limited; retry later",
+            status_code=429,
+            retry_after=retry_after,
+        )
+
+
+class ChatGPTTimeoutError(ChatGPTError):
+    kind = ErrorKind.UPSTREAM_TIMEOUT
+    status_code = 504
+    retryable = True
+    code = "upstream_timeout"
+
+    def __init__(self) -> None:
+        super().__init__("ChatGPT request timed out", status_code=504)
+
+
+class ChatGPTUpstreamUnavailableError(ChatGPTError):
+    kind = ErrorKind.UPSTREAM_UNAVAILABLE
+    status_code = 502
+    retryable = True
+    code = "upstream_unavailable"
+
+    def __init__(self) -> None:
+        super().__init__("ChatGPT is temporarily unavailable", status_code=502)
+
+
+class ChatGPTProtocolError(ChatGPTError):
+    kind = ErrorKind.PROTOCOL_ERROR
+    status_code = 502
+    retryable = True
+    code = "upstream_protocol_error"
+
+    def __init__(self, message: str = "ChatGPT returned an invalid response") -> None:
+        super().__init__(message, status_code=502)
 
 
 class OAuthStateError(ChatGPTError):
     kind = ErrorKind.INVALID_REQUEST
+    status_code = 400
+    code = "oauth_state_error"
 
 
 class OAuthExpiredError(OAuthStateError):
@@ -36,20 +130,53 @@ class OAuthExpiredError(OAuthStateError):
 
 class OAuthProtocolError(ChatGPTError):
     kind = ErrorKind.PROTOCOL_ERROR
+    status_code = 502
+    code = "oauth_protocol_error"
 
 
-def map_error(error: Exception) -> dict[str, str]:
+def _safe_http_error(error: httpx.HTTPError) -> ChatGPTError:
+    if isinstance(error, httpx.TimeoutException):
+        return ChatGPTTimeoutError()
+    if isinstance(error, httpx.RequestError):
+        return ChatGPTUpstreamUnavailableError()
+    return ChatGPTUpstreamUnavailableError()
+
+
+def map_error(error: Exception) -> dict[str, Any]:
     """Map an internal exception to a stable, secret-free error envelope."""
 
     if isinstance(error, ChatGPTError):
-        return {"kind": str(error.kind), "message": str(error)}
-    # Do not include exception text: HTTP clients frequently put response bodies
-    # (which may contain tokens) in it.
-    name = type(error).__name__.lower()
-    if "timeout" in name:
-        return {"kind": ErrorKind.UPSTREAM_TIMEOUT, "message": "ChatGPT OAuth 请求超时"}
-    return {"kind": ErrorKind.INTERNAL, "message": "ChatGPT 账号操作失败"}
+        return error.as_dict()
+    if isinstance(error, httpx.HTTPError):
+        return _safe_http_error(error).as_dict()
+    if isinstance(error, (ValueError, TypeError)):
+        return ChatGPTInvalidRequestError("invalid ChatGPT request").as_dict()
+    return {
+        "code": "internal",
+        "kind": str(ErrorKind.INTERNAL),
+        "message": "ChatGPT request failed",
+        "retryable": False,
+        "status_code": 500,
+    }
 
 
 def public_error(error: Exception) -> str:
-    return map_error(error)["message"]
+    return str(map_error(error)["message"])
+
+
+__all__ = [
+    "ChatGPTAuthError",
+    "ChatGPTError",
+    "ChatGPTInvalidRequestError",
+    "ChatGPTProtocolError",
+    "ChatGPTRateLimitError",
+    "ChatGPTTimeoutError",
+    "ChatGPTUpstreamUnavailableError",
+    "ErrorKind",
+    "InvalidTokenError",
+    "OAuthExpiredError",
+    "OAuthProtocolError",
+    "OAuthStateError",
+    "map_error",
+    "public_error",
+]

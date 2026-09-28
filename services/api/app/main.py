@@ -11,10 +11,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.adapters.registry import get_registry
 from app.config import get_settings
 from app.infrastructure.db import database, migrate
-from app.protocols.anthropic import anthropic_error_payload
 from app.infrastructure.provision_state import ProvisionStateStore
-from app.routers import admin, auth, gateway, keys, models, routes
 from app.infrastructure.security import initialize_bootstrap_key, require_same_origin
+from app.protocols.anthropic import anthropic_error_payload
+from app.routers import admin, auth, gateway, keys, models, routes
 
 settings = get_settings()
 
@@ -64,9 +64,8 @@ async def lifespan(_: FastAPI):
         settings.db_path,
         getattr(settings, "credential_master_key", ""),
     ).purge_expired()
-    # Browser workers are opt-in; the default registry uses NullBrowserWorker.
-    # Starting here gives explicitly enabled Playwright workers one owned
-    # lifecycle and ensures shutdown closes contexts before process exit.
+    # Start channel-owned provision workers here. Doubao uses direct HTTP QR
+    # login by default; Playwright remains an explicit optional worker.
     registry = get_registry(settings)
     for adapter in registry.values():
         startup = getattr(getattr(adapter, "provisioner", None), "startup", None)

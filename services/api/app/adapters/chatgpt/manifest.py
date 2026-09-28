@@ -1,15 +1,25 @@
-"""ChatGPT channel manifest and account flow declarations."""
+"""ChatGPT Web channel manifest and account flow declarations."""
 
 from __future__ import annotations
 
 from app.domain.channel import ChannelManifest, ProvisionFlowSpec
 
+CHATGPT_WEB_BASE_URL = "https://chatgpt.com"
+
 CHATGPT_MANIFEST = ChannelManifest(
     slug="chatgpt",
     display_name="ChatGPT",
-    adapter_version="0.2.0",
+    adapter_version="1.0.0",
     protocols=("openai", "anthropic", "responses"),
-    capabilities=("chat",),  # Only verified capabilities; image/search planned for P1
+    capabilities=("chat",),
+    health_checks=("backend-api/me", "backend-api/conversation/init", "backend-api/accounts/check"),
+    config_schema={
+        "type": "object",
+        "properties": {
+            "base_url": {"type": "string", "const": CHATGPT_WEB_BASE_URL},
+        },
+        "additionalProperties": False,
+    },
     account_flows=(
         ProvisionFlowSpec(
             id="token-import",

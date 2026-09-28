@@ -44,16 +44,17 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
 
 健康检查：`GET http://127.0.0.1:8080/admin/api/healthz`；OpenAPI：`http://127.0.0.1:8080/docs`。管理员会话需配置强密码和随机 session secret；生产不得使用默认值。
 
-### Doubao browser worker（可选）
+### Doubao 原生二维码登录
 
-Doubao 二维码登录的 Playwright worker 是本项目内置的可插拔组件，默认使用
-`NullBrowserWorker`，因此 `uv sync --extra dev` 不会安装或启动 Chromium。需要启用
-真实浏览器时执行 `uv sync --extra browser`，准备受控的 Chromium，然后设置
-`A2A_DOUBAO_BROWSER_ENABLED=true` 和 `A2A_DOUBAO_BROWSER_EXECUTABLE`（可选）。
-worker 在应用 lifespan 中启动和关闭，按 `A2A_DOUBAO_BROWSER_MAX_CONTEXTS`、
-`A2A_DOUBAO_BROWSER_MAX_PAGES_PER_CONTEXT` 限制资源；断开后会清理旧上下文并尝试重启。
-二维码登录完成后只将内存中的 storage state 交给加密 CredentialStore，不写入明文
-`state.json`。Fake/Null worker 可用于单测和未配置环境。
+Doubao 默认使用本项目内置的 HTTP QR worker，不需要安装 Chromium，也不需要设置
+`A2A_DOUBAO_BROWSER_ENABLED`。它直接调用豆包公开的 passport 二维码接口，轮询
+`new/scanned/confirmed` 状态，跟随登录回调收集真实 Cookie，并交给加密
+`CredentialStore`；Cookie 不会出现在管理接口响应中。
+
+如部署场景确实需要浏览器 profile 或页面级能力，仍可执行 `uv sync --extra browser`，
+设置 `A2A_DOUBAO_BROWSER_ENABLED=true` 和可选的
+`A2A_DOUBAO_BROWSER_EXECUTABLE`，此时才切换到 Playwright worker。Fake/Null worker
+只用于单元测试或明确禁用账号授权的环境。
 
 ## 目标开发规则
 
@@ -91,7 +92,7 @@ rg -n "F:\\token-p|wb2api|doubao2api|chatgpt2api|:7863|:7864|:9090|:8000" app te
 | registry/manifest/provision schema/Key scope | 已实现，native provisioner 已接入 |
 | 模型/路由/日志/统计 | 部分已实现，需继续按目标 ports 重构 |
 | WorkBuddy native client + QR provisioner | 已接入；本地 session、账号池和 refresh 已接入，真实平台账号和数据面 E2E 待验收 |
-| Doubao native browser/profile + QR provisioner | 已接入；本地 session、账号池和 profile 生命周期已接入，真实 Chromium/browser worker 和平台调用待验收 |
+| Doubao native HTTP QR + 可选 browser/profile provisioner | HTTP QR、Cookie 加密存储、本地 session 和 profile 生命周期已接入；Playwright 仅用于可选浏览器能力 |
 | ChatGPT native OAuth/token provisioner | 已接入；本地 session、账号池和 OAuth refresh 已接入，真实平台 E2E 待验收 |
 | 管理面 Settings/Users/Playground/渠道覆盖 | 已接入；Playground 流式、真实用户凭据和动态 provider 注册仍未实现 |
 | 本地账号目录和同步接口边界 | provision 成功后写入本地 `accounts`；旧 `/accounts/sync` 已删除 |

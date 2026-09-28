@@ -19,12 +19,15 @@ class WorkBuddyAdapter:
         self, client: WorkBuddyClient, *, provisioner: WorkBuddyProvisioner | None = None
     ) -> None:
         self.client = client
+        self.provisioner = provisioner or WorkBuddyProvisioner(client)
         self._runtime = NativeHttpAdapter(
             self.manifest,
             client.base_url,
             auth_key=client.data_key,
+            chat_path=WorkBuddyClient.CHAT_PATH,
+            credential_store=getattr(self.provisioner, "credential_store", None),
+            channel="wb",
         )
-        self.provisioner = provisioner or WorkBuddyProvisioner(client)
 
     async def health(self, context: Any = None) -> Mapping[str, Any]:
         return await self.client.health()

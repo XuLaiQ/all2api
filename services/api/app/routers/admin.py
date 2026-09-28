@@ -9,7 +9,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 import httpx
@@ -17,9 +17,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.convertors import StringConvertor, register_url_convertor
 
-from app.compat.legacy_bridge import provisioning
 from app.adapters.provisioner import ProvisioningUnsupportedError
 from app.adapters.registry import AdapterSpec, get_registry
+from app.adapters.workbuddy.errors import WorkBuddyError
 from app.application.accounts.lifecycle import (
     AccountLifecycleError,
     AccountLifecycleService,
@@ -30,11 +30,12 @@ from app.application.accounts.service import (
     ProvisionSchemaError,
 )
 from app.application.channels.service import ChannelNotFoundError, ChannelService
+from app.compat.legacy_bridge import provisioning
 from app.config import get_settings
 from app.infrastructure.credentials import AccountNotFoundError
 from app.infrastructure.db import SCHEMA_VERSION, database, resolve_db_path
-from app.scheduler.runtime import account_runtime_snapshot, channel_state, runtime_states
 from app.infrastructure.security import require_admin_request, require_same_origin
+from app.scheduler.runtime import account_runtime_snapshot, channel_state, runtime_states
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(require_admin_request)])
 AdminContext = Annotated[dict, Depends(require_admin_request)]
@@ -569,7 +570,7 @@ def list_request_logs(
             raise HTTPException(status_code=400, detail=f"{label} must be RFC 3339") from None
         if parsed.tzinfo is None:
             raise HTTPException(status_code=400, detail=f"{label} must include a timezone")
-        return int(parsed.astimezone(timezone.utc).timestamp())
+        return int(parsed.astimezone(UTC).timestamp())
 
     from_ts = parse_time(from_time, "from")
     to_ts = parse_time(to_time, "to")
@@ -622,7 +623,7 @@ def list_request_logs(
         "data": [
             {
                 **dict(row),
-                "ts": datetime.fromtimestamp(int(row["ts"]), timezone.utc)
+                "ts": datetime.fromtimestamp(int(row["ts"]), UTC)
                 .isoformat()
                 .replace("+00:00", "Z"),
             }
@@ -646,11 +647,11 @@ def clear_request_logs(request: Request, user: AdminContext) -> dict:
     now = int(time.time())
     log_cutoff = now - retention["log_retention_days"] * 86400
     usage_cutoff_date = (
-        datetime.fromtimestamp(now, timezone.utc).date()
+        datetime.fromtimestamp(now, UTC).date()
         - timedelta(days=retention["usage_retention_days"] - 1)
     )
     usage_cutoff_day = usage_cutoff_date.isoformat()
-    log_cutoff_iso = datetime.fromtimestamp(log_cutoff, timezone.utc).isoformat().replace(
+    log_cutoff_iso = datetime.fromtimestamp(log_cutoff, UTC).isoformat().replace(
         "+00:00", "Z"
     )
     with database(settings.db_path) as conn:
@@ -713,7 +714,7 @@ def list_audit_logs(
             raise HTTPException(status_code=400, detail=f"{label} must be RFC 3339") from None
         if parsed.tzinfo is None:
             raise HTTPException(status_code=400, detail=f"{label} must include a timezone")
-        return int(parsed.astimezone(timezone.utc).timestamp())
+        return int(parsed.astimezone(UTC).timestamp())
 
     from_ts = parse_time(from_time, "from")
     to_ts = parse_time(to_time, "to")
@@ -751,7 +752,7 @@ def list_audit_logs(
         "data": [
             {
                 "id": int(row["id"]),
-                "ts": datetime.fromtimestamp(int(row["ts"]), timezone.utc)
+                "ts": datetime.fromtimestamp(int(row["ts"]), UTC)
                 .isoformat()
                 .replace("+00:00", "Z"),
                 "actor": row["actor"],
@@ -954,7 +955,7 @@ def get_metrics(days: int = Query(default=1, ge=1, le=366)) -> dict:
 
 
 def _usage_period(days: int) -> tuple[str, str]:
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     start = today - timedelta(days=days - 1)
     return start.isoformat(), today.isoformat()
 
@@ -1038,6 +1039,139 @@ def get_usage_by_key(days: int = Query(default=30, ge=1, le=366)) -> dict:
     return _usage_grouped(days, "key")
 
 
+def _recent_usage(hours: int = 48, top: int = 12) -> dict:
+    """Return the real, timestamped usage series used by the overview chart.
+
+    ``usage_daily`` intentionally has no timestamp, so the recent chart reads
+    the request log directly.  Token usage is the chart metric; requests are
+    returned alongside it for tooltip/detail consumers and for deterministic
+    ranking when a provider did not report token counts.
+    """
+    now_ts = int(time.time())
+    start_ts = now_ts - hours * 3600
+    start_dt = datetime.fromtimestamp(start_ts, UTC)
+    end_dt = datetime.fromtimestamp(now_ts, UTC)
+
+    with database(get_settings().db_path) as conn:
+        top_rows = conn.execute(
+            """SELECT l.key_id,
+            COALESCE(k.name,
+                CASE WHEN l.key_id IS NULL THEN '匿名请求' ELSE 'Key #' || l.key_id END
+            ) AS key_name,
+            SUM(CASE WHEN l.usage_reported = 1 THEN l.prompt_tokens ELSE 0 END)
+                AS total_prompt_tokens,
+            SUM(CASE WHEN l.usage_reported = 1 THEN l.completion_tokens ELSE 0 END)
+                AS total_completion_tokens,
+            SUM(CASE WHEN l.usage_reported = 1
+                THEN l.prompt_tokens + l.completion_tokens ELSE 0 END) AS total_tokens,
+            SUM(l.usage_reported) AS usage_reported_requests,
+            COUNT(*) - SUM(l.usage_reported) AS usage_unknown_requests,
+            COUNT(*) AS total_requests
+            FROM request_logs l
+            LEFT JOIN api_keys k ON k.id = l.key_id
+            WHERE l.ts >= ? AND l.ts < ?
+            GROUP BY l.key_id, k.name
+            ORDER BY total_tokens DESC, usage_reported_requests DESC, total_requests DESC,
+                CASE WHEN l.key_id IS NULL THEN 1 ELSE 0 END, l.key_id
+            LIMIT ?""",
+            (start_ts, now_ts, top),
+        ).fetchall()
+
+        if not top_rows:
+            return {
+                "metric": "tokens",
+                "usage_semantics": "reported_tokens",
+                "bucket": "hour",
+                "from": start_dt.isoformat().replace("+00:00", "Z"),
+                "to": end_dt.isoformat().replace("+00:00", "Z"),
+                "series": [],
+            }
+
+        non_null_ids = [row["key_id"] for row in top_rows if row["key_id"] is not None]
+        key_filters: list[str] = []
+        key_values: list[object] = [start_ts, now_ts]
+        if non_null_ids:
+            placeholders = ", ".join("?" for _ in non_null_ids)
+            key_filters.append(f"l.key_id IN ({placeholders})")
+            key_values.extend(non_null_ids)
+        if any(row["key_id"] is None for row in top_rows):
+            key_filters.append("l.key_id IS NULL")
+        point_rows = conn.execute(
+            f"""SELECT CAST(l.ts / 3600 AS INTEGER) * 3600 AS bucket_ts,
+            l.key_id,
+            SUM(CASE WHEN l.usage_reported = 1 THEN l.prompt_tokens ELSE 0 END)
+                AS prompt_tokens,
+            SUM(CASE WHEN l.usage_reported = 1 THEN l.completion_tokens ELSE 0 END)
+                AS completion_tokens,
+            SUM(CASE WHEN l.usage_reported = 1
+                THEN l.prompt_tokens + l.completion_tokens ELSE 0 END) AS tokens,
+            SUM(l.usage_reported) AS usage_reported_requests,
+            COUNT(*) - SUM(l.usage_reported) AS usage_unknown_requests,
+            COUNT(*) AS requests
+            FROM request_logs l
+            WHERE l.ts >= ? AND l.ts < ?
+              AND ({' OR '.join(key_filters)})
+            GROUP BY bucket_ts, l.key_id
+            ORDER BY bucket_ts, l.key_id""",
+            key_values,
+        ).fetchall()
+
+    points_by_key: dict[int | None, dict[int, tuple[int, int, int, int, int, int]]] = {}
+    for row in point_rows:
+        points_by_key.setdefault(row["key_id"], {})[int(row["bucket_ts"])] = (
+            int(row["prompt_tokens"] or 0),
+            int(row["completion_tokens"] or 0),
+            int(row["tokens"] or 0),
+            int(row["usage_reported_requests"] or 0),
+            int(row["usage_unknown_requests"] or 0),
+            int(row["requests"] or 0),
+        )
+    first_bucket_ts = (start_ts // 3600) * 3600
+    last_bucket_ts = (now_ts // 3600) * 3600
+    series = []
+    zero_point = (0, 0, 0, 0, 0, 0)
+    for row in top_rows:
+        key_points = points_by_key.get(row["key_id"], {})
+        points = []
+        for bucket_ts in range(first_bucket_ts, last_bucket_ts + 1, 3600):
+            point = key_points.get(bucket_ts, zero_point)
+            points.append(
+                {
+                    "ts": datetime.fromtimestamp(bucket_ts, UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "prompt_tokens": point[0],
+                    "completion_tokens": point[1],
+                    "tokens": point[2],
+                    "usage_reported_requests": point[3],
+                    "usage_unknown_requests": point[4],
+                    "requests": point[5],
+                }
+            )
+        series.append(
+            {
+                "key_id": row["key_id"],
+                "key_name": row["key_name"],
+                "prompt_tokens": int(row["total_prompt_tokens"] or 0),
+                "completion_tokens": int(row["total_completion_tokens"] or 0),
+                "tokens": int(row["total_tokens"] or 0),
+                "usage_reported_requests": int(row["usage_reported_requests"] or 0),
+                "usage_unknown_requests": int(row["usage_unknown_requests"] or 0),
+                "requests": int(row["total_requests"] or 0),
+                "points": points,
+            }
+        )
+
+    return {
+        "metric": "tokens",
+        "usage_semantics": "reported_tokens",
+        "bucket": "hour",
+        "from": start_dt.isoformat().replace("+00:00", "Z"),
+        "to": end_dt.isoformat().replace("+00:00", "Z"),
+        "series": series,
+    }
+
+
 @router.get("/overview", tags=["overview"])
 def get_overview(days: int = Query(default=30, ge=1, le=366)) -> dict:
     start, end = _usage_period(days)
@@ -1117,6 +1251,7 @@ def get_overview(days: int = Query(default=30, ge=1, le=366)) -> dict:
         "data": {
             "summary": summary,
             "daily": daily,
+            "recent": _recent_usage(),
             "channels": channels,
             "todos": todos,
         }
@@ -1468,7 +1603,9 @@ def _channel_management_state(slug: str) -> dict[str, object] | None:
 
 def _channel_payload(adapter: AdapterSpec) -> dict:
     managed = _channel_management_state(adapter.slug)
-    enabled = bool(managed["enabled"]) if managed is not None else adapter.models_configured
+    management_enabled = bool(managed["enabled"]) if managed is not None else True
+    data_plane_configured = bool(adapter.models_configured)
+    enabled = management_enabled and data_plane_configured
     runtime = channel_state(adapter.slug)
     manifest = getattr(adapter, "manifest", None)
     if manifest is None:
@@ -1483,6 +1620,8 @@ def _channel_payload(adapter: AdapterSpec) -> dict:
         "upstream_base": adapter.base_url,
         "legacy_bridge_enabled": bool(getattr(adapter, "legacy_bridge_enabled", False)),
         "enabled": enabled,
+        "management_enabled": management_enabled,
+        "data_plane_configured": data_plane_configured,
         "management": managed or {"source": "registry"},
         "state": runtime["state"] if enabled else "available",
         "protocols": list(adapter.protocols),
@@ -1567,6 +1706,12 @@ async def _dispatch_provision(
         # remains available during migration, while the target API cannot
         # silently fall back to another project's service.
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except WorkBuddyError as exc:
+        # WorkBuddy's native provisioner already classifies safe, actionable
+        # protocol errors. Preserve that message instead of collapsing a realm
+        # mismatch or invalid completion payload into a generic 502.
+        status = 422 if exc.code in {"invalid_request", "realm_mismatch"} else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except Exception as exc:
         # Native adapters expose a safe status/message pair for expected
         # account-flow failures.  Never forward arbitrary exception text or
@@ -1703,7 +1848,7 @@ async def test_channel(slug: str) -> dict:
             "status": "ok",
             "latency_ms": max(0, int((time.perf_counter() - started) * 1000)),
             "model_count": len(models),
-            "tested_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "tested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
     }
 

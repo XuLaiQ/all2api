@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -10,7 +11,12 @@ from app.adapters.workbuddy.errors import (
     WorkBuddyTimeoutError,
     WorkBuddyTransportError,
 )
-from app.adapters.workbuddy.mapper import normalize_realm
+from app.adapters.workbuddy.mapper import (
+    map_model_payload,
+    merge_model_catalog,
+    normalize_realm,
+    resolve_realm,
+)
 
 
 class AsyncHttpClient(Protocol):
@@ -20,45 +26,113 @@ class AsyncHttpClient(Protocol):
 
 
 class WorkBuddyClient:
-    """Small platform HTTP client used by the native WorkBuddy adapter.
+    """HTTP client for the public WorkBuddy plugin protocol.
 
-    The client knows only the public WorkBuddy authentication protocol.  It accepts
-    an injected ``httpx.AsyncClient`` (or compatible fake) so contract tests never
-    need a running upstream service.
+    The client owns provider-specific paths and headers.  Credential material is
+    accepted only from the caller's local CredentialStore boundary; this class
+    never reads source-project files or management APIs.
     """
+
+    CHAT_PATH = "/v2/chat/completions"
+    CN_MODELS_PATH = "/console/enterprises/personal/models"
+    GLOBAL_MODELS_PATH = "/v2/enterprises/personal/models"
+    V3_CONFIG_PATH = "/v3/config"
 
     def __init__(
         self,
-        base_url: str,
+        base_url: str = "https://copilot.tencent.com",
         *,
+        global_base_url: str = "https://www.workbuddy.ai",
         data_key: str = "",
         http_client: AsyncHttpClient | None = None,
-        timeout: float = 15.0,
-        connect_timeout: float = 3.0,
+        timeout: float = 30.0,
+        connect_timeout: float = 5.0,
+        user_agent: str = "CLI/2.63.2 CodeBuddy/2.63.2",
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.data_key = data_key
+        self.base_url = str(base_url or "https://copilot.tencent.com").rstrip("/")
+        self.global_base_url = str(global_base_url or "https://www.workbuddy.ai").rstrip("/")
+        self.data_key = str(data_key or "")
         self._http_client = http_client
-        self.timeout = timeout
-        self.connect_timeout = connect_timeout
+        self.timeout = float(timeout)
+        self.connect_timeout = float(connect_timeout)
+        self.user_agent = str(user_agent or "CLI/2.63.2 CodeBuddy/2.63.2")
 
-    def _headers(self, realm: str, *, access_token: str = "") -> dict[str, str]:
+    def _base_url(self, realm: str) -> str:
+        return self.global_base_url if normalize_realm(realm) == "global" else self.base_url
+
+    @staticmethod
+    def _stable_id(prefix: str, uid: str) -> str:
+        digest = hashlib.sha256(f"{prefix}:{uid}".encode()).hexdigest()
+        return digest[:32]
+
+    def _headers(
+        self,
+        realm: str,
+        *,
+        access_token: str = "",
+        credentials: Mapping[str, Any] | None = None,
+        accept: str = "application/json",
+    ) -> dict[str, str]:
         resolved = normalize_realm(realm)
+        values = credentials if isinstance(credentials, Mapping) else {}
+        domain = str(values.get("domain") or "").strip()
+        uid = str(values.get("uid") or values.get("user_id") or values.get("userId") or "").strip()
+        enterprise_id = str(
+            values.get("enterprise_id")
+            or values.get("enterpriseId")
+            or values.get("tenant_id")
+            or values.get("tenantId")
+            or ""
+        ).strip()
+        origin = "https://www.workbuddy.ai" if resolved == "global" else "https://copilot.tencent.com"
         headers = {
-            "Accept": "application/json",
+            "Accept": accept,
             "Content-Type": "application/json",
-            "User-Agent": "all2api-workbuddy/1.0",
-            "Origin": "https://copilot.tencent.com"
-            if resolved == "cn"
-            else "https://www.workbuddy.ai",
+            "User-Agent": self.user_agent,
+            "Origin": origin,
+            "Referer": f"{origin}/",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-CodeBuddy-Request": "1",
+            "Accept-Language": "en-US" if resolved == "global" else "zh-CN",
         }
-        if access_token:
-            headers["Authorization"] = f"Bearer {access_token}"
+        token = str(
+            access_token or values.get("access_token") or values.get("accessToken") or ""
+        ).strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         elif self.data_key:
             headers["Authorization"] = f"Bearer {self.data_key}"
+        if uid:
+            headers["X-User-Id"] = uid
+            headers["X-Machine-ID"] = self._stable_id("machine", uid)
+            headers["X-Session-ID"] = self._stable_id("session", uid)
+        if domain:
+            headers["X-Domain"] = domain
+        elif resolved == "global":
+            headers["X-Domain"] = "www.workbuddy.ai"
+        if enterprise_id:
+            headers["X-Enterprise-Id"] = enterprise_id
+            headers["X-Tenant-Id"] = enterprise_id
+        elif resolved == "global":
+            headers["X-No-Enterprise-Id"] = "1"
+        device_token = str(
+            values.get("device_token") or values.get("deviceToken") or ""
+        ).strip()
+        if device_token:
+            headers["X-Device-Token"] = device_token
         return headers
 
-    async def _request(self, method: str, path: str, *, realm: str, **kwargs: Any) -> Any:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        realm: str,
+        credentials: Mapping[str, Any] | None = None,
+        access_token: str = "",
+        **kwargs: Any,
+    ) -> Any:
+        resolved = normalize_realm(realm)
         client = self._http_client
         owned = False
         if client is None:
@@ -69,16 +143,26 @@ class WorkBuddyClient:
         try:
             request = getattr(client, method)
             try:
-                response = await request(f"{self.base_url}{path}", **kwargs)
+                response = await request(
+                    f"{self._base_url(resolved)}{path}",
+                    headers=self._headers(
+                        resolved,
+                        access_token=access_token,
+                        credentials=credentials,
+                    ) | dict(kwargs.pop("headers", {}) or {}),
+                    **kwargs,
+                )
             except httpx.TimeoutException as exc:
-                raise WorkBuddyTimeoutError("WorkBuddy authentication request timed out") from exc
+                raise WorkBuddyTimeoutError("WorkBuddy request timed out") from exc
             except httpx.HTTPError as exc:
-                raise WorkBuddyTransportError("WorkBuddy authentication request failed") from exc
-            status = getattr(response, "status_code", 200)
+                raise WorkBuddyTransportError("WorkBuddy request failed") from exc
+            status = int(getattr(response, "status_code", 200))
+            if status == 401:
+                raise WorkBuddyProtocolError("WorkBuddy credential was rejected")
             if status >= 500:
-                raise WorkBuddyTransportError(f"WorkBuddy authentication returned HTTP {status}")
+                raise WorkBuddyTransportError(f"WorkBuddy returned HTTP {status}")
             if status >= 400:
-                raise WorkBuddyProtocolError(f"WorkBuddy authentication returned HTTP {status}")
+                raise WorkBuddyProtocolError(f"WorkBuddy returned HTTP {status}")
             try:
                 return response.json()
             except (TypeError, ValueError) as exc:
@@ -91,9 +175,9 @@ class WorkBuddyClient:
     def _envelope(payload: Any) -> tuple[int, Mapping[str, Any]]:
         if not isinstance(payload, Mapping):
             raise WorkBuddyProtocolError("WorkBuddy response must be a JSON object")
-        code = payload.get("code", 0)
+        raw_code = payload.get("code", 0)
         try:
-            code = int(code or 0)
+            code = int(raw_code or 0)
         except (TypeError, ValueError) as exc:
             raise WorkBuddyProtocolError("WorkBuddy response code is invalid") from exc
         data = payload.get("data", payload)
@@ -111,11 +195,10 @@ class WorkBuddyClient:
             realm=resolved,
             params={"platform": "CLI"},
             json={},
-            headers=self._headers(resolved),
         )
         code, data = self._envelope(payload)
         if code != 0:
-            raise WorkBuddyProtocolError(f"WorkBuddy rejected QR start (code={code})")
+            raise WorkBuddyProtocolError("WorkBuddy rejected QR start")
         state = str(data.get("state") or "").strip()
         auth_url = str(data.get("authUrl") or data.get("auth_url") or "").strip()
         if not state or not auth_url:
@@ -123,7 +206,7 @@ class WorkBuddyClient:
         return {"state": state, "auth_url": auth_url, "realm": resolved}
 
     async def poll_qr(self, state: str, realm: str = "cn") -> dict[str, Any]:
-        if not state:
+        if not str(state or "").strip():
             raise WorkBuddyProtocolError("WorkBuddy QR state is required")
         resolved = normalize_realm(realm)
         token_payload = await self._request(
@@ -131,18 +214,17 @@ class WorkBuddyClient:
             "/v2/plugin/auth/token",
             realm=resolved,
             params={"state": state},
-            headers=self._headers(resolved),
         )
         code, data = self._envelope(token_payload)
-        if code != 0 or not data.get("accessToken") and not data.get("access_token"):
+        access_token = str(data.get("accessToken") or data.get("access_token") or "").strip()
+        if code != 0 or not access_token:
             return {"status": "waiting", "realm": resolved}
-        access_token = str(data.get("accessToken") or data.get("access_token") or "")
         account_payload = await self._request(
             "get",
             "/v2/plugin/login/account",
             realm=resolved,
+            access_token=access_token,
             params={"state": state},
-            headers=self._headers(resolved, access_token=access_token),
         )
         account_code, account = self._envelope(account_payload)
         if account_code != 0:
@@ -150,12 +232,13 @@ class WorkBuddyClient:
         uid = account.get("uid") or account.get("userId") or account.get("user_id")
         if not uid:
             return {"status": "waiting", "realm": resolved}
-        # The account response is authoritative for the tenant/realm.  Keep it
-        # in the native result so the provisioner can reject a callback that
-        # belongs to a different realm than the one selected at start time.
+        # The selected login realm is authoritative.  The account endpoint
+        # often omits ``realm`` and ``domain`` after a successful global login;
+        # resolving an empty response would incorrectly fall back to ``cn``
+        # and make a valid global session fail the provisioner mismatch check.
         account_realm = resolved
-        if account.get("realm"):
-            account_realm = normalize_realm(str(account.get("realm")))
+        if account.get("realm") or account.get("domain"):
+            account_realm = resolve_realm(account.get("realm"), account.get("domain"))
         return {
             "status": "ready",
             "realm": account_realm,
@@ -175,13 +258,6 @@ class WorkBuddyClient:
         *,
         account_id: str = "",
     ) -> dict[str, Any]:
-        """Refresh one account without exposing token material to callers.
-
-        The endpoint is the same public WorkBuddy plugin endpoint used by the
-        native gateway.  ``account_id`` is only used for non-secret identity
-        headers; the refresh token stays inside this client call.
-        """
-
         if not isinstance(credentials, Mapping):
             raise WorkBuddyProtocolError("WorkBuddy credentials are invalid")
         refresh = str(
@@ -189,79 +265,92 @@ class WorkBuddyClient:
         ).strip()
         if not refresh:
             raise WorkBuddyProtocolError("WorkBuddy credentials have no refresh token")
-        realm = normalize_realm(credentials.get("realm", "cn"))
-        access = str(
-            credentials.get("access_token") or credentials.get("accessToken") or ""
-        ).strip()
-        headers = self._headers(realm, access_token=access)
-        headers["X-Refresh-Token"] = refresh
-        headers["X-Auth-Refresh-Source"] = "plugin"
-        native_id = str(account_id or "")
-        if ":" in native_id:
-            _realm, uid = native_id.split(":", 1)
-            if uid:
-                headers["X-User-Id"] = uid
-        domain = str(credentials.get("domain") or "").strip()
-        if domain:
-            headers["X-Domain"] = domain
-        enterprise_id = str(
-            credentials.get("enterprise_id") or credentials.get("enterpriseId") or ""
-        ).strip()
-        if enterprise_id:
-            headers["X-Enterprise-Id"] = enterprise_id
-            headers["X-Tenant-Id"] = enterprise_id
+        realm = resolve_realm(credentials.get("realm"), credentials.get("domain"))
+        headers = {"X-Refresh-Token": refresh, "X-Auth-Refresh-Source": "plugin"}
         payload = await self._request(
             "post",
             "/v2/plugin/auth/token/refresh",
             realm=realm,
+            credentials=credentials,
+            access_token=str(
+                credentials.get("access_token") or credentials.get("accessToken") or ""
+            ),
             headers=headers,
         )
         code, data = self._envelope(payload)
         if code != 0:
             raise WorkBuddyProtocolError("WorkBuddy rejected token refresh")
-        refreshed_access = str(
-            data.get("accessToken") or data.get("access_token") or ""
-        ).strip()
-        if not refreshed_access:
+        access = str(data.get("accessToken") or data.get("access_token") or "").strip()
+        if not access:
             raise WorkBuddyProtocolError("WorkBuddy refresh response has no access token")
         return {
-            "access_token": refreshed_access,
-            "refresh_token": str(
-                data.get("refreshToken") or data.get("refresh_token") or refresh
-            ),
+            "access_token": access,
+            "refresh_token": str(data.get("refreshToken") or data.get("refresh_token") or refresh),
             "device_token": str(
-                data.get("deviceToken") or data.get("device_token")
-                or credentials.get("device_token") or ""
+                data.get("deviceToken")
+                or data.get("device_token")
+                or credentials.get("device_token")
+                or ""
             ),
             "expires_at": int(data.get("expiresAt") or data.get("expires_at") or 0),
             "realm": realm,
-            "domain": str(data.get("domain") or domain),
+            "domain": str(data.get("domain") or credentials.get("domain") or ""),
         }
 
-    async def list_models(self) -> list[dict[str, Any]]:
-        payload = await self._request(
-            "get",
-            "/v1/models",
-            realm="cn",
-            headers=self._headers("cn"),
+    async def list_models(
+        self,
+        realm: str = "cn",
+        credentials: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        resolved = resolve_realm(
+            realm,
+            credentials.get("domain") if isinstance(credentials, Mapping) else "",
         )
-        if isinstance(payload, list):
-            items = payload
-        elif isinstance(payload, Mapping) and isinstance(payload.get("data"), list):
-            items = payload["data"]
-        else:
-            return []
-        return [
-            dict(item)
-            for item in items
-            if isinstance(item, Mapping) and isinstance(item.get("id"), str)
-        ]
+        failures: list[Exception] = []
+        primary: list[dict[str, Any]] = []
+        secondary: list[dict[str, Any]] = []
+        try:
+            v3 = await self._request(
+                "get",
+                self.V3_CONFIG_PATH,
+                realm=resolved,
+                credentials=credentials,
+            )
+            primary = map_model_payload(v3, realm=resolved)
+        except Exception as exc:
+            failures.append(exc)
+        try:
+            path = self.GLOBAL_MODELS_PATH if resolved == "global" else self.CN_MODELS_PATH
+            enterprise = await self._request(
+                "get",
+                path,
+                realm=resolved,
+                credentials=credentials,
+            )
+            secondary = map_model_payload(enterprise, realm=resolved, enterprise=True)
+        except Exception as exc:
+            failures.append(exc)
+        merged = merge_model_catalog(primary, secondary)
+        if merged:
+            return merged
+        if failures and all(isinstance(item, WorkBuddyTimeoutError) for item in failures):
+            raise WorkBuddyTimeoutError("WorkBuddy model request timed out") from failures[-1]
+        if failures:
+            raise WorkBuddyProtocolError(
+                "WorkBuddy model catalogue is unavailable"
+            ) from failures[-1]
+        return []
 
     async def health(self) -> dict[str, Any]:
         try:
             await self.list_models()
+        except WorkBuddyTimeoutError:
+            return {"status": "timeout"}
         except WorkBuddyTransportError:
             return {"status": "platform_unavailable"}
         except WorkBuddyProtocolError:
             return {"status": "protocol_error"}
         return {"status": "ok"}
+
+
+__all__ = ["AsyncHttpClient", "WorkBuddyClient"]

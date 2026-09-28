@@ -36,6 +36,37 @@ class MemoryCredentialStore:
         self.records.pop(credential_ref, None)
 
 
+class NonRetainingCredentialStore:
+    """Credential port sink for browser smoke tests.
+
+    The real browser may produce storage state after an authenticated profile
+    is opened.  This store accepts the mapping only to complete the provision
+    contract, creates a safe reference, and never inspects or retains it.
+    """
+
+    def __init__(self) -> None:
+        self._writes = 0
+
+    async def atomic_write(
+        self,
+        channel: str,
+        account_id: str,
+        _credentials: Mapping[str, Any],
+    ) -> str:
+        channel = str(channel or "").strip()
+        account_id = str(account_id or "").strip()
+        if not channel or not account_id:
+            raise ValueError("channel and account id are required")
+        self._writes += 1
+        return f"cred_{channel}_{self._writes}"
+
+    async def read(self, channel: str, account_id: str) -> None:
+        return None
+
+    async def delete(self, credential_ref: str) -> None:
+        return None
+
+
 async def store_credentials(
     store: CredentialStore,
     account_id: str,
@@ -62,4 +93,10 @@ async def delete_credentials(store: CredentialStore, credential_ref: str) -> Non
         await result
 
 
-__all__ = ["CredentialStore", "MemoryCredentialStore", "delete_credentials", "store_credentials"]
+__all__ = [
+    "CredentialStore",
+    "MemoryCredentialStore",
+    "NonRetainingCredentialStore",
+    "delete_credentials",
+    "store_credentials",
+]

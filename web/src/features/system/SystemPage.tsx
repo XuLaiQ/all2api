@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { DataTable } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
   fetchAdminSettings,
@@ -163,9 +164,9 @@ export function SystemPage() {
 
           <section className="data-section surface-panel" aria-labelledby="channel-config-title">
             <div className="section-heading"><div><h2 id="channel-config-title">渠道配置</h2><p>配置状态来自本地环境，不代表上游在线</p></div></div>
-            <div className="table-wrap"><table className="data-table system-channel-table"><thead><tr><th>渠道</th><th>模型接口</th><th>账号接口</th></tr></thead><tbody>
+            <DataTable className="system-channel-table" ariaLabel="渠道配置列表"><thead><tr><th>渠道</th><th>模型接口</th><th>账号接口</th></tr></thead><tbody>
               {(info?.channels ?? []).map((channel) => <tr key={channel.slug}><td className="channel-name">{channel.slug}</td><td>{channel.models_configured ? "已配置" : "未配置"}</td><td>{channel.accounts_configured ? "已配置" : "未配置"}</td></tr>)}
-            </tbody></table></div>
+            </tbody></DataTable>
           </section>
 
           <section className="data-section surface-panel" aria-labelledby="system-settings-title">

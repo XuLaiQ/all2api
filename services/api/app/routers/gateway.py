@@ -4,7 +4,8 @@ import asyncio
 import json
 import re
 import time
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import httpx
@@ -15,7 +16,9 @@ from starlette.background import BackgroundTask
 from app.adapters.native_runtime import CAPABILITY_PATHS, normalize_capability
 from app.adapters.registry import AdapterSpec, get_registry
 from app.config import get_settings
+from app.domain.scope import decode_key_scope, model_allowed, scope_decision
 from app.infrastructure.db import database
+from app.infrastructure.security import require_api_key
 from app.protocols.anthropic import (
     AnthropicRequestError,
     anthropic_error_payload,
@@ -30,6 +33,7 @@ from app.protocols.responses import (
     normalize_responses_request,
     responses_sse,
 )
+from app.routers.models import adapter_catalogue_enabled, fetch_adapter_models, upsert_model_cache
 from app.scheduler.pool import (
     AccountCandidate,
     account_candidates,
@@ -47,8 +51,6 @@ from app.scheduler.runtime import (
     record_transient_failure,
     retry_after_seconds,
 )
-from app.domain.scope import decode_key_scope, model_allowed, scope_decision
-from app.infrastructure.security import require_api_key
 
 router = APIRouter(prefix="/v1")
 KeyContext = Annotated[dict, Depends(require_api_key)]
@@ -101,6 +103,22 @@ def _local_account_snapshot_exists(channel: str) -> bool:
         ).fetchone() is not None
 
 
+def _channel_management_enabled(channel: str) -> bool:
+    """Return the persisted local enablement override for a channel.
+
+    The registry describes what is installed; the channels table describes the
+    administrator's current runtime decision. Keep those concerns separate so
+    disabling a channel actually gates both direct models and aliases.
+    """
+
+    with database(get_settings().db_path) as conn:
+        row = conn.execute(
+            "SELECT enabled FROM channels WHERE slug = ?",
+            (str(channel),),
+        ).fetchone()
+    return row is None or bool(row["enabled"])
+
+
 def _log_request(
     *,
     request_id: str,
@@ -121,7 +139,7 @@ def _log_request(
     fallback_depth: int = 0,
 ) -> None:
     ts = int(time.time())
-    day = datetime.fromtimestamp(ts, timezone.utc).date().isoformat()
+    day = datetime.fromtimestamp(ts, UTC).date().isoformat()
     with database(get_settings().db_path) as conn:
         conn.execute(
             """INSERT INTO request_logs
@@ -236,6 +254,8 @@ def _resolve_targets(
             raise HTTPException(status_code=401, detail="invalid_api_key_scope")
         if decision != "allowed":
             raise HTTPException(status_code=403, detail=decision)
+        if not _channel_management_enabled(channel):
+            raise HTTPException(status_code=503, detail="channel_disabled")
         if not adapter.models_configured and not (
             getattr(adapter, "runtime", None) is not None
             and _local_account_snapshot_exists(channel)
@@ -287,6 +307,9 @@ def _resolve_targets(
         if not channel_allowed or not target_allowed:
             continue
         has_authorized_target = True
+        if not _channel_management_enabled(target_channel):
+            disabled_channels.add(target_channel)
+            continue
         if adapter and not adapter.models_configured and not (
             getattr(adapter, "runtime", None) is not None
             and _local_account_snapshot_exists(target_channel)
@@ -555,9 +578,14 @@ def _extract_sse_usage(buffer: bytes) -> tuple[bytes, tuple[int, int] | None]:
 @router.get("/models", tags=["gateway"], response_model=None)
 async def list_models(key: KeyContext) -> dict:
     adapters = get_registry()
-    configured = [adapter for adapter in adapters.values() if adapter.models_configured]
+    db_path = get_settings().db_path
+    configured = [
+        adapter
+        for adapter in adapters.values()
+        if adapter_catalogue_enabled(adapter, db_path)
+    ]
     results = await asyncio.gather(
-        *(adapter.list_models() for adapter in configured),
+        *(fetch_adapter_models(adapter) for adapter in configured),
         return_exceptions=True,
     )
     failures = [
@@ -566,12 +594,13 @@ async def list_models(key: KeyContext) -> dict:
         if isinstance(result, Exception)
     ]
     models: list[dict[str, Any]] = []
-    rows: list[tuple[str, str, str, str, str, str]] = []
     now = int(time.time())
     for adapter, result in zip(configured, results, strict=True):
         if isinstance(result, Exception):
             continue
-        for item in result:
+        items = [dict(item) for item in result if isinstance(item, Mapping) and item.get("id")]
+        upsert_model_cache(adapter.slug, items, db_path=db_path)
+        for item in items:
             upstream_id = item.get("id")
             if not isinstance(upstream_id, str) or not upstream_id:
                 continue
@@ -579,8 +608,6 @@ async def list_models(key: KeyContext) -> dict:
             if not _allowed(key, adapter.slug, model_id):
                 continue
             display_name = str(item.get("name") or item.get("display_name") or upstream_id)
-            kind = str(item.get("kind") or "chat")
-            caps = item.get("caps") if isinstance(item.get("caps"), list) else ["chat"]
             models.append(
                 {
                     "id": model_id,
@@ -589,18 +616,6 @@ async def list_models(key: KeyContext) -> dict:
                     "owned_by": adapter.slug,
                     "name": display_name,
                 }
-            )
-            rows.append(
-                (model_id, adapter.slug, upstream_id, display_name, kind, json.dumps(caps))
-            )
-    if rows:
-        with database(get_settings().db_path) as conn:
-            conn.executemany(
-                """INSERT INTO models(id, channel, upstream_id, display_name, kind, caps, enabled)
-                VALUES (?, ?, ?, ?, ?, ?, 1)
-                ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,
-                kind=excluded.kind, caps=excluded.caps""",
-                rows,
             )
         with database(get_settings().db_path) as conn:
             enabled_ids = {

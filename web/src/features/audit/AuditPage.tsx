@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiClientError } from "../../api/client";
+import { DataTable, TableState } from "../../app/data/DataTable";
+import { Pagination } from "../../app/data/Pagination";
 import { fetchAuditLogs, type AuditFilters, type AuditRecord } from "./auditApi";
 import { DateInput } from "../../app/controls/DateInput";
 
@@ -100,25 +102,17 @@ export function AuditPage() {
       {error && <div className="notice notice-error" role="alert"><span>{error}</span><button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button></div>}
 
       {loading ? (
-        <div className="table-state" aria-live="polite">正在读取审计日志…</div>
+        <TableState live>正在读取审计日志…</TableState>
       ) : rows.length === 0 ? (
-        <div className="table-state">没有符合条件的审计记录</div>
+        <TableState>没有符合条件的审计记录</TableState>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table audit-table">
+        <DataTable className="audit-table" ariaLabel="审计日志列表">
             <thead><tr><th>时间 (UTC)</th><th>操作者</th><th>操作</th><th>目标</th><th>摘要</th></tr></thead>
             <tbody>{rows.map((row) => <AuditRow key={row.id} row={row} />)}</tbody>
-          </table>
-        </div>
+        </DataTable>
       )}
 
-      <div className="log-pagination">
-        <span>第 {page} / {Math.max(totalPages, 1)} 页 · 共 {new Intl.NumberFormat("zh-CN").format(total)} 条</span>
-        <div>
-          <button type="button" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button>
-          <button type="button" disabled={loading || page >= totalPages} onClick={() => setPage((value) => value + 1)}>下一页</button>
-        </div>
-      </div>
+      <Pagination page={page} totalPages={totalPages} total={total} loading={loading} onPageChange={setPage} />
     </main>
   );
 }

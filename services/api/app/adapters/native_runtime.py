@@ -126,6 +126,10 @@ class NativeHttpAdapter:
             # request parameter; this header preserves the value for HTTP
             # runtimes and test transports that map it server-side.
             result["X-Ms-Token"] = str(ms_token)
+        for header in ("Origin", "Referer", "User-Agent", "Accept-Language"):
+            value = normalized.get(header.lower())
+            if value:
+                result[header] = str(value)
         for key, value in credentials.items():
             name = str(key)
             if name.lower().startswith("x-") and value is not None:
@@ -218,9 +222,13 @@ class NativeHttpAdapter:
     async def list_models(self, context: Any = None) -> list[Mapping[str, Any]]:
         """Read the provider catalogue and return only object-shaped entries."""
 
+        credentials = await self._account_credentials(context)
         client, owned = self._client()
         try:
-            response = await client.get(self._url(self.models_path), headers=self._headers())
+            response = await client.get(
+                self._url(self.models_path),
+                headers=self._headers(credentials=credentials),
+            )
             response.raise_for_status()
             payload = response.json()
         finally:
@@ -271,6 +279,11 @@ class NativeHttpAdapter:
 
         _model, payload, headers, _stream = self._payload(request)
         credentials = await self._account_credentials(account)
+        if normalized == "chat" and self.channel == "wb":
+            from app.adapters.workbuddy.mapper import prepare_chat_payload
+
+            realm = str(credentials.get("realm") or "cn")
+            payload = prepare_chat_payload(payload, realm=realm)
         client, owned = self._client()
         try:
             response = await client.post(

@@ -20,6 +20,7 @@ from .browser import (
 from .credentials import CredentialStore, MemoryCredentialStore
 from .manifest import DOUBAO_MANIFEST, build_manifest
 from .mapper import map_account, map_browser_event, map_profile
+from .native_qr import NativeDoubaoQrWorker
 from .provisioner import DoubaoProfile, DoubaoProfileStore, DoubaoProvisioner
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "FakeBrowserWorker",
     "MemoryCredentialStore",
     "NullBrowserWorker",
+    "NativeDoubaoQrWorker",
     "PlaywrightBrowserWorker",
     "browser_worker_from_settings",
     "build_adapter",

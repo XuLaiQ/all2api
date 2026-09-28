@@ -15,7 +15,6 @@ from app.adapters.native_runtime import NativeHttpAdapter, NativeStream
 
 from .browser import (
     BrowserWorker,
-    NullBrowserWorker,
     build_browser_worker,
     maybe_await,
 )
@@ -23,6 +22,7 @@ from .credentials import CredentialStore, MemoryCredentialStore
 from .errors import safe_error
 from .manifest import DOUBAO_MANIFEST
 from .mapper import map_account
+from .native_qr import NativeDoubaoQrWorker
 from .provisioner import DoubaoProvisioner
 
 
@@ -45,7 +45,7 @@ class DoubaoAdapter:
         self.manifest = manifest or DOUBAO_MANIFEST
         self.provisioner = provisioner or DoubaoProvisioner(
             profile_root=profile_root,
-            browser_worker=browser_worker or NullBrowserWorker(),
+            browser_worker=browser_worker or NativeDoubaoQrWorker(),
             credential_store=credential_store or MemoryCredentialStore(),
             manifest=self.manifest,
         )
@@ -76,6 +76,11 @@ class DoubaoAdapter:
             "channel": self.manifest.slug,
             "worker": worker_health,
         }
+
+    async def startup(self) -> None:
+        """Start channel-owned browser resources when the adapter is embedded."""
+
+        await self.provisioner.startup()
 
     async def list_models(self, context: Any = None) -> list[Mapping[str, Any]]:
         """Return models supplied by an already migrated catalogue port.
@@ -126,7 +131,9 @@ class DoubaoAdapter:
             yield chunk
 
     async def shutdown(self) -> None:
-        """Close an injected runtime client when the composition root owns it."""
+        """Close channel-owned browser resources and any injected runtime client."""
+
+        await self.provisioner.shutdown()
 
         if self.runtime is not None and getattr(self.runtime, "_http_client", None) is None:
             # NativeHttpAdapter creates short-lived clients per request, so no
@@ -176,9 +183,14 @@ def create_adapter(
         platform_key = getattr(settings, "doubao_api_key", "")
         if hasattr(platform_key, "get_secret_value"):
             platform_key = platform_key.get_secret_value()
+    configured_worker = (
+        browser_worker_from_settings(settings)
+        if bool(getattr(settings, "doubao_browser_enabled", False))
+        else NativeDoubaoQrWorker.from_settings(settings)
+    )
     return build_adapter(
         profile_root=getattr(settings, "doubao_profile_root", "./data/doubao/profiles"),
-        browser_worker=browser_worker or browser_worker_from_settings(settings),
+        browser_worker=browser_worker or configured_worker,
         credential_store=credential_store,
         base_url=str(getattr(settings, "doubao_platform_base", "") or ""),
         auth_key=str(platform_key or ""),

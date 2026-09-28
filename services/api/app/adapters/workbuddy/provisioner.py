@@ -12,6 +12,7 @@ from app.adapters.workbuddy.client import WorkBuddyClient
 from app.adapters.workbuddy.errors import (
     WorkBuddyCredentialStoreError,
     WorkBuddyInvalidRequestError,
+    WorkBuddyProtocolError,
     WorkBuddyRealmMismatchError,
     WorkBuddySessionExpiredError,
     WorkBuddySessionNotFoundError,
@@ -20,12 +21,13 @@ from app.adapters.workbuddy.errors import (
 from app.adapters.workbuddy.manifest import WORKBUDDY_FLOW, WORKBUDDY_MANIFEST
 from app.adapters.workbuddy.mapper import (
     credential_record,
+    import_record,
     map_account,
     normalize_realm,
     session_view,
 )
-from app.infrastructure.credentials import record_account
 from app.domain.channel import ProvisionFlowSpec
+from app.infrastructure.credentials import record_account
 from app.infrastructure.provision_state import ProvisionStateStore
 
 
@@ -96,6 +98,7 @@ class WorkBuddyProvisioner:
         self.state_store = state_store
         self._sessions: dict[str, _Session] = {}
         self._start_idempotency: dict[str, str] = {}
+        self._import_idempotency: dict[str, dict[str, Any]] = {}
         self._disabled_accounts: set[str] = set()
         self._deleted_accounts: set[str] = set()
         self._lock = asyncio.Lock()
@@ -142,6 +145,83 @@ class WorkBuddyProvisioner:
 
     def describe(self) -> tuple[ProvisionFlowSpec, ...]:
         return self.flows
+
+    async def import_accounts(
+        self,
+        payload: Mapping[str, Any],
+        idempotency_key: str,
+    ) -> Mapping[str, Any]:
+        """Import administrator-supplied token bundles into local storage.
+
+        This path deliberately accepts explicit payload material only.  It does
+        not scan WorkBuddy auth files or call a source project's management API.
+        """
+
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise WorkBuddyInvalidRequestError("idempotency_key is required")
+        if not isinstance(payload, Mapping):
+            raise WorkBuddyInvalidRequestError("import payload must be an object")
+        unknown = set(payload) - {"accounts"}
+        if unknown:
+            raise WorkBuddyInvalidRequestError(f"unknown payload field: {sorted(unknown)[0]}")
+        cached = self._import_idempotency.get(key)
+        if cached is not None:
+            return dict(cached)
+        if self.state_store is not None:
+            durable = self.state_store.get_idempotency("wb", "import", key, now=self._now())
+            if durable is not None:
+                result = dict(durable.response)
+                self._import_idempotency[key] = result
+                return result
+        items = payload.get("accounts")
+        if not isinstance(items, list):
+            raise WorkBuddyInvalidRequestError("accounts must be an array")
+        added = 0
+        skipped = 0
+        errors: list[str] = []
+        accounts: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in items:
+            try:
+                record = import_record(item, now=self._now())
+                account = dict(record["account"])
+                native_id = str(account["native_id"])
+                if native_id in seen:
+                    skipped += 1
+                    continue
+                seen.add(native_id)
+                credential_ref = await self.credential_store.atomic_write(
+                    "wb", native_id, record["credentials"]
+                )
+                await record_account(self.credential_store, "wb", account, str(credential_ref))
+                account["ext"] = {"credential_ref": str(credential_ref)}
+                accounts.append(account)
+                added += 1
+            except (ValueError, WorkBuddyProtocolError, WorkBuddyInvalidRequestError):
+                errors.append("account item is invalid")
+            except Exception as exc:
+                raise WorkBuddyCredentialStoreError(
+                    "could not persist WorkBuddy credentials"
+                ) from exc
+        result: dict[str, Any] = {
+            "status": "success" if not errors else ("partial" if added else "error"),
+            "added": added,
+            "skipped": skipped,
+            "refreshed": 0,
+            "errors": errors,
+            "accounts": accounts,
+        }
+        self._import_idempotency[key] = dict(result)
+        if self.state_store is not None:
+            self.state_store.remember_idempotency(
+                "wb",
+                "import",
+                key,
+                result,
+                expires_at=self._now() + self.ttl_seconds,
+            )
+        return result
 
     def _now(self) -> float:
         return float(self.clock())

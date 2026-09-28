@@ -7,13 +7,16 @@ onboarding lives in :mod:`provisioner` and never calls a legacy management API.
 from __future__ import annotations
 
 import hashlib
+import inspect
 from collections.abc import Mapping
 from typing import Any
 
 import httpx
 
-from app.adapters.native_runtime import NativeHttpAdapter
+from app.adapters.native_runtime import NativeHttpAdapter, NativeStream
 
+from .client import ChatGPTWebClient
+from .errors import ChatGPTError, map_error
 from .manifest import CHATGPT_MANIFEST
 
 _TIMEOUT = httpx.Timeout(15, connect=3)
@@ -144,9 +147,13 @@ class ChatGPTAdapter:
         *,
         auth_key: str = "",
         http_client: httpx.AsyncClient | Any | None = None,
+        credential_store: Any | None = None,
+        web_base_url: str = "https://chatgpt.com",
     ) -> None:
         self.base_url = str(base_url or "").rstrip("/")
         self.auth_key = str(auth_key or "")
+        self.credential_store = credential_store
+        self.web_base_url = str(web_base_url or "https://chatgpt.com").rstrip("/")
         self._runtime = NativeHttpAdapter(
             self.manifest,
             self.base_url,
@@ -154,7 +161,43 @@ class ChatGPTAdapter:
             http_client=http_client,
         )
 
+    async def _credentials(self, account: Any) -> dict[str, Any]:
+        if isinstance(account, Mapping) and isinstance(account.get("credentials"), Mapping):
+            return dict(account["credentials"])
+        if self.credential_store is None or not isinstance(account, Mapping):
+            return {}
+        reader = getattr(self.credential_store, "read", None)
+        if not callable(reader):
+            return {}
+        candidates: list[str] = []
+        for key in ("native_id", "account_id", "lease_account_id", "id"):
+            value = str(account.get(key) or "").strip()
+            if not value:
+                continue
+            candidates.append(value)
+            if value.startswith("chatgpt:"):
+                candidates.append(value[len("chatgpt:") :])
+        for account_id in dict.fromkeys(candidates):
+            value = reader("chatgpt", account_id)
+            if inspect.isawaitable(value):
+                value = await value
+            if isinstance(value, Mapping):
+                return dict(value)
+        return {}
+
+    async def _web_client(self, account: Any) -> ChatGPTWebClient:
+        credentials = await self._credentials(account)
+        if not credentials:
+            raise ChatGPTError("ChatGPT local account credentials are unavailable", status_code=401)
+        return ChatGPTWebClient(credentials, base_url=self.web_base_url)
+
     async def health(self, context: Any = None) -> Mapping[str, Any]:
+        if isinstance(context, Mapping) and context.get("credentials"):
+            try:
+                await (await self._web_client(context["credentials"])).account_info()
+            except Exception as exc:
+                return map_error(exc)
+            return {"status": "ok"}
         if isinstance(context, Mapping) and context.get("base_url"):
             runtime = NativeHttpAdapter(
                 self.manifest,
@@ -165,6 +208,11 @@ class ChatGPTAdapter:
         return await self._runtime.health(context)
 
     async def list_models(self, context: Any) -> list[dict[str, Any]]:
+        if isinstance(context, Mapping) and isinstance(context.get("credentials"), Mapping):
+            return await ChatGPTWebClient(
+                context["credentials"],
+                base_url=self.web_base_url,
+            ).list_models()
         return await list_models(str(context.get("base_url", "")), str(context.get("auth_key", "")))
 
     async def list_accounts(self, context: Any) -> list[dict[str, Any]]:
@@ -173,14 +221,26 @@ class ChatGPTAdapter:
         )
 
     async def invoke(self, request: Any, account: Any = None) -> Any:
-        return await self._runtime.invoke(request, account)
+        return await (await self._web_client(account)).invoke(self._payload(request))
 
     async def invoke_capability(self, capability: str, request: Any, account: Any = None) -> Any:
-        return await self._runtime.invoke_capability(capability, request, account)
+        if capability != "chat":
+            raise ChatGPTError("ChatGPT capability is not supported", status_code=400)
+        return await self.invoke(request, account)
 
     async def invoke_stream(self, request: Any, account: Any = None):
-        async for chunk in self._runtime.invoke_stream(request, account):
-            yield chunk
+        handle = await self.open_stream(request, account)
+        try:
+            async for chunk in handle.response.aiter_bytes():
+                yield chunk
+        finally:
+            await handle.response.aclose()
+            await handle.client.aclose()
+
+    async def open_stream(self, request: Any, account: Any = None) -> NativeStream:
+        response = await (await self._web_client(account)).chat(self._payload(request))
+        client = httpx.AsyncClient()
+        return NativeStream(client=client, response=response)
 
     async def chat(self, request: Any, account: Any = None) -> Any:
         return await self.invoke(request, account)
@@ -190,6 +250,8 @@ class ChatGPTAdapter:
             yield chunk
 
     def map_error(self, error: Exception) -> Mapping[str, Any]:
+        if isinstance(error, ChatGPTError):
+            return error.as_dict()
         if isinstance(error, httpx.TimeoutException):
             return {
                 "code": "upstream_timeout",
@@ -203,3 +265,17 @@ class ChatGPTAdapter:
                 "retryable": True,
             }
         return {"code": "internal", "message": "upstream adapter failed", "retryable": False}
+
+    @staticmethod
+    def _payload(request: Any) -> dict[str, Any]:
+        if isinstance(request, Mapping):
+            payload = request.get("payload")
+            if isinstance(payload, Mapping):
+                return dict(payload)
+            return {
+                str(key): value
+                for key, value in request.items()
+                if key not in {"headers", "stream"}
+            }
+        payload = getattr(request, "payload", None)
+        return dict(payload) if isinstance(payload, Mapping) else {}

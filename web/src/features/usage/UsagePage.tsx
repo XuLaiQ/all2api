@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiClientError } from "../../api/client";
+import { DataTable, TableState } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
   fetchUsageRows,
@@ -142,12 +143,11 @@ export function UsagePage() {
         </div>
 
         {loading ? (
-          <div className="table-state" aria-live="polite">正在读取用量…</div>
+          <TableState live>正在读取用量…</TableState>
         ) : rows.length === 0 ? (
-          <div className="table-state">所选范围内没有用量记录</div>
+          <TableState>所选范围内没有用量记录</TableState>
         ) : (
-          <div className="table-wrap">
-            <table className="data-table usage-table">
+          <DataTable className="usage-table" ariaLabel="用量明细列表">
               <thead><UsageHeader group={group} /></thead>
               <tbody>
                 {rows.map((row) => (
@@ -159,8 +159,7 @@ export function UsagePage() {
                   />
                 ))}
               </tbody>
-            </table>
-          </div>
+          </DataTable>
         )}
       </section>
     </main>

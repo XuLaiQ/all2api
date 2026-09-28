@@ -1,8 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
+import { RefreshCw } from "lucide-react";
 import { ApiClientError } from "../../api/client";
+import { DataTable, TableState } from "../../app/data/DataTable";
+import { Pagination } from "../../app/data/Pagination";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
-import { fetchModels, setModelEnabled, type ModelFilters, type ModelRecord } from "./modelsApi";
+import { fetchModels, refreshModels, setModelEnabled, type ModelFilters, type ModelRecord } from "./modelsApi";
 import { Select } from "../../app/controls/Select";
 
 type DraftFilters = { channel: string; kind: string; enabled: string; search: string };
@@ -27,7 +30,10 @@ export function ModelsPage() {
   const [error, setError] = useState("");
   const [pending, setPending] = useState<ModelRecord | null>(null);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [catalogMessage, setCatalogMessage] = useState("");
   const [retry, setRetry] = useState(0);
+  const initialRefreshDone = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -56,6 +62,32 @@ export function ModelsPage() {
       });
     return () => controller.abort();
   }, [page, filters, retry]);
+
+  const refreshCatalog = useCallback(async () => {
+    setRefreshing(true);
+    setError("");
+    setCatalogMessage("");
+    try {
+      const result = await refreshModels();
+      const failed = result.channels.filter((item) => item.status === "failed");
+      setCatalogMessage(
+        failed.length > 0
+          ? `已同步 ${result.total} 个真实模型；${failed.map((item) => item.channel).join("、")} 渠道暂不可用或超时`
+          : `已从真实渠道同步 ${result.total} 个模型`,
+      );
+      setRetry((value) => value + 1);
+    } catch (cause: unknown) {
+      setError(cause instanceof ApiClientError ? cause.message : "刷新真实模型目录失败");
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!canManage || initialRefreshDone.current) return;
+    initialRefreshDone.current = true;
+    void refreshCatalog();
+  }, [canManage, refreshCatalog]);
 
   function applyFilters() {
     const next: ModelFilters = {};
@@ -89,8 +121,12 @@ export function ModelsPage() {
         <div>
           <span className="page-eyebrow">MODEL CATALOG</span>
           <h1>模型目录</h1>
-          <p>{total} 个已观测模型 · 本地缓存，不代表上游实时探测</p>
+          <p>{total} 个模型 · 目录来自真实渠道接口，结果缓存在本地</p>
         </div>
+        {canManage && <button className="secondary-action-button" type="button" onClick={() => void refreshCatalog()} disabled={refreshing}>
+          <RefreshCw size={15} aria-hidden="true" className={refreshing ? "spin" : undefined} />
+          {refreshing ? "刷新中…" : "刷新真实目录"}
+        </button>}
       </div>
 
       {error && (
@@ -99,6 +135,7 @@ export function ModelsPage() {
           <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
         </div>
       )}
+      {catalogMessage && <div className="notice notice-info" role="status">{catalogMessage}</div>}
       {pending && (
         <div className="notice notice-confirm" role="alertdialog" aria-label="确认模型状态变更">
           <span>
@@ -146,12 +183,11 @@ export function ModelsPage() {
       </div>
 
       {loading ? (
-        <div className="table-state" aria-live="polite">正在读取本地模型缓存…</div>
+        <TableState live>正在读取本地模型缓存…</TableState>
       ) : rows.length === 0 ? (
-        <div className="table-state">本地还没有已观测模型。模型调用方访问 `GET /v1/models` 后，目录缓存才会出现记录。</div>
+        <TableState>暂未读取到真实模型。请先刷新模型目录，并确认渠道账号或平台凭据可用。</TableState>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table model-table">
+        <DataTable className="model-table" ariaLabel="模型目录列表">
             <thead><tr><th>模型</th><th>渠道</th><th>类型</th><th>能力</th><th>上下文</th><th>最大输出</th><th>状态</th>{canManage && <th>操作</th>}</tr></thead>
             <tbody>{rows.map((model) => (
               <tr key={model.id}>
@@ -165,17 +201,10 @@ export function ModelsPage() {
                 {canManage && <td><button type="button" className={model.enabled ? "model-disable-button" : "model-enable-button"} onClick={() => setPending(model)}>{model.enabled ? "停用" : "启用"}</button></td>}
               </tr>
             ))}</tbody>
-          </table>
-        </div>
+        </DataTable>
       )}
 
-      <div className="log-pagination">
-        <span>第 {page} / {Math.max(totalPages, 1)} 页</span>
-        <div>
-          <button type="button" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button>
-          <button type="button" disabled={loading || page >= totalPages} onClick={() => setPage((value) => value + 1)}>下一页</button>
-        </div>
-      </div>
+      <Pagination page={page} totalPages={totalPages} loading={loading} onPageChange={setPage} />
     </main>
   );
 }

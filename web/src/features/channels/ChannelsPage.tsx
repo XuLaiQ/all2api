@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { DataTable, TableState } from "../../app/data/DataTable";
 import { fetchChannelRuntime, resetChannelOverride, setChannelEnabled, testChannel, type ChannelRuntime, type ChannelTestResult } from "./channelsApi";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 
@@ -23,6 +24,16 @@ function remaining(seconds: number | null): string {
   if (!seconds || seconds <= 0) return "—";
   if (seconds < 60) return `${seconds} 秒`;
   return `${Math.ceil(seconds / 60)} 分钟`;
+}
+
+function accountAccessLabel(channel: ChannelOverview): { label: string; detail: string } {
+  if (channel.provision_configured) {
+    return { label: "原生流程可用", detail: "新增 / 导入账号" };
+  }
+  if (channel.accounts_configured) {
+    return { label: "兼容接口可用", detail: "迁移期 bridge" };
+  }
+  return { label: "未配置", detail: "暂无账号入口" };
 }
 
 export function ChannelsPage() {
@@ -149,19 +160,19 @@ export function ChannelsPage() {
       )}
 
       {loading ? (
-        <div className="table-state" aria-live="polite">正在读取渠道…</div>
+        <TableState live>正在读取渠道…</TableState>
       ) : channels.length === 0 ? (
-        <div className="table-state">没有已注册渠道</div>
+        <TableState>没有已注册渠道</TableState>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table channel-table">
-            <thead><tr><th>渠道</th><th>运行态</th><th>适配器</th><th>数据面配置</th><th>账号管理接口</th><th>入站协议</th><th>渠道能力声明</th></tr></thead>
+        <DataTable className="channel-table" ariaLabel="渠道列表">
+            <thead><tr><th>渠道</th><th>运行态</th><th>适配器</th><th>数据面状态</th><th>账号接入</th><th>入站协议</th><th>渠道能力声明</th></tr></thead>
             <tbody>
               {channels.map((channel) => {
                 const isSelected = channel.slug === selected;
                 const state = channel.enabled
                   ? runtimeLabel(channel.slug === selected ? channelRuntime?.state ?? "closed" : channel.state)
                   : { label: "未配置", tone: "neutral" };
+                const accountAccess = accountAccessLabel(channel);
                 return (
                   <tr key={channel.slug} className={isSelected ? "selected-row" : ""}>
                     <td><button type="button" className="channel-select-button" aria-pressed={isSelected} onClick={() => setSelected(channel.slug)}>
@@ -169,22 +180,21 @@ export function ChannelsPage() {
                     </button></td>
                     <td><span className={`state-label state-${state.tone}`}><span className="status-mark" aria-hidden="true" />{state.label}</span></td>
                     <td>{channel.adapter}</td>
-                    <td>{channel.enabled ? "已配置" : "未配置"}</td>
-                    <td>{channel.accounts_configured ? "已配置" : "未配置"}</td>
+                    <td><span className={`status-label ${channel.management_enabled === false ? "status-danger" : channel.data_plane_configured ? "status-success" : "status-warning"}`}>{channel.management_enabled === false ? "已停用" : channel.data_plane_configured ? "已配置" : "待配置"}</span><span className="secondary-text">{channel.management_enabled === false ? "本地管理开关" : "adapter / 账号状态"}</span></td>
+                    <td><span className={`status-label ${channel.provision_configured ? "status-success" : channel.accounts_configured ? "status-warning" : "status-danger"}`}>{accountAccess.label}</span><span className="secondary-text">{accountAccess.detail}</span></td>
                     <td><span className="channel-tags">{channel.protocols.join(", ")}</span></td>
                     <td><span className="channel-tags">{channel.caps.join(", ")}</span><span className="secondary-text">渠道级声明</span></td>
                   </tr>
                 );
               })}
             </tbody>
-          </table>
-        </div>
+        </DataTable>
       )}
 
       {selectedChannel && (
         <section className="data-section surface-panel" aria-labelledby="channel-runtime-title">
           <div className="section-heading">
-            <div><h2 id="channel-runtime-title">{selectedChannel.name} 运行态</h2><p>本地网关记录；测试连接为一次性上游请求</p></div>
+            <div><h2 id="channel-runtime-title">{selectedChannel.name} 运行态</h2><p>数据面状态控制请求是否进入该渠道；账号接入负责本地账号新增、导入和凭据生命周期。</p></div>
             <div className="channel-runtime-actions">
               <span className={`state-label state-${currentState.tone}`}><span className="status-mark" aria-hidden="true" />{currentState.label}</span>
               <button
@@ -210,14 +220,13 @@ export function ChannelsPage() {
             </div>
           )}
           {runtimeLoading ? (
-            <div className="table-state" aria-live="polite">正在读取运行态…</div>
+            <TableState live>正在读取运行态…</TableState>
           ) : !selectedChannel.enabled ? (
-            <div className="table-state">渠道未配置，尚无网关运行态</div>
+            <TableState>渠道未配置，尚无网关运行态</TableState>
           ) : states.length === 0 ? (
-            <div className="table-state">暂无失败记录</div>
+            <TableState>暂无失败记录</TableState>
           ) : (
-            <div className="table-wrap">
-              <table className="data-table runtime-table">
+            <DataTable className="runtime-table" ariaLabel="渠道运行态列表">
                 <thead><tr><th>范围</th><th>状态</th><th>连续失败</th><th>HTTP</th><th>错误分类</th><th>冷却剩余</th><th>熔断截止</th><th>更新时间</th></tr></thead>
                 <tbody>
                   {states.map((state) => {
@@ -234,8 +243,7 @@ export function ChannelsPage() {
                     </tr>;
                   })}
                 </tbody>
-              </table>
-            </div>
+            </DataTable>
           )}
         </section>
       )}

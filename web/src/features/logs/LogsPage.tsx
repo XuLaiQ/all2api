@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { DataTable, TableState } from "../../app/data/DataTable";
+import { Pagination } from "../../app/data/Pagination";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import { clearExpiredLogs, fetchLogs, type LogFilters, type RequestLog } from "./logsApi";
 import { Select } from "../../app/controls/Select";
@@ -260,12 +262,11 @@ export function LogsPage() {
       )}
 
       {loading ? (
-        <div className="table-state" aria-live="polite">正在读取请求日志…</div>
+        <TableState live>正在读取请求日志…</TableState>
       ) : rows.length === 0 ? (
-        <div className="table-state">没有符合条件的请求</div>
+        <TableState>没有符合条件的请求</TableState>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table log-table">
+        <DataTable className="log-table" ariaLabel="请求日志列表">
             <thead>
               <tr>
                 <th>时间 (UTC)</th><th>请求</th><th>渠道 / 模型</th><th>状态</th>
@@ -273,17 +274,10 @@ export function LogsPage() {
               </tr>
             </thead>
             <tbody>{rows.map((row) => <LogRow key={row.id} row={row} />)}</tbody>
-          </table>
-        </div>
+        </DataTable>
       )}
 
-      <div className="log-pagination">
-        <span>第 {page} / {Math.max(totalPages, 1)} 页</span>
-        <div>
-          <button type="button" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button>
-          <button type="button" disabled={loading || page >= totalPages} onClick={() => setPage((value) => value + 1)}>下一页</button>
-        </div>
-      </div>
+      <Pagination page={page} totalPages={totalPages} loading={loading} onPageChange={setPage} />
     </main>
   );
 }
