@@ -5,9 +5,18 @@ from pathlib import Path
 
 
 def check_legacy_imports():
-    """Check for imports from legacy bridge."""
+    """Check for imports from legacy bridge.
+
+    Allowed exception: routers/admin.py may import provisioning for upstream bridge
+    until native E2E is complete (see app/compat/legacy_bridge/README.md).
+    """
     app_dir = Path(__file__).parent.parent / "app"
     pattern = re.compile(r"from\s+app\.compat\.legacy_bridge")
+
+    # Allowed: admin.py provisioning bridge until E2E complete
+    allowed_imports = {
+        ("routers/admin.py", "from app.compat.legacy_bridge import provisioning"),
+    }
 
     violations = []
     for py_file in app_dir.rglob("*.py"):
@@ -15,7 +24,17 @@ def check_legacy_imports():
             content = py_file.read_text(encoding="utf-8")
             for line_num, line in enumerate(content.splitlines(), 1):
                 if pattern.search(line):
-                    violations.append(f"{py_file.relative_to(app_dir.parent)}:{line_num}: {line.strip()}")
+                    rel_path = str(py_file.relative_to(app_dir)).replace("\\", "/")
+                    normalized_line = " ".join(line.strip().split())
+
+                    # Check if this is an allowed import
+                    is_allowed = any(
+                        rel_path == allowed_file and normalized_line.startswith(allowed_import)
+                        for allowed_file, allowed_import in allowed_imports
+                    )
+
+                    if not is_allowed:
+                        violations.append(f"{py_file.relative_to(app_dir.parent)}:{line_num}: {line.strip()}")
         except Exception as e:
             print(f"Warning: Could not read {py_file}: {e}")
 
