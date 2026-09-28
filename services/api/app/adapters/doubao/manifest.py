@@ -13,7 +13,7 @@ def build_manifest(adapter_version: str = "0.2.0") -> ChannelManifest:
         display_name="Doubao",
         adapter_version=adapter_version,
         protocols=("openai", "anthropic", "responses"),
-        capabilities=("chat", "image", "video", "audio", "file"),
+        capabilities=("chat",),  # Only verified capabilities; multimedia planned for P1
         account_flows=(
             ProvisionFlowSpec(
                 id="create-profile",

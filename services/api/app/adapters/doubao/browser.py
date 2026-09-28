@@ -61,6 +61,14 @@ class BrowserWorker(Protocol):
 
     async def start_qr_login(self, account_id: str, profile_path: str) -> BrowserChallenge: ...
 
+    async def restore_qr_login(
+        self,
+        session_id: str,
+        account_id: str,
+        profile_path: str,
+        created_at: float,
+    ) -> BrowserChallenge | None: ...
+
     async def poll_qr_login(self, session_id: str) -> BrowserEvent: ...
 
     async def complete_qr_login(self, session_id: str) -> BrowserEvent: ...
@@ -93,6 +101,15 @@ class NullBrowserWorker:
         return False
 
     async def start_qr_login(self, account_id: str, profile_path: str) -> BrowserChallenge:
+        raise BrowserWorkerUnavailableError()
+
+    async def restore_qr_login(
+        self,
+        session_id: str,
+        account_id: str,
+        profile_path: str,
+        created_at: float,
+    ) -> BrowserChallenge | None:
         raise BrowserWorkerUnavailableError()
 
     async def poll_qr_login(self, session_id: str) -> BrowserEvent:
@@ -152,6 +169,29 @@ class FakeBrowserWorker:
             "account_id": account_id,
             "profile_path": profile_path,
             "index": 0,
+        }
+        return BrowserChallenge(
+            session_id=session_id,
+            account_id=account_id,
+            qr_code=f"fake://doubao/qr/{session_id}",
+        )
+
+    async def restore_qr_login(
+        self,
+        session_id: str,
+        account_id: str,
+        profile_path: str,
+        created_at: float,
+    ) -> BrowserChallenge | None:
+        """Recreate a deterministic worker session after a process restart."""
+
+        if session_id in self.sessions:
+            return None
+        self.sessions[session_id] = {
+            "account_id": account_id,
+            "profile_path": profile_path,
+            "index": 0,
+            "created_at": created_at,
         }
         return BrowserChallenge(
             session_id=session_id,
@@ -545,6 +585,52 @@ class PlaywrightBrowserWorker:
             self._last_error = type(exc).__name__
             raise BrowserWorkerError() from exc
 
+    async def restore_qr_login(
+        self,
+        session_id: str,
+        account_id: str,
+        profile_path: str,
+        created_at: float,
+    ) -> BrowserChallenge | None:
+        """Reopen a durable session with a fresh page after worker restart.
+
+        Browser contexts are deliberately not serialized.  If Chromium was
+        restarted, the provider may issue a new QR challenge; the durable
+        provision session id stays stable and the challenge is returned to the
+        caller on its next poll.
+        """
+
+        if session_id in self._sessions:
+            return None
+        context = await self._new_context(profile_path)
+        try:
+            page = await self._new_page(context)
+            await self._goto(page)
+            qr_code, qr_image = await self._qr_value(page)
+            self._sessions[session_id] = _PlaywrightSession(
+                account_id=account_id,
+                profile_path=profile_path,
+                context=context,
+                page=page,
+                created_at=created_at,
+            )
+            return BrowserChallenge(
+                session_id=session_id,
+                account_id=account_id,
+                qr_code=qr_code or f"doubao://qr/{session_id}",
+                qr_image_base64=qr_image,
+            )
+        except Exception as exc:
+            try:
+                await maybe_await(context.close())
+            except Exception:
+                pass
+            if isinstance(exc, BrowserWorkerError):
+                raise
+            self._failure_count += 1
+            self._last_error = type(exc).__name__
+            raise BrowserWorkerError() from exc
+
     def _session(self, session_id: str) -> _PlaywrightSession:
         session = self._sessions.get(session_id)
         if session is None:
@@ -683,4 +769,3 @@ __all__ = [
     "PlaywrightBrowserWorker",
     "maybe_await",
 ]
-

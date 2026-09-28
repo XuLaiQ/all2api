@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.adapters.registry import get_registry
 from app.config import get_settings
-from app.db import database
-from app.scope import ScopeValidationError, validate_scope
-from app.security import hash_api_key, issue_api_key, require_admin_request
+from app.infrastructure.db import database
+from app.domain.scope import ScopeValidationError, validate_scope
+from app.infrastructure.security import hash_api_key, issue_api_key, require_admin_request
 
 router = APIRouter(
     prefix="/admin/api/keys",

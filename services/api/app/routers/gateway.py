@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 import httpx
@@ -12,9 +12,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
+from app.adapters.native_runtime import CAPABILITY_PATHS, normalize_capability
 from app.adapters.registry import AdapterSpec, get_registry
 from app.config import get_settings
-from app.db import database
+from app.infrastructure.db import database
 from app.protocols.anthropic import (
     AnthropicRequestError,
     anthropic_error_payload,
@@ -30,8 +31,9 @@ from app.protocols.responses import (
     responses_sse,
 )
 from app.scheduler.pool import (
-    WorkBuddyCandidate,
-    acquire_workbuddy_lease,
+    AccountCandidate,
+    account_candidates,
+    acquire_account_lease,
     workbuddy_candidates,
 )
 from app.scheduler.runtime import (
@@ -45,12 +47,20 @@ from app.scheduler.runtime import (
     record_transient_failure,
     retry_after_seconds,
 )
-from app.scope import decode_key_scope, model_allowed, scope_decision
-from app.security import require_api_key
+from app.domain.scope import decode_key_scope, model_allowed, scope_decision
+from app.infrastructure.security import require_api_key
 
 router = APIRouter(prefix="/v1")
 KeyContext = Annotated[dict, Depends(require_api_key)]
 _upstream_slots = asyncio.Semaphore(64)
+
+
+_CAPABILITY_DEFAULT_MODELS = {
+    # Search providers expose a provider-owned default model.  Keep this
+    # explicit so a search client can omit model while still going through
+    # normal key scope and account selection.
+    "search": "chatgpt/auto",
+}
 
 
 def _allowed(key: dict[str, Any], channel: str, model_id: str) -> bool:
@@ -70,6 +80,25 @@ def _model_disabled(channel: str, upstream_model: str) -> bool:
             (f"{channel}/{upstream_model}",),
         ).fetchone()
     return row is not None and not bool(row["enabled"])
+
+
+def _local_account_snapshot_exists(channel: str) -> bool:
+    """Return whether a native channel has a locally provisioned account.
+
+    A native account credential can authenticate a request without a public
+    channel key. Keep this separate from ``models_configured`` so a channel
+    without catalogue credentials is not advertised as publicly configured,
+    while an explicitly provisioned account can still serve direct model IDs.
+    """
+
+    with database(get_settings().db_path) as conn:
+        return conn.execute(
+            """SELECT 1 FROM accounts
+            WHERE channel = ? AND enabled = 1
+                AND COALESCE(status_override, status) NOT IN ('disabled', 'expired')
+            LIMIT 1""",
+            (str(channel),),
+        ).fetchone() is not None
 
 
 def _log_request(
@@ -92,7 +121,7 @@ def _log_request(
     fallback_depth: int = 0,
 ) -> None:
     ts = int(time.time())
-    day = datetime.fromtimestamp(ts, UTC).date().isoformat()
+    day = datetime.fromtimestamp(ts, timezone.utc).date().isoformat()
     with database(get_settings().db_path) as conn:
         conn.execute(
             """INSERT INTO request_logs
@@ -152,6 +181,20 @@ def _account_id_from_upstream(
     return str(row["id"]) if row else None
 
 
+def _selected_account_id(
+    request_id: str,
+    headers: httpx.Headers,
+    target: dict[str, str],
+) -> str | None:
+    """Resolve a trusted canonical account id for request logging/runtime state."""
+
+    upstream = _account_id_from_upstream(request_id, headers, target.get("channel", ""))
+    if upstream is not None:
+        return upstream
+    selected = target.get("lease_account_id")
+    return str(selected) if selected else None
+
+
 def _is_account_unavailable(response: httpx.Response) -> bool:
     return response.status_code == 409 and _upstream_error_code(response) == "account_unavailable"
 
@@ -161,6 +204,8 @@ def _account_selection_mismatch(
     response: httpx.Response,
     target: dict[str, str],
 ) -> bool:
+    if target.get("channel") != "wb":
+        return False
     expected = target.get("account_id")
     if expected is None or _is_account_unavailable(response):
         return False
@@ -191,7 +236,10 @@ def _resolve_targets(
             raise HTTPException(status_code=401, detail="invalid_api_key_scope")
         if decision != "allowed":
             raise HTTPException(status_code=403, detail=decision)
-        if not adapter.models_configured:
+        if not adapter.models_configured and not (
+            getattr(adapter, "runtime", None) is not None
+            and _local_account_snapshot_exists(channel)
+        ):
             raise HTTPException(status_code=503, detail="channel_disabled")
         if _model_disabled(channel, upstream_model):
             raise HTTPException(status_code=404, detail="model_not_found")
@@ -239,7 +287,10 @@ def _resolve_targets(
         if not channel_allowed or not target_allowed:
             continue
         has_authorized_target = True
-        if adapter and not adapter.models_configured:
+        if adapter and not adapter.models_configured and not (
+            getattr(adapter, "runtime", None) is not None
+            and _local_account_snapshot_exists(target_channel)
+        ):
             disabled_channels.add(target_channel)
             continue
         if adapter and target_model:
@@ -351,6 +402,97 @@ def _client_response_headers(request_id: str, upstream: httpx.Response) -> dict[
     if retry_after is not None:
         headers["Retry-After"] = str(retry_after)
     return headers
+
+
+def _capability_name(value: str) -> str:
+    """Normalize manifest capability names to the public dispatch vocabulary."""
+
+    return normalize_capability(value)
+
+
+def _adapter_capabilities(adapter: Any) -> set[str]:
+    manifest = getattr(adapter, "manifest", None)
+    values = getattr(manifest, "capabilities", None)
+    if values is None:
+        values = getattr(adapter, "caps", ())
+    return {_capability_name(value) for value in values or ()}
+
+
+def _supports_capability(adapter: Any, capability: str) -> bool:
+    return _capability_name(capability) in _adapter_capabilities(adapter)
+
+
+def _resolve_capability_targets(
+    model_id: str,
+    key: dict[str, Any],
+    adapters: dict[str, AdapterSpec],
+    capability: str,
+) -> tuple[str | None, list[dict[str, str]]]:
+    """Resolve model/alias targets and remove channels without the capability."""
+
+    capability = _capability_name(capability)
+    if capability not in CAPABILITY_PATHS or capability == "chat":
+        raise HTTPException(status_code=404, detail="capability_not_supported")
+
+    channel, separator, _ = model_id.partition("/")
+    if separator:
+        adapter = adapters.get(channel)
+        if adapter is not None and not _supports_capability(adapter, capability):
+            raise HTTPException(status_code=404, detail="capability_not_supported")
+
+    route_alias, targets = _resolve_targets(model_id, key, adapters)
+    supported = [
+        target
+        for target in targets
+        if _supports_capability(adapters.get(target["channel"]), capability)
+    ]
+    if not supported:
+        raise HTTPException(status_code=404, detail="capability_not_supported")
+    return route_alias, supported
+
+
+def _capability_error(
+    request_id: str,
+    status_code: int,
+    code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "message": message,
+                "type": "invalid_request_error" if status_code < 500 else "api_error",
+                "param": None,
+                "code": code,
+            }
+        },
+        headers={"X-Request-ID": request_id, **(headers or {})},
+    )
+
+
+def _capability_error_code(detail: Any, status_code: int) -> str:
+    value = str(detail or "").strip()
+    stable = {
+        "capability_not_supported",
+        "channel_not_found",
+        "channel_disabled",
+        "model_not_found",
+        "channel_not_allowed",
+        "model_not_allowed",
+        "invalid_api_key_scope",
+        "account_unavailable",
+    }
+    if value in stable:
+        return value
+    if status_code == 404:
+        return "model_not_found"
+    if status_code == 403:
+        return "model_not_allowed"
+    if status_code == 503:
+        return "channel_unavailable"
+    return "invalid_request_error" if status_code < 500 else "adapter_error"
 
 
 def _stream_error_frame(message: str) -> bytes:
@@ -667,12 +809,126 @@ async def chat_completions(
     return await _dispatch_chat(request, key, payload)
 
 
-async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
-    if not isinstance(payload, dict) or not isinstance(payload.get("model"), str):
-        raise HTTPException(status_code=422, detail="model is required")
-    model_id = payload["model"]
+async def _capability_request(
+    request: Request,
+    key: dict[str, Any],
+    capability: str,
+) -> Response:
+    request_id = request.state.request_id
+    try:
+        payload = await request.json()
+    except Exception:
+        return _capability_error(
+            request_id,
+            400,
+            "invalid_request_error",
+            "request body must be valid JSON",
+        )
+    try:
+        return await _dispatch_chat(request, key, payload, capability=capability)
+    except HTTPException as exc:
+        headers = dict(exc.headers or {})
+        return _capability_error(
+            request_id,
+            exc.status_code,
+            _capability_error_code(exc.detail, exc.status_code),
+            str(exc.detail),
+            headers,
+        )
+
+
+@router.post("/images/generations", tags=["gateway"])
+async def image_generations(request: Request, key: KeyContext) -> Response:
+    return await _capability_request(request, key, "image")
+
+
+@router.post("/video/generations", tags=["gateway"])
+async def video_generations(request: Request, key: KeyContext) -> Response:
+    return await _capability_request(request, key, "video")
+
+
+@router.post("/audio/generations", tags=["gateway"])
+async def audio_generations(request: Request, key: KeyContext) -> Response:
+    return await _capability_request(request, key, "audio")
+
+
+@router.post("/search", tags=["gateway"])
+async def search(request: Request, key: KeyContext) -> Response:
+    return await _capability_request(request, key, "search")
+
+
+async def _unsupported_capability(request: Request, capability: str) -> Response:
+    return _capability_error(
+        request.state.request_id,
+        404,
+        "capability_not_supported",
+        f"capability {capability!r} is not implemented by the native data plane",
+    )
+
+
+@router.post("/images/edits", tags=["gateway"])
+async def image_edits(request: Request, key: KeyContext) -> Response:
+    return await _unsupported_capability(request, "image_edits")
+
+
+@router.post("/files", tags=["gateway"])
+async def file_upload(request: Request, key: KeyContext) -> Response:
+    return await _unsupported_capability(request, "file")
+
+
+@router.get("/files/download", tags=["gateway"])
+async def file_download(request: Request, key: KeyContext) -> Response:
+    return await _unsupported_capability(request, "file")
+
+
+@router.post("/ppt/generations", tags=["gateway"])
+async def ppt_generations(request: Request, key: KeyContext) -> Response:
+    return await _unsupported_capability(request, "ppt")
+
+
+@router.post("/psd/generations", tags=["gateway"])
+async def psd_generations(request: Request, key: KeyContext) -> Response:
+    return await _unsupported_capability(request, "psd")
+
+
+@router.get("/editable-file-tasks", tags=["gateway"])
+async def editable_file_tasks(request: Request, key: KeyContext) -> Response:
+    return await _unsupported_capability(request, "editable_file_tasks")
+
+
+@router.post("/messages/count_tokens", tags=["gateway"])
+async def count_tokens(request: Request, key: KeyContext) -> Response:
+    return await _unsupported_capability(request, "count_tokens")
+
+
+async def _dispatch_chat(
+    request: Request,
+    key: dict,
+    payload: Any,
+    *,
+    capability: str = "chat",
+) -> Response:
+    capability = _capability_name(capability)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="request body must be an object")
+    model_value = payload.get("model")
+    if not isinstance(model_value, str) or not model_value.strip():
+        if capability == "search":
+            model_value = _CAPABILITY_DEFAULT_MODELS[capability]
+        else:
+            raise HTTPException(status_code=422, detail="model is required")
+    model_id = model_value.strip()
+    if capability != "chat" and payload.get("stream") is True:
+        raise HTTPException(
+            status_code=400, detail="streaming is not supported for this capability"
+        )
     adapters = get_registry()
-    route_alias, targets = _resolve_targets(model_id, key, adapters)
+    if capability == "chat":
+        route_alias, targets = _resolve_targets(model_id, key, adapters)
+    else:
+        route_alias, targets = _resolve_capability_targets(
+            model_id, key, adapters, capability
+        )
 
     def log_request(**values: Any) -> None:
         values["model"] = model_id
@@ -702,10 +958,20 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
     expanded_targets: list[dict[str, str]] = []
     for route_depth, target in enumerate(targets):
         base_target = {**target, "route_depth": str(route_depth)}
-        if target["channel"] != "wb":
+        target_channel = target["channel"]
+        adapter = adapters.get(target_channel)
+        if adapter is None:
             expanded_targets.append(base_target)
             continue
-        has_snapshot, candidates = workbuddy_candidates(target["upstream_model"])
+        if target_channel == "wb":
+            has_snapshot, candidates = workbuddy_candidates(target["upstream_model"])
+        elif getattr(adapter, "runtime", None) is not None:
+            has_snapshot, candidates = account_candidates(
+                target_channel,
+                target["upstream_model"],
+            )
+        else:
+            has_snapshot, candidates = False, []
         if not has_snapshot:
             expanded_targets.append(base_target)
             continue
@@ -726,13 +992,13 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
             upstream_model=first["upstream_model"],
             status=503,
             started=started,
-            error="no eligible WorkBuddy accounts in the local account snapshot",
+            error="no eligible local accounts in the account snapshot",
             error_kind="account_unavailable",
             stream=payload.get("stream") is True,
         )
         raise HTTPException(
             status_code=503,
-            detail="no eligible WorkBuddy accounts are available",
+            detail="no eligible local accounts are available",
             headers={"Retry-After": "1"},
         )
     targets = expanded_targets
@@ -770,7 +1036,8 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
                 headers["X-A2A-Account-ID"] = target["account_id"]
         if request.headers.get("accept"):
             headers["Accept"] = request.headers["accept"]
-        url = f"{adapter.base_url.rstrip('/')}/v1/chat/completions"
+        path = CAPABILITY_PATHS[capability]
+        url = f"{adapter.base_url.rstrip('/')}{path}"
         return adapter, body, headers, url
 
     if payload.get("stream") is True:
@@ -782,10 +1049,12 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
             depth = int(target["route_depth"])
             account_lease = None
             if target.get("lease_account_id"):
-                candidate = WorkBuddyCandidate(
-                    target["lease_account_id"], target["account_id"]
+                candidate = AccountCandidate(
+                    target["lease_account_id"],
+                    target["account_id"],
+                    target.get("channel", ""),
                 )
-                account_lease = acquire_workbuddy_lease(candidate)
+                account_lease = acquire_account_lease(candidate)
                 if account_lease is None:
                     last_status = 503
                     continue
@@ -794,6 +1063,10 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
             client = httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10))
             try:
                 if runtime_adapter is not None:
+                    if capability != "chat":
+                        raise ValueError(
+                            f"streaming is not supported for capability {capability}"
+                        )
                     upstream_handle = await runtime_adapter.open_stream(
                         {
                             "model": target["upstream_model"],
@@ -885,11 +1158,7 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
                     headers={"X-Request-ID": request_id},
                 )
             if upstream.status_code >= 400:
-                error_account_id = _account_id_from_upstream(
-                    request_id,
-                    upstream.headers,
-                    adapter.slug,
-                )
+                error_account_id = _selected_account_id(request_id, upstream.headers, target)
                 try:
                     error_body = await upstream.aread()
                 except httpx.HTTPError as exc:
@@ -1015,7 +1284,7 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
             )
             raise HTTPException(status_code=last_status, detail="all route targets failed")
         fallback_depth, client, upstream, adapter, target, account_lease = selected
-        account_id = _account_id_from_upstream(request_id, upstream.headers, adapter.slug)
+        account_id = _selected_account_id(request_id, upstream.headers, target)
         prompt_tokens = completion_tokens = 0
         usage_reported = False
 
@@ -1120,8 +1389,12 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
         depth = int(target["route_depth"])
         account_lease = None
         if target.get("lease_account_id"):
-            candidate = WorkBuddyCandidate(target["lease_account_id"], target["account_id"])
-            account_lease = acquire_workbuddy_lease(candidate)
+            candidate = AccountCandidate(
+                target["lease_account_id"],
+                target["account_id"],
+                target.get("channel", ""),
+            )
+            account_lease = acquire_account_lease(candidate)
             if account_lease is None:
                 last_status = 503
                 continue
@@ -1129,14 +1402,30 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
         try:
             runtime_adapter = getattr(adapter, "runtime", None)
             if runtime_adapter is not None:
-                upstream = await runtime_adapter.invoke(
-                    {
-                        "model": target["upstream_model"],
-                        "payload": json.loads(body),
-                        "headers": headers,
-                    },
-                    target,
-                )
+                invoke_capability = getattr(runtime_adapter, "invoke_capability", None)
+                if capability != "chat" and not callable(invoke_capability):
+                    raise ValueError(
+                        f"native adapter does not implement capability {capability}"
+                    )
+                if capability == "chat":
+                    upstream = await runtime_adapter.invoke(
+                        {
+                            "model": target["upstream_model"],
+                            "payload": json.loads(body),
+                            "headers": headers,
+                        },
+                        target,
+                    )
+                else:
+                    upstream = await invoke_capability(
+                        capability,
+                        {
+                            "model": target["upstream_model"],
+                            "payload": json.loads(body),
+                            "headers": headers,
+                        },
+                        target,
+                    )
             else:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
                     upstream = await client.post(url, content=body, headers=headers)
@@ -1205,9 +1494,7 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
                 },
                 headers={"X-Request-ID": request_id},
             )
-        response_account_id = _account_id_from_upstream(
-            request_id, upstream.headers, adapter.slug
-        )
+        response_account_id = _selected_account_id(request_id, upstream.headers, target)
         _record_account_upstream_status(response_account_id, upstream)
         model_not_found = _is_model_not_found(upstream)
         if model_not_found:
@@ -1279,7 +1566,7 @@ async def _dispatch_chat(request: Request, key: dict, payload: Any) -> Response:
             detail="all route targets failed",
         ) from last_error
     upstream = selected_response
-    account_id = _account_id_from_upstream(request_id, upstream.headers, selected_adapter.slug)
+    account_id = _selected_account_id(request_id, upstream.headers, selected_target)
     prompt_tokens = completion_tokens = 0
     usage_reported = False
     try:

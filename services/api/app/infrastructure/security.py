@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from fastapi import Header, HTTPException, Request
 
 from app.config import get_settings
-from app.db import database
+from app.infrastructure.db import database
 
 SESSION_COOKIE = "a2a_session"
 SESSION_VERSION = 1

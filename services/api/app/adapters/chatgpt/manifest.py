@@ -9,7 +9,7 @@ CHATGPT_MANIFEST = ChannelManifest(
     display_name="ChatGPT",
     adapter_version="0.2.0",
     protocols=("openai", "anthropic", "responses"),
-    capabilities=("chat", "image", "search", "ppt", "psd"),
+    capabilities=("chat",),  # Only verified capabilities; image/search planned for P1
     account_flows=(
         ProvisionFlowSpec(
             id="token-import",
@@ -20,7 +20,10 @@ CHATGPT_MANIFEST = ChannelManifest(
                     "tokens": {"type": "array"},
                     "accounts": {"type": "array"},
                 },
-                "additionalProperties": False,
+                # Third-party exports carry envelope fields such as type,
+                # version, exported_at and proxies. The provisioner only
+                # consumes tokens/accounts and ignores those metadata fields.
+                "additionalProperties": True,
             },
             supports={"import": True},
             timeout_seconds=300,

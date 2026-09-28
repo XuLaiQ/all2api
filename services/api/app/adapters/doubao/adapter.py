@@ -100,6 +100,11 @@ class DoubaoAdapter:
             raise RuntimeError("Doubao native data plane is not configured")
         return await self.runtime.invoke(request, account)
 
+    async def invoke_capability(self, capability: str, request: Any, account: Any = None) -> Any:
+        if self.runtime is None:
+            raise RuntimeError("Doubao native data plane is not configured")
+        return await self.runtime.invoke_capability(capability, request, account)
+
     async def invoke_stream(self, request: Any, account: Any) -> AsyncIterator[Any]:
         if self.runtime is None:
             raise RuntimeError("Doubao native data plane is not configured")

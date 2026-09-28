@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import inspect
+import json
 import platform
 import re
 import shutil
+import sqlite3
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.convertors import StringConvertor, register_url_convertor
 
-from app.adapters import provisioning
+from app.compat.legacy_bridge import provisioning
 from app.adapters.provisioner import ProvisioningUnsupportedError
 from app.adapters.registry import AdapterSpec, get_registry
 from app.application.accounts.lifecycle import (
@@ -27,10 +31,10 @@ from app.application.accounts.service import (
 )
 from app.application.channels.service import ChannelNotFoundError, ChannelService
 from app.config import get_settings
-from app.credentials import AccountNotFoundError
-from app.db import SCHEMA_VERSION, database, resolve_db_path
+from app.infrastructure.credentials import AccountNotFoundError
+from app.infrastructure.db import SCHEMA_VERSION, database, resolve_db_path
 from app.scheduler.runtime import account_runtime_snapshot, channel_state, runtime_states
-from app.security import require_admin_request
+from app.infrastructure.security import require_admin_request, require_same_origin
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(require_admin_request)])
 AdminContext = Annotated[dict, Depends(require_admin_request)]
@@ -81,10 +85,140 @@ class AccountStatePatch(BaseModel):
     enabled: bool
 
 
+class SettingsPatch(BaseModel):
+    """Runtime-safe settings that can be changed from the admin console.
+
+    Provider credentials, URLs, session secrets, and other process wiring stay
+    environment-only.  Retention windows are the first persisted settings
+    surface because they can be applied immediately without rebuilding the
+    adapter registry.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    log_retention_days: int | None = Field(default=None, ge=1, le=36500)
+    usage_retention_days: int | None = Field(default=None, ge=1, le=36500)
+
+
+_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
+
+
+class UserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=128)
+    role: Literal["admin", "viewer"] = "viewer"
+    enabled: bool = True
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        value = value.strip()
+        if not _USERNAME_PATTERN.fullmatch(value):
+            raise ValueError("username contains unsupported characters")
+        return value
+
+
+class UserPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["admin", "viewer"] | None = None
+    enabled: bool | None = None
+
+
+class ChannelCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    enabled: bool = True
+    config: dict[str, object] = Field(default_factory=dict)
+
+
+class ChannelPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    config: dict[str, object] | None = None
+
+
+class PlaygroundMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(min_length=1, max_length=16_000)
+
+
+class PlaygroundChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=256)
+    messages: list[PlaygroundMessage] = Field(min_length=1, max_length=32)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tokens: int | None = Field(default=None, ge=1, le=8192)
+    stream: bool = False
+
+
+_RETENTION_SETTING_DEFAULTS = {
+    "log_retention_days": 30,
+    "usage_retention_days": 365,
+}
+
+
+def _retention_settings() -> tuple[dict[str, int], dict[str, str]]:
+    """Resolve persisted retention values without exposing arbitrary settings."""
+
+    settings = get_settings()
+    values = {
+        key: int(getattr(settings, key, fallback))
+        for key, fallback in _RETENTION_SETTING_DEFAULTS.items()
+    }
+    sources = {key: "environment" for key in values}
+    with database(settings.db_path) as conn:
+        rows = conn.execute(
+            "SELECT key, value FROM settings WHERE key IN (?, ?)",
+            tuple(values),
+        ).fetchall()
+    for row in rows:
+        key = str(row["key"])
+        try:
+            candidate = int(str(row["value"]).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= candidate <= 36500:
+            values[key] = candidate
+            sources[key] = "database"
+    # Do not let a manually corrupted row violate the cross-field invariant.
+    if values["usage_retention_days"] < values["log_retention_days"]:
+        values = {
+            key: int(getattr(settings, key, fallback))
+            for key, fallback in _RETENTION_SETTING_DEFAULTS.items()
+        }
+        sources = {key: "environment" for key in values}
+    return values, sources
+
+
+def _settings_payload() -> dict[str, object]:
+    values, sources = _retention_settings()
+    return {
+        "values": values,
+        "sources": sources,
+        "mutable": list(_RETENTION_SETTING_DEFAULTS),
+        "restart_required": False,
+    }
+
+
 def _require_admin_role(user: AdminContext) -> dict:
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="admin role required")
     return user
+
+
+def _require_admin_write(request: Request, user: AdminContext) -> dict:
+    """Require an admin session/token and an explicit same-origin write."""
+
+    require_same_origin(request)
+    return _require_admin_role(user)
 
 
 def _idempotency_key(body_key: str | None, header_key: str | None) -> str:
@@ -92,6 +226,262 @@ def _idempotency_key(body_key: str | None, header_key: str | None) -> str:
     if not key:
         raise HTTPException(status_code=422, detail="idempotency_key is required")
     return key
+
+
+@router.get("/settings", tags=["settings"])
+def get_admin_settings() -> dict:
+    """Return the safe, persisted settings surface for the console."""
+
+    return {"data": _settings_payload()}
+
+
+@router.post(
+    "/settings",
+    tags=["settings"],
+    dependencies=[Depends(_require_admin_role)],
+)
+def update_admin_settings(
+    body: SettingsPatch,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    current, _ = _retention_settings()
+    requested = body.model_dump(exclude_unset=True)
+    updates = {key: value for key, value in requested.items() if value is not None}
+    if not updates:
+        raise HTTPException(status_code=422, detail="at least one setting is required")
+    candidate = {**current, **{key: int(value) for key, value in updates.items()}}
+    if candidate["usage_retention_days"] < candidate["log_retention_days"]:
+        raise HTTPException(
+            status_code=422,
+            detail="usage_retention_days must be greater than or equal to log_retention_days",
+        )
+
+    settings = get_settings()
+    now = int(time.time())
+    with database(settings.db_path) as conn:
+        for key, value in updates.items():
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, str(int(value))),
+            )
+        changed = ",".join(sorted(updates))
+        conn.execute(
+            """INSERT INTO audit_logs(ts, actor, action, target, detail, ip)
+            VALUES (?, ?, 'update_settings', 'retention', ?, ?)""",
+            (
+                now,
+                str(user.get("username") or "admin")[:128],
+                f"changed={changed}"[:1000],
+                str(request.client.host if request.client else "")[:64],
+            ),
+        )
+    return {"data": _settings_payload()}
+
+
+def _actor(user: Mapping[str, object] | dict) -> str:
+    return str(user.get("username") or "admin")[:128]
+
+
+def _audit_write(
+    conn,
+    *,
+    user: Mapping[str, object] | dict,
+    request: Request,
+    action: str,
+    target: str,
+    detail: str = "",
+) -> None:
+    conn.execute(
+        """INSERT INTO audit_logs(ts, actor, action, target, detail, ip)
+        VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            int(time.time()),
+            _actor(user),
+            action[:128],
+            target[:256],
+            detail[:1000],
+            str(request.client.host if request.client else "")[:64],
+        ),
+    )
+
+
+def _configured_admin_username() -> str:
+    return str(getattr(get_settings(), "admin_username", "admin") or "admin").strip()
+
+
+def _ensure_configured_admin(conn) -> None:
+    """Expose the environment-backed administrator without storing a password."""
+
+    username = _configured_admin_username()
+    if not _USERNAME_PATTERN.fullmatch(username):
+        return
+    now = int(time.time())
+    conn.execute(
+        """INSERT INTO users(username, role, enabled, created_at, updated_at)
+        VALUES (?, 'admin', 1, ?, ?)
+        ON CONFLICT(username) DO UPDATE SET role='admin', enabled=1, updated_at=?""",
+        (username, now, now, now),
+    )
+
+
+def _user_payload(row) -> dict[str, object]:
+    return {
+        "username": str(row["username"]),
+        "role": str(row["role"]),
+        "enabled": bool(row["enabled"]),
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+    }
+
+
+@router.get("/users", tags=["users"])
+def list_users(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    search: str | None = Query(default=None, min_length=1, max_length=128),
+    enabled: bool | None = None,
+) -> dict:
+    filters: list[str] = []
+    values: list[object] = []
+    if search:
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        filters.append("username LIKE ? ESCAPE '\\'")
+        values.append(f"%{escaped}%")
+    if enabled is not None:
+        filters.append("enabled = ?")
+        values.append(int(enabled))
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    offset = (page - 1) * page_size
+    with database(get_settings().db_path) as conn:
+        _ensure_configured_admin(conn)
+        total = int(
+            conn.execute(f"SELECT COUNT(*) FROM users {where}", values).fetchone()[0]
+        )
+        rows = conn.execute(
+            f"""SELECT username, role, enabled, created_at, updated_at
+            FROM users {where} ORDER BY username LIMIT ? OFFSET ?""",
+            [*values, page_size, offset],
+        ).fetchall()
+    return {
+        "data": [_user_payload(row) for row in rows],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": (total + page_size - 1) // page_size,
+        },
+        "authentication": "environment_admin_only",
+    }
+
+
+@router.post(
+    "/users",
+    status_code=201,
+    tags=["users"],
+    dependencies=[Depends(_require_admin_role)],
+)
+def create_user(body: UserCreate, request: Request, user: AdminContext) -> dict:
+    now = int(time.time())
+    with database(get_settings().db_path) as conn:
+        _ensure_configured_admin(conn)
+        try:
+            conn.execute(
+                """INSERT INTO users(username, role, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (body.username, body.role, int(body.enabled), now, now),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="user already exists") from exc
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="create_user",
+            target=body.username,
+            detail=f"role={body.role};enabled={str(body.enabled).lower()}",
+        )
+        row = conn.execute(
+            "SELECT username, role, enabled, created_at, updated_at FROM users WHERE username = ?",
+            (body.username,),
+        ).fetchone()
+    return {"data": _user_payload(row)}
+
+
+@router.patch(
+    "/users/{username}",
+    tags=["users"],
+    dependencies=[Depends(_require_admin_role)],
+)
+def patch_user(
+    username: str,
+    body: UserPatch,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    if not _USERNAME_PATTERN.fullmatch(username):
+        raise HTTPException(status_code=404, detail="user not found")
+    if not body.model_fields_set:
+        raise HTTPException(status_code=422, detail="at least one user field is required")
+    configured_admin = _configured_admin_username().casefold()
+    if username.casefold() == configured_admin and (
+        body.enabled is False or body.role not in {None, "admin"}
+    ):
+        raise HTTPException(status_code=409, detail="configured administrator cannot be disabled")
+    with database(get_settings().db_path) as conn:
+        _ensure_configured_admin(conn)
+        row = conn.execute(
+            "SELECT username, role, enabled, created_at, updated_at FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        role = body.role if body.role is not None else str(row["role"])
+        enabled = body.enabled if body.enabled is not None else bool(row["enabled"])
+        now = int(time.time())
+        conn.execute(
+            "UPDATE users SET role = ?, enabled = ?, updated_at = ? WHERE username = ?",
+            (role, int(enabled), now, username),
+        )
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="update_user",
+            target=username,
+            detail=f"role={role};enabled={str(enabled).lower()}",
+        )
+        result = conn.execute(
+            "SELECT username, role, enabled, created_at, updated_at FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+    return {"data": _user_payload(result)}
+
+
+@router.delete(
+    "/users/{username}",
+    tags=["users"],
+    dependencies=[Depends(_require_admin_role)],
+)
+def delete_user(username: str, request: Request, user: AdminContext) -> dict:
+    if not _USERNAME_PATTERN.fullmatch(username):
+        raise HTTPException(status_code=404, detail="user not found")
+    if username.casefold() == _configured_admin_username().casefold():
+        raise HTTPException(status_code=409, detail="configured administrator cannot be deleted")
+    with database(get_settings().db_path) as conn:
+        row = conn.execute("SELECT username FROM users WHERE username = ?", (username,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        conn.execute("DELETE FROM users WHERE username = ?", (username,))
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="delete_user",
+            target=username,
+        )
+    return {"data": {"username": username, "deleted": True}}
 
 
 def _provision_adapter(channel: str, *, legacy_route: bool = False) -> AdapterSpec:
@@ -179,7 +569,7 @@ def list_request_logs(
             raise HTTPException(status_code=400, detail=f"{label} must be RFC 3339") from None
         if parsed.tzinfo is None:
             raise HTTPException(status_code=400, detail=f"{label} must include a timezone")
-        return int(parsed.astimezone(UTC).timestamp())
+        return int(parsed.astimezone(timezone.utc).timestamp())
 
     from_ts = parse_time(from_time, "from")
     to_ts = parse_time(to_time, "to")
@@ -232,7 +622,7 @@ def list_request_logs(
         "data": [
             {
                 **dict(row),
-                "ts": datetime.fromtimestamp(int(row["ts"]), UTC)
+                "ts": datetime.fromtimestamp(int(row["ts"]), timezone.utc)
                 .isoformat()
                 .replace("+00:00", "Z"),
             }
@@ -252,14 +642,15 @@ def clear_request_logs(request: Request, user: AdminContext) -> dict:
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="admin role required")
     settings = get_settings()
+    retention, _ = _retention_settings()
     now = int(time.time())
-    log_cutoff = now - settings.log_retention_days * 86400
+    log_cutoff = now - retention["log_retention_days"] * 86400
     usage_cutoff_date = (
-        datetime.fromtimestamp(now, UTC).date()
-        - timedelta(days=settings.usage_retention_days - 1)
+        datetime.fromtimestamp(now, timezone.utc).date()
+        - timedelta(days=retention["usage_retention_days"] - 1)
     )
     usage_cutoff_day = usage_cutoff_date.isoformat()
-    log_cutoff_iso = datetime.fromtimestamp(log_cutoff, UTC).isoformat().replace(
+    log_cutoff_iso = datetime.fromtimestamp(log_cutoff, timezone.utc).isoformat().replace(
         "+00:00", "Z"
     )
     with database(settings.db_path) as conn:
@@ -297,8 +688,8 @@ def clear_request_logs(request: Request, user: AdminContext) -> dict:
             "usage_daily_deleted": usage_daily_deleted,
             "log_cutoff": log_cutoff_iso,
             "usage_cutoff_day": usage_cutoff_day,
-            "log_retention_days": settings.log_retention_days,
-            "usage_retention_days": settings.usage_retention_days,
+            "log_retention_days": retention["log_retention_days"],
+            "usage_retention_days": retention["usage_retention_days"],
         }
     }
 
@@ -322,7 +713,7 @@ def list_audit_logs(
             raise HTTPException(status_code=400, detail=f"{label} must be RFC 3339") from None
         if parsed.tzinfo is None:
             raise HTTPException(status_code=400, detail=f"{label} must include a timezone")
-        return int(parsed.astimezone(UTC).timestamp())
+        return int(parsed.astimezone(timezone.utc).timestamp())
 
     from_ts = parse_time(from_time, "from")
     to_ts = parse_time(to_time, "to")
@@ -360,7 +751,7 @@ def list_audit_logs(
         "data": [
             {
                 "id": int(row["id"]),
-                "ts": datetime.fromtimestamp(int(row["ts"]), UTC)
+                "ts": datetime.fromtimestamp(int(row["ts"]), timezone.utc)
                 .isoformat()
                 .replace("+00:00", "Z"),
                 "actor": row["actor"],
@@ -563,7 +954,7 @@ def get_metrics(days: int = Query(default=1, ge=1, le=366)) -> dict:
 
 
 def _usage_period(days: int) -> tuple[str, str]:
-    today = datetime.now(UTC).date()
+    today = datetime.now(timezone.utc).date()
     start = today - timedelta(days=days - 1)
     return start.isoformat(), today.isoformat()
 
@@ -899,6 +1290,31 @@ async def delete_account(
     }
 
 
+@router.post(
+    "/accounts/{account_id:account_id}/refresh",
+    tags=["accounts"],
+    dependencies=[Depends(_require_admin_role)],
+)
+async def refresh_account_credential(
+    account_id: str,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    """Refresh one provider credential without ever returning token material."""
+
+    try:
+        result = await _account_lifecycle_service().refresh(
+            account_id,
+            actor=str(user.get("username") or "admin"),
+            ip=request.client.host if request.client else "",
+        )
+    except AccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="account was not found") from exc
+    except AccountLifecycleError as exc:
+        raise HTTPException(status_code=502, detail="provider credential refresh failed") from exc
+    return {"data": result}
+
+
 @router.post("/accounts/{channel}/onboarding/start", tags=["accounts"])
 async def start_account_onboarding(channel: str, body: AccountOnboardingStart) -> dict:
     """Start the native account onboarding flow exposed by an upstream adapter."""
@@ -1025,8 +1441,34 @@ async def finish_account_onboarding(channel: str, body: AccountOnboardingFinish)
         _raise_provision_error(cause)
 
 
+def _channel_management_state(slug: str) -> dict[str, object] | None:
+    """Read the local, non-secret management override for a registry channel."""
+
+    try:
+        with database(get_settings().db_path) as conn:
+            row = conn.execute(
+                "SELECT enabled, config, created_at, updated_at FROM channels WHERE slug = ?",
+                (slug,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    try:
+        config = json.loads(str(row["config"] or "{}"))
+    except (TypeError, ValueError):
+        config = {}
+    return {
+        "enabled": bool(row["enabled"]),
+        "config": config if isinstance(config, dict) else {},
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+    }
+
+
 def _channel_payload(adapter: AdapterSpec) -> dict:
-    enabled = adapter.models_configured
+    managed = _channel_management_state(adapter.slug)
+    enabled = bool(managed["enabled"]) if managed is not None else adapter.models_configured
     runtime = channel_state(adapter.slug)
     manifest = getattr(adapter, "manifest", None)
     if manifest is None:
@@ -1041,6 +1483,7 @@ def _channel_payload(adapter: AdapterSpec) -> dict:
         "upstream_base": adapter.base_url,
         "legacy_bridge_enabled": bool(getattr(adapter, "legacy_bridge_enabled", False)),
         "enabled": enabled,
+        "management": managed or {"source": "registry"},
         "state": runtime["state"] if enabled else "available",
         "protocols": list(adapter.protocols),
         "caps": list(adapter.caps),
@@ -1260,7 +1703,7 @@ async def test_channel(slug: str) -> dict:
             "status": "ok",
             "latency_ms": max(0, int((time.perf_counter() - started) * 1000)),
             "model_count": len(models),
-            "tested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "tested_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     }
 
@@ -1271,3 +1714,367 @@ def get_channel_runtime(slug: str) -> dict:
         raise HTTPException(status_code=404, detail="channel is not registered")
     states = runtime_states(slug)
     return {"data": {"channel": slug, "states": states}, "total": len(states)}
+
+
+_SENSITIVE_CONFIG_PARTS = (
+    "secret",
+    "token",
+    "password",
+    "cookie",
+    "credential",
+    "authorization",
+    "api_key",
+    "apikey",
+    "access_key",
+    "private_key",
+)
+
+
+def _validate_public_channel_config(value: object, *, path: str = "config", depth: int = 0) -> None:
+    """Reject provider credentials before they can reach the local config table."""
+
+    if depth > 4:
+        raise HTTPException(status_code=422, detail="channel config nesting is too deep")
+    if isinstance(value, Mapping):
+        if len(value) > 64:
+            raise HTTPException(status_code=422, detail="channel config has too many fields")
+        for key, item in value.items():
+            name = str(key).strip()
+            if not name or len(name) > 64:
+                raise HTTPException(status_code=422, detail="channel config key is invalid")
+            normalized = name.casefold().replace("-", "_")
+            if any(part in normalized for part in _SENSITIVE_CONFIG_PARTS):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"provider secret field is not accepted: {path}.{name}",
+                )
+            _validate_public_channel_config(item, path=f"{path}.{name}", depth=depth + 1)
+        return
+    if isinstance(value, (list, tuple)):
+        if len(value) > 64:
+            raise HTTPException(status_code=422, detail="channel config list is too long")
+        for item in value:
+            _validate_public_channel_config(item, path=path, depth=depth + 1)
+        return
+    if value is None or isinstance(value, (bool, int, float)):
+        return
+    if isinstance(value, str):
+        if len(value) > 4096:
+            raise HTTPException(status_code=422, detail="channel config value is too long")
+        return
+    raise HTTPException(status_code=422, detail=f"unsupported channel config value at {path}")
+
+
+def _channel_config_row(adapter: AdapterSpec, config: dict[str, object], enabled: bool) -> dict:
+    now = int(time.time())
+    return {
+        "slug": adapter.slug,
+        "name": adapter.name,
+        "adapter": adapter.adapter,
+        "upstream_base": str(
+            getattr(adapter, "platform_base_url", "") or getattr(adapter, "base_url", "")
+        )[:2048],
+        "auth_kind": "adapter-managed",
+        "enabled": int(enabled),
+        "config": json.dumps(config, ensure_ascii=False, separators=(",", ":")),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _managed_channel_payload(slug: str) -> dict:
+    adapter = get_registry().get(slug)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="channel is not registered")
+    return _channel_payload(adapter)
+
+
+@router.post(
+    "/channels",
+    status_code=201,
+    tags=["channels"],
+    dependencies=[Depends(_require_admin_write)],
+)
+def create_channel_override(
+    body: ChannelCreate,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    adapter = get_registry().get(body.slug)
+    if adapter is None:
+        raise HTTPException(
+            status_code=501,
+            detail="dynamic provider registration is not implemented; use a built-in channel",
+        )
+    _validate_public_channel_config(body.config)
+    row = _channel_config_row(adapter, body.config, body.enabled)
+    with database(get_settings().db_path) as conn:
+        if conn.execute("SELECT 1 FROM channels WHERE slug = ?", (body.slug,)).fetchone():
+            raise HTTPException(status_code=409, detail="channel configuration already exists")
+        conn.execute(
+            """INSERT INTO channels
+            (slug, name, adapter, upstream_base, auth_kind, enabled, config, created_at, updated_at)
+            VALUES (:slug, :name, :adapter, :upstream_base, :auth_kind, :enabled, :config,
+                    :created_at, :updated_at)""",
+            row,
+        )
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="create_channel_config",
+            target=body.slug,
+            detail=f"enabled={str(body.enabled).lower()};config_fields={len(body.config)}",
+        )
+    return {"data": _managed_channel_payload(body.slug)}
+
+
+@router.patch(
+    "/channels/{slug}",
+    tags=["channels"],
+    dependencies=[Depends(_require_admin_write)],
+)
+def patch_channel_override(
+    slug: str,
+    body: ChannelPatch,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    adapter = get_registry().get(slug)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="channel is not registered")
+    if not body.model_fields_set:
+        raise HTTPException(status_code=422, detail="at least one channel field is required")
+    if body.config is not None:
+        _validate_public_channel_config(body.config)
+    current = _channel_management_state(slug)
+    current_config = dict(current["config"]) if current else {}
+    enabled = bool(current["enabled"]) if current else bool(adapter.models_configured)
+    if body.config is not None:
+        current_config = body.config
+    if body.enabled is not None:
+        enabled = body.enabled
+    row = _channel_config_row(adapter, current_config, enabled)
+    with database(get_settings().db_path) as conn:
+        existing = conn.execute(
+            "SELECT created_at FROM channels WHERE slug = ?", (slug,)
+        ).fetchone()
+        if existing is not None:
+            row["created_at"] = int(existing["created_at"])
+        conn.execute(
+            """INSERT INTO channels
+            (slug, name, adapter, upstream_base, auth_kind, enabled, config, created_at, updated_at)
+            VALUES (:slug, :name, :adapter, :upstream_base, :auth_kind, :enabled, :config,
+                    :created_at, :updated_at)
+            ON CONFLICT(slug) DO UPDATE SET
+                name=excluded.name, adapter=excluded.adapter, upstream_base=excluded.upstream_base,
+                auth_kind=excluded.auth_kind, enabled=excluded.enabled, config=excluded.config,
+                updated_at=excluded.updated_at""",
+            row,
+        )
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="update_channel_config",
+            target=slug,
+            detail=f"enabled={str(enabled).lower()};config_fields={len(current_config)}",
+        )
+    return {"data": _managed_channel_payload(slug)}
+
+
+@router.delete(
+    "/channels/{slug}",
+    tags=["channels"],
+    dependencies=[Depends(_require_admin_write)],
+)
+def delete_channel_override(slug: str, request: Request, user: AdminContext) -> dict:
+    if slug not in get_registry():
+        raise HTTPException(status_code=404, detail="channel is not registered")
+    with database(get_settings().db_path) as conn:
+        if conn.execute("SELECT 1 FROM channels WHERE slug = ?", (slug,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="channel configuration not found")
+        conn.execute("DELETE FROM channels WHERE slug = ?", (slug,))
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="delete_channel_config",
+            target=slug,
+            detail="reset_to_registry_defaults",
+        )
+    return {"data": {"slug": slug, "deleted": True, "reset_to_registry_defaults": True}}
+
+
+def _playground_account(channel: str) -> dict[str, str] | None:
+    with database(get_settings().db_path) as conn:
+        row = conn.execute(
+            """SELECT id, native_id FROM accounts
+            WHERE channel = ? AND enabled = 1
+                AND COALESCE(status_override, status) NOT IN ('disabled', 'expired')
+            ORDER BY priority DESC, updated_at DESC, id LIMIT 1""",
+            (channel,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"id": str(row["id"]), "account_id": str(row["id"]), "native_id": str(row["native_id"])}
+
+
+def _playground_run_payload(row) -> dict[str, object]:
+    return {
+        "id": str(row["id"]),
+        "actor": str(row["actor"]),
+        "channel": str(row["channel"]),
+        "model": str(row["model"]),
+        "status": str(row["status"]),
+        "message_count": int(row["message_count"]),
+        "request_bytes": int(row["request_bytes"]),
+        "response_status": row["response_status"],
+        "error_code": row["error_code"],
+        "created_at": int(row["created_at"]),
+        "completed_at": row["completed_at"],
+    }
+
+
+@router.get("/playground/runs", tags=["playground"])
+def list_playground_runs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    offset = (page - 1) * page_size
+    with database(get_settings().db_path) as conn:
+        total = int(conn.execute("SELECT COUNT(*) FROM playground_runs").fetchone()[0])
+        rows = conn.execute(
+            """SELECT id, actor, channel, model, status, message_count, request_bytes,
+            response_status, error_code, created_at, completed_at
+            FROM playground_runs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?""",
+            (page_size, offset),
+        ).fetchall()
+    return {
+        "data": [_playground_run_payload(row) for row in rows],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": (total + page_size - 1) // page_size,
+        },
+    }
+
+
+@router.post(
+    "/playground/chat",
+    tags=["playground"],
+    dependencies=[Depends(_require_admin_write)],
+)
+async def playground_chat(
+    body: PlaygroundChatRequest,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    if body.stream:
+        raise HTTPException(status_code=501, detail="playground streaming is not implemented")
+    adapter = get_registry().get(body.channel)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="channel is not registered")
+    managed = _channel_management_state(body.channel)
+    if managed is not None and not bool(managed["enabled"]):
+        raise HTTPException(status_code=503, detail="channel_disabled")
+    runtime = getattr(adapter, "runtime", None)
+    invoke = getattr(runtime, "invoke", None)
+    if not callable(invoke):
+        raise HTTPException(
+            status_code=501,
+            detail="playground requires a native channel runtime; no upstream call was made",
+        )
+    model = body.model
+    prefix = f"{body.channel}/"
+    if model.startswith(prefix):
+        model = model[len(prefix) :]
+    if "/" in model:
+        raise HTTPException(status_code=422, detail="model must belong to the selected channel")
+    payload: dict[str, object] = {
+        "model": model,
+        "messages": [item.model_dump() for item in body.messages],
+        "stream": False,
+    }
+    if body.temperature is not None:
+        payload["temperature"] = body.temperature
+    if body.max_tokens is not None:
+        payload["max_tokens"] = body.max_tokens
+    run_id = f"pg_{uuid.uuid4().hex}"
+    now = int(time.time())
+    request_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
+    account = _playground_account(body.channel)
+    with database(get_settings().db_path) as conn:
+        conn.execute(
+            """INSERT INTO playground_runs
+            (id, actor, channel, model, status, message_count, request_bytes, created_at)
+            VALUES (?, ?, ?, ?, 'running', ?, ?, ?)""",
+            (run_id, _actor(user), body.channel, model, len(body.messages), request_bytes, now),
+        )
+    try:
+        response = invoke({"model": model, "payload": payload, "stream": False}, account)
+        if inspect.isawaitable(response):
+            response = await response
+        status_code = int(getattr(response, "status_code", 200))
+        try:
+            result_body = response.json()
+        except (ValueError, TypeError):
+            result_body = {"content": str(getattr(response, "text", ""))[:64_000]}
+        error_code = None
+        if status_code >= 400:
+            if isinstance(result_body, Mapping):
+                error = result_body.get("error")
+                error_code = str(
+                    error.get("code")
+                    if isinstance(error, Mapping)
+                    else result_body.get("code") or "upstream_error"
+                )[:128]
+            else:
+                error_code = "upstream_error"
+        finished = int(time.time())
+        status = "ok" if status_code < 400 else "failed"
+        with database(get_settings().db_path) as conn:
+            conn.execute(
+                """UPDATE playground_runs
+                SET status=?, response_status=?, error_code=?, completed_at=?
+                WHERE id=?""",
+                (status, status_code, error_code, finished, run_id),
+            )
+            _audit_write(
+                conn,
+                user=user,
+                request=request,
+                action="playground_chat",
+                target=run_id,
+                detail=f"channel={body.channel};model={model};status={status_code}",
+            )
+        return {
+            "data": {
+                "run_id": run_id,
+                "channel": body.channel,
+                "model": model,
+                "status": status,
+                "response_status": status_code,
+                "response": result_body,
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        with database(get_settings().db_path) as conn:
+            conn.execute(
+                """UPDATE playground_runs
+                SET status='failed', error_code='upstream_error', completed_at=?
+                WHERE id=?""",
+                (int(time.time()), run_id),
+            )
+            _audit_write(
+                conn,
+                user=user,
+                request=request,
+                action="playground_chat",
+                target=run_id,
+                detail="status=exception",
+            )
+        raise HTTPException(status_code=502, detail="playground upstream request failed") from exc

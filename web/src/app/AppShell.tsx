@@ -21,6 +21,8 @@ const searchablePages = [
   { label: "审计日志", path: "/audit-logs", keywords: ["audit", "审计"] },
   { label: "系统健康", path: "/system", keywords: ["system", "health", "系统"] },
   { label: "用量统计", path: "/usage", keywords: ["usage", "统计"] },
+  { label: "调试台", path: "/playground", keywords: ["playground", "debug", "调试"] },
+  { label: "用户管理", path: "/users", keywords: ["users", "user", "用户"] },
 ];
 
 export function AppShell() {
@@ -42,6 +44,8 @@ export function AppShell() {
     "/audit-logs": "审计日志",
     "/system": "系统健康",
     "/usage": "用量统计",
+    "/playground": "调试台",
+    "/users": "用户管理",
   };
 
   useEffect(() => onUnauthorized(() => setAuth({ status: "signed-out" })), []);
@@ -202,6 +206,15 @@ export function AppShell() {
               </NavLink>
               <NavLink to="/usage" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
                 <span className="side-icon side-icon-usage" aria-hidden="true" />用量统计
+              </NavLink>
+              <NavLink to="/playground" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
+                <span className="side-icon side-icon-logs" aria-hidden="true" />调试台
+              </NavLink>
+            </div>
+            <div className="nav-group">
+              <span className="side-label">管理</span>
+              <NavLink to="/users" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
+                <span className="side-icon side-icon-keys" aria-hidden="true" />用户管理
               </NavLink>
             </div>
           </nav>

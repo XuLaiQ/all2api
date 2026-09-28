@@ -18,6 +18,25 @@ _SECRET_FIELDS = {
     "client_secret",
 }
 
+_IMPORT_CREDENTIAL_FIELDS = {
+    "access_token",
+    "accessToken",
+    "refresh_token",
+    "refreshToken",
+    "id_token",
+    "idToken",
+    "token",
+    "oauth_token",
+    "client_id",
+    "chatgpt_account_id",
+    "chatgpt_user_id",
+    "email",
+    "expires_at",
+    "expiresAt",
+    "organization_id",
+    "plan_type",
+}
+
 
 def token_fingerprint(token: str) -> str:
     """Return a stable, non-reversible identifier for a token."""
@@ -46,6 +65,26 @@ def _first(payload: Mapping[str, Any], *names: str) -> str:
     return ""
 
 
+def _merged_import_payload(item: Mapping[str, Any]) -> tuple[dict[str, Any], Mapping[str, Any]]:
+    """Flatten the nested account shape used by sub2api exports.
+
+    Export metadata remains available for the canonical account view, while
+    the nested ``credentials`` object remains the only source for credential
+    material written to the encrypted store.
+    """
+
+    extra = item.get("extra")
+    credentials = item.get("credentials")
+    merged: dict[str, Any] = {}
+    if isinstance(extra, Mapping):
+        merged.update(extra)
+    merged.update(item)
+    if isinstance(credentials, Mapping):
+        merged.update(credentials)
+        return merged, credentials
+    return merged, item
+
+
 def token_record(item: Any) -> dict[str, Any]:
     """Normalize a token string or full OAuth token object.
 
@@ -55,8 +94,9 @@ def token_record(item: Any) -> dict[str, Any]:
 
     if isinstance(item, str):
         payload: Mapping[str, Any] = {"access_token": item}
+        credential_payload: Mapping[str, Any] = payload
     elif isinstance(item, Mapping):
-        payload = item
+        payload, credential_payload = _merged_import_payload(item)
     else:
         raise ValueError("token item must be a string or object")
     access = _first(payload, "access_token", "accessToken", "token")
@@ -65,20 +105,25 @@ def token_record(item: Any) -> dict[str, Any]:
     if not access:
         raise ValueError("access token is required")
     credentials = {
-        "access_token": access,
-        "refresh_token": refresh,
-        "id_token": identity,
+        str(key): value
+        for key, value in credential_payload.items()
+        if str(key) in _IMPORT_CREDENTIAL_FIELDS and value is not None
     }
+    credentials["access_token"] = access
+    credentials["refresh_token"] = refresh
+    credentials["id_token"] = identity
     return {
         "fingerprint": token_fingerprint(access),
         "credential_ref": credential_reference(access),
         "credentials": credentials,
         "metadata": {
-            "email": _first(payload, "email", "email_address"),
-            "name": _first(payload, "name", "nickname"),
+            "email": _first(payload, "email", "email_address", "mailbox_email"),
+            "name": _first(payload, "name", "nickname", "display_name"),
             "plan": _first(payload, "plan", "plan_type", "type"),
-            "source_type": _first(payload, "source_type") or "oauth",
+            "source_type": _first(payload, "source_type", "source") or "oauth",
             "expires_at": payload.get("expires_at") or payload.get("expiresAt"),
+            "chatgpt_account_id": _first(payload, "chatgpt_account_id"),
+            "chatgpt_user_id": _first(payload, "chatgpt_user_id", "user_id"),
         },
     }
 
@@ -110,6 +155,11 @@ def canonical_account(record: Mapping[str, Any]) -> dict[str, Any]:
         "ext": {
             "source_type": metadata.get("source_type") or "oauth",
             "credential_ref": str(record.get("credential_ref") or ""),
+            **{
+                key: metadata[key]
+                for key in ("chatgpt_account_id", "chatgpt_user_id")
+                if metadata.get(key)
+            },
         },
     }
 

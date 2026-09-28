@@ -1,0 +1,24 @@
+refactor: 合并 app.infrastructure.main 到 app.main，提升 Python 3.13 兼容性
+
+重构项目结构，消除冗余嵌套：
+- 删除 app/infrastructure/main.py，将其内容合并到 app/main.py
+- 更新所有导入路径：app.infrastructure.main → app.main
+- 替换已废弃的 UTC 为 timezone.utc（Python 3.13 兼容）
+
+影响范围：
+- 适配器层：chatgpt, doubao, workbuddy
+- 路由层：gateway, admin  
+- 调度器和测试套件
+- 共修改 7 个模块文件和 2 个测试文件
+
+测试验证：✅ 115 passed
+
+保留的 app.infrastructure 子模块：
+- credentials.py - 凭证管理
+- db.py - 数据库操作
+- provision_state.py - 配置状态
+- security.py - 安全相关
+
+无破坏性变更，所有 API 接口保持不变
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

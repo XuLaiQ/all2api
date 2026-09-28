@@ -19,8 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.credentials import record_account
+from app.infrastructure.credentials import record_account
 from app.domain.channel import ChannelManifest
+from app.infrastructure.provision_state import ProvisionStateStore
 
 from .browser import BrowserWorker, NullBrowserWorker, maybe_await
 from .credentials import CredentialStore, MemoryCredentialStore, store_credentials
@@ -223,6 +224,7 @@ class DoubaoProvisioner:
         manifest: ChannelManifest | None = None,
         session_ttl_seconds: float = 300,
         clock: Callable[[], float] = time.time,
+        state_store: ProvisionStateStore | None = None,
     ) -> None:
         self.profile_store = DoubaoProfileStore(profile_root)
         self.browser_worker = browser_worker or NullBrowserWorker()
@@ -231,6 +233,7 @@ class DoubaoProvisioner:
         self.flows = tuple(self.manifest.account_flows)
         self.session_ttl_seconds = max(1.0, float(session_ttl_seconds))
         self._clock = clock
+        self.state_store = state_store
         self._sessions: dict[str, _QrSession] = {}
         self._idempotency: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -278,6 +281,8 @@ class DoubaoProvisioner:
                 await maybe_await(self.browser_worker.cancel_qr_login(session_id))
             finally:
                 self._sessions.pop(session_id, None)
+                if self.state_store is not None:
+                    self.state_store.delete_session("doubao", session_id)
         cleanup = getattr(self.browser_worker, "delete_account", None)
         if callable(cleanup):
             await maybe_await(cleanup(account_id))
@@ -287,11 +292,40 @@ class DoubaoProvisioner:
         return self.flows
 
     def _idempotent(self, operation: str, key: str) -> dict[str, Any] | None:
-        return self._idempotency.get((operation, key)) if key else None
+        if not key:
+            return None
+        if self.state_store is not None:
+            durable = self.state_store.get_idempotency(
+                "doubao", operation, key, now=self._clock()
+            )
+            if durable is not None:
+                return dict(durable.response)
+            # A durable TTL has expired; do not let the hot cache revive it.
+            self._idempotency.pop((operation, key), None)
+            return None
+        cached = self._idempotency.get((operation, key))
+        return dict(cached) if cached is not None else None
 
-    def _remember(self, operation: str, key: str, result: dict[str, Any]) -> dict[str, Any]:
+    def _remember(
+        self,
+        operation: str,
+        key: str,
+        result: dict[str, Any],
+        *,
+        session_id: str = "",
+        expires_at: float | None = None,
+    ) -> dict[str, Any]:
         if key:
             self._idempotency[(operation, key)] = dict(result)
+            if self.state_store is not None:
+                self.state_store.remember_idempotency(
+                    "doubao",
+                    operation,
+                    key,
+                    result,
+                    session_id=session_id,
+                    expires_at=expires_at,
+                )
         return result
 
     def _new_session(self, account_id: str, flow: str) -> _QrSession:
@@ -304,16 +338,107 @@ class DoubaoProvisioner:
             expires_at=now + self.session_ttl_seconds,
         )
         self._sessions[session.session_id] = session
+        self._persist(session)
         return session
+
+    @staticmethod
+    def _from_state(state: Mapping[str, Any]) -> _QrSession:
+        return _QrSession(
+            session_id=str(state.get("session_id") or state.get("id") or ""),
+            account_id=str(state.get("account_id") or ""),
+            flow=str(state.get("flow") or "qr-login"),
+            created_at=float(state.get("created_at") or 0),
+            expires_at=float(state.get("expires_at") or 0),
+            status=str(state.get("status") or "created"),
+            qr_code=str(state.get("qr_code")) if state.get("qr_code") is not None else None,
+            qr_image_base64=(
+                str(state.get("qr_image_base64"))
+                if state.get("qr_image_base64") is not None
+                else None
+            ),
+            credential_ref=(
+                str(state.get("credential_ref"))
+                if state.get("credential_ref") is not None
+                else None
+            ),
+            last_result=(
+                dict(state["last_result"])
+                if isinstance(state.get("last_result"), Mapping)
+                else None
+            ),
+        )
+
+    def _persist(self, session: _QrSession) -> None:
+        if self.state_store is None:
+            return
+        self.state_store.save_session(
+            "doubao",
+            session.session_id,
+            flow=session.flow,
+            status=session.status,
+            created_at=session.created_at,
+            expires_at=session.expires_at,
+            state={
+                "session_id": session.session_id,
+                "account_id": session.account_id,
+                "flow": session.flow,
+                "created_at": session.created_at,
+                "expires_at": session.expires_at,
+                "status": session.status,
+                "qr_code": session.qr_code,
+                "qr_image_base64": session.qr_image_base64,
+                "credential_ref": session.credential_ref,
+                "last_result": session.last_result,
+            },
+        )
 
     def _get_session(self, session_id: str) -> _QrSession:
         session = self._sessions.get(session_id)
+        if session is None and self.state_store is not None:
+            state = self.state_store.load_session("doubao", session_id)
+            if state is not None:
+                session = self._from_state(state)
+                self._sessions[session_id] = session
         if session is None:
             raise ProvisionSessionNotFoundError(session_id)
-        if self._clock() >= session.expires_at:
+        if (
+            session.status
+            not in {"succeeded", "cancelled", "expired", "failed", "captcha"}
+            and self._clock() >= session.expires_at
+        ):
             session.status = "expired"
+            self._persist(session)
             raise ProvisionSessionExpiredError()
         return session
+
+    async def _restore_worker_session(self, session: _QrSession) -> None:
+        """Recreate the non-durable browser context after a process restart."""
+
+        restore = getattr(self.browser_worker, "restore_qr_login", None)
+        if not callable(restore):
+            return
+        profile = self.profile_store.get(session.account_id)
+        challenge = await maybe_await(
+            restore(
+                session.session_id,
+                session.account_id,
+                profile.profile_path,
+                session.created_at,
+            )
+        )
+        if challenge is None:
+            return
+        qr_code = _value(challenge, "qr_code")
+        if qr_code:
+            session.qr_code = str(qr_code)
+        qr_image = _qr_image_value(challenge)
+        if qr_image:
+            session.qr_image_base64 = qr_image
+        status = str(_value(challenge, "status", "waiting_scan") or "waiting_scan")
+        if session.status not in {"succeeded", "cancelled", "expired", "failed", "captcha"}:
+            session.status = status
+        self._session_result(session)
+        self._persist(session)
 
     async def start(
         self,
@@ -379,20 +504,34 @@ class DoubaoProvisioner:
             )
         except DoubaoProvisionError:
             self._sessions.pop(session.session_id, None)
+            if self.state_store is not None:
+                self.state_store.delete_session("doubao", session.session_id)
             raise
         except Exception as exc:
             self._sessions.pop(session.session_id, None)
+            if self.state_store is not None:
+                self.state_store.delete_session("doubao", session.session_id)
             raise BrowserWorkerError() from exc
         challenge_id = str(_value(challenge, "session_id", session.session_id))
         session.qr_code = str(_value(challenge, "qr_code", "") or "")
         session.qr_image_base64 = _qr_image_value(challenge)
         session.status = str(_value(challenge, "status", "waiting_scan") or "waiting_scan")
         if challenge_id != session.session_id:
+            old_session_id = session.session_id
             self._sessions[challenge_id] = session
-            self._sessions.pop(session.session_id, None)
+            self._sessions.pop(old_session_id, None)
+            if self.state_store is not None:
+                self.state_store.delete_session("doubao", old_session_id)
             session.session_id = challenge_id
         result = self._session_result(session)
-        return self._remember("qr-login", idempotency_key, result)
+        self._persist(session)
+        return self._remember(
+            "qr-login",
+            idempotency_key,
+            result,
+            session_id=session.session_id,
+            expires_at=session.expires_at,
+        )
 
     def _session_result(self, session: _QrSession, event: Any | None = None) -> dict[str, Any]:
         result = {
@@ -460,7 +599,9 @@ class DoubaoProvisioner:
             except Exception as exc:
                 session.status = "failed"
                 raise CredentialStoreError() from exc
-        return self._session_result(session, event)
+        result = self._session_result(session, event)
+        self._persist(session)
+        return result
 
     async def poll(self, session_id: str, idempotency_key: str = "") -> Mapping[str, Any]:
         session = self._get_session(session_id)
@@ -469,6 +610,12 @@ class DoubaoProvisioner:
             and session.last_result
         ):
             return dict(session.last_result)
+        try:
+            await self._restore_worker_session(session)
+        except DoubaoProvisionError:
+            raise
+        except Exception as exc:
+            raise BrowserWorkerError() from exc
         try:
             event = await maybe_await(self.browser_worker.poll_qr_login(session.session_id))
         except DoubaoProvisionError:
@@ -489,9 +636,23 @@ class DoubaoProvisioner:
                 "idempotency_key_required",
                 422,
             )
+        if self.state_store is not None:
+            cached = self.state_store.get_idempotency(
+                "doubao", "complete", idempotency_key, now=self._clock()
+            )
+            if cached is not None and (
+                not cached.session_id or cached.session_id == session_id
+            ):
+                return dict(cached.response)
         session = self._get_session(session_id)
         if session.status in {"succeeded", "cancelled"} and session.last_result:
             return dict(session.last_result)
+        try:
+            await self._restore_worker_session(session)
+        except DoubaoProvisionError:
+            raise
+        except Exception as exc:
+            raise BrowserWorkerError() from exc
         try:
             event = await maybe_await(self.browser_worker.complete_qr_login(session.session_id))
         except DoubaoProvisionError:
@@ -499,18 +660,26 @@ class DoubaoProvisioner:
         except Exception as exc:
             raise BrowserWorkerError() from exc
         result = await self._apply_event(session, event)
-        return self._remember("complete", idempotency_key, result)
+        return self._remember(
+            "complete",
+            idempotency_key,
+            result,
+            session_id=session.session_id,
+            expires_at=session.expires_at,
+        )
 
     async def cancel(self, session_id: str, idempotency_key: str = "") -> None:
         session = self._get_session(session_id)
         if session.status in {"cancelled", "succeeded"}:
             return
         try:
+            await self._restore_worker_session(session)
             await maybe_await(self.browser_worker.cancel_qr_login(session.session_id))
         except Exception as exc:
             raise BrowserWorkerError() from exc
         session.status = "cancelled"
         session.last_result = self._session_result(session)
+        self._persist(session)
 
     async def import_accounts(
         self,

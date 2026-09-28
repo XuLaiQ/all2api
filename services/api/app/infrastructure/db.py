@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.config import API_DIR
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels (
@@ -192,6 +192,57 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     ip TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts);
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    role TEXT NOT NULL DEFAULT 'viewer',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playground_runs (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    request_bytes INTEGER NOT NULL DEFAULT 0,
+    response_status INTEGER,
+    error_code TEXT,
+    created_at INTEGER NOT NULL,
+    completed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_playground_runs_created
+    ON playground_runs(created_at DESC);
+CREATE TABLE IF NOT EXISTS provision_sessions (
+    channel TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    flow TEXT NOT NULL,
+    status TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    state TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY(channel, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_provision_sessions_expiry
+    ON provision_sessions(channel, expires_at, status);
+CREATE INDEX IF NOT EXISTS idx_provision_sessions_idempotency
+    ON provision_sessions(channel, idempotency_key);
+CREATE TABLE IF NOT EXISTS provision_idempotency (
+    channel TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    expires_at REAL,
+    response TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY(channel, operation, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_provision_idempotency_expiry
+    ON provision_idempotency(channel, expires_at);
 """
 
 

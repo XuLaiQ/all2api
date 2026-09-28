@@ -17,7 +17,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.db import database, migrate, resolve_db_path
+from app.infrastructure.db import database, migrate, resolve_db_path
 
 _SECRET_NAMES = {
     "access_token",
@@ -283,6 +283,31 @@ class DatabaseCredentialStore:
             "credential_ref": credential_ref,
             "credentials_deleted": int(deleted or 0),
         }
+
+    async def record_account_refresh(
+        self,
+        account_id: str,
+        *,
+        actor: str = "system",
+        ip: str = "",
+    ) -> None:
+        """Write a redacted audit event after provider credential rotation."""
+
+        row = self._account_row(account_id)
+        now = int(time.time())
+        with database(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO audit_logs(ts, actor, action, target, detail, ip) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    now,
+                    str(actor or "system")[:128],
+                    "refresh_account",
+                    str(account_id)[:256],
+                    f"channel={str(row['channel'])[:64]}",
+                    str(ip or "")[:64],
+                ),
+            )
 
     async def upsert_account(
         self,

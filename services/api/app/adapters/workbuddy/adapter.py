@@ -35,6 +35,9 @@ class WorkBuddyAdapter:
     async def invoke(self, request: Any, account: Any) -> Any:
         return await self._runtime.invoke(request, account)
 
+    async def invoke_capability(self, capability: str, request: Any, account: Any = None) -> Any:
+        return await self._runtime.invoke_capability(capability, request, account)
+
     async def invoke_stream(self, request: Any, account: Any) -> AsyncIterator[Any]:
         async for chunk in self._runtime.invoke_stream(request, account):
             yield chunk

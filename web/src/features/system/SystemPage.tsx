@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
+import type { FormEvent } from "react";
+import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Select } from "../../app/controls/Select";
 import {
+  fetchAdminSettings,
   fetchStorageHealth,
   fetchSystemInfo,
   fetchSystemMetrics,
+  updateAdminSettings,
+  type AdminSettings,
   type StorageHealth,
   type SystemInfo,
   type SystemMetrics,
@@ -34,9 +39,18 @@ function stateLabel(status: string): { label: string; tone: string } {
 }
 
 export function SystemPage() {
+  const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [storage, setStorage] = useState<StorageHealth | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
+  const [settings, setSettings] = useState<AdminSettings | null>(null);
+  const [settingsDraft, setSettingsDraft] = useState<AdminSettings["values"]>({
+    log_retention_days: 30,
+    usage_retention_days: 365,
+  });
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [settingsError, setSettingsError] = useState("");
   const [days, setDays] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -50,11 +64,14 @@ export function SystemPage() {
       fetchSystemInfo(controller.signal),
       fetchStorageHealth(controller.signal),
       fetchSystemMetrics(days, controller.signal),
+      fetchAdminSettings(controller.signal),
     ])
-      .then(([nextInfo, nextStorage, nextMetrics]) => {
+      .then(([nextInfo, nextStorage, nextMetrics, nextSettings]) => {
         setInfo(nextInfo);
         setStorage(nextStorage);
         setMetrics(nextMetrics);
+        setSettings(nextSettings);
+        setSettingsDraft(nextSettings.values);
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
@@ -66,6 +83,24 @@ export function SystemPage() {
       });
     return () => controller.abort();
   }, [days, retry]);
+
+  async function saveSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (role !== "admin") return;
+    setSettingsSaving(true);
+    setSettingsMessage("");
+    setSettingsError("");
+    try {
+      const nextSettings = await updateAdminSettings(settingsDraft);
+      setSettings(nextSettings);
+      setSettingsDraft(nextSettings.values);
+      setSettingsMessage("设置已保存");
+    } catch (cause: unknown) {
+      setSettingsError(cause instanceof ApiClientError ? cause.message : "保存设置失败");
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
 
   const runtime = stateLabel(info?.runtime_state.status ?? "not_initialized");
   const storageState = storage?.status === "ok" ? { label: "正常", tone: "success" } : { label: "降级", tone: "danger" };
@@ -131,6 +166,44 @@ export function SystemPage() {
             <div className="table-wrap"><table className="data-table system-channel-table"><thead><tr><th>渠道</th><th>模型接口</th><th>账号接口</th></tr></thead><tbody>
               {(info?.channels ?? []).map((channel) => <tr key={channel.slug}><td className="channel-name">{channel.slug}</td><td>{channel.models_configured ? "已配置" : "未配置"}</td><td>{channel.accounts_configured ? "已配置" : "未配置"}</td></tr>)}
             </tbody></table></div>
+          </section>
+
+          <section className="data-section surface-panel" aria-labelledby="system-settings-title">
+            <div className="section-heading"><div><h2 id="system-settings-title">保留策略</h2><p>控制本地请求日志和用量聚合的保留周期</p></div></div>
+            {settingsError && <div className="notice notice-error" role="alert">{settingsError}</div>}
+            {settingsMessage && <div className="notice notice-info" role="status">{settingsMessage}</div>}
+            <form className="system-settings-form" onSubmit={(event) => void saveSettings(event)}>
+              <label>
+                <span>请求日志保留天数</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={36500}
+                  value={settingsDraft.log_retention_days}
+                  onChange={(event) => setSettingsDraft((current) => ({ ...current, log_retention_days: Number(event.target.value) }))}
+                  disabled={role !== "admin" || settingsSaving}
+                />
+                <small>当前来源：{settings?.sources.log_retention_days === "database" ? "数据库" : "环境配置"}</small>
+              </label>
+              <label>
+                <span>用量聚合保留天数</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={36500}
+                  value={settingsDraft.usage_retention_days}
+                  onChange={(event) => setSettingsDraft((current) => ({ ...current, usage_retention_days: Number(event.target.value) }))}
+                  disabled={role !== "admin" || settingsSaving}
+                />
+                <small>必须不短于日志保留期 · 当前来源：{settings?.sources.usage_retention_days === "database" ? "数据库" : "环境配置"}</small>
+              </label>
+              <div className="system-settings-actions">
+                <button className="key-primary-action" type="submit" disabled={role !== "admin" || settingsSaving}>
+                  {settingsSaving ? "保存中…" : "保存设置"}
+                </button>
+                {role !== "admin" && <span className="secondary-text">当前角色仅可查看</span>}
+              </div>
+            </form>
           </section>
         </>
       )}

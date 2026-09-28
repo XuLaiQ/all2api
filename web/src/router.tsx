@@ -11,6 +11,8 @@ import { OverviewPage } from "./features/overview/OverviewPage";
 import { RoutesPage } from "./features/routes/RoutesPage";
 import { SystemPage } from "./features/system/SystemPage";
 import { UsagePage } from "./features/usage/UsagePage";
+import { UsersPage } from "./features/management/UsersPage";
+import { PlaygroundPage } from "./features/management/PlaygroundPage";
 
 export const router = createBrowserRouter([
   {
@@ -19,6 +21,8 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <OverviewPage /> },
       { path: "usage", element: <UsagePage /> },
+      { path: "playground", element: <PlaygroundPage /> },
+      { path: "users", element: <UsersPage /> },
       { path: "logs", element: <LogsPage /> },
       { path: "audit-logs", element: <AuditPage /> },
       { path: "system", element: <SystemPage /> },

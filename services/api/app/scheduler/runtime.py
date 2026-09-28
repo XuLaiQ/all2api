@@ -4,7 +4,7 @@ import time
 from email.utils import parsedate_to_datetime
 
 from app.config import get_settings
-from app.db import database
+from app.infrastructure.db import database
 
 SOFT_COOLDOWN_BASE = 600
 SOFT_COOLDOWN_MAX = 7200

@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     chatgpt_auth_key: SecretStr = SecretStr("")
     session_days: int = 1
     session_idle_hours: int = 12
+    # Native account provision sessions (QR/OAuth) are durable in SQLite and
+    # remain replayable until this provider-state TTL elapses.
+    provision_session_ttl_seconds: int = Field(default=600, ge=1, le=86400)
     secure_cookie: str = "auto"
     trust_proxy: bool = True
     trusted_proxies: str = "127.0.0.1,::1"

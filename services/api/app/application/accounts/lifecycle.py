@@ -8,9 +8,10 @@ remain inside the credential store and never cross this boundary.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from typing import Any
 
-from app.credentials import AccountNotFoundError, DatabaseCredentialStore
+from app.infrastructure.credentials import AccountNotFoundError, DatabaseCredentialStore
 
 
 class AccountLifecycleError(RuntimeError):
@@ -71,6 +72,44 @@ class AccountLifecycleService:
         metadata = await self._metadata(account_id)
         await self._provider_hook(metadata, "delete_account")
         return await self.store.destroy_account(account_id, actor=actor, ip=ip)
+
+    async def refresh(
+        self,
+        account_id: str,
+        *,
+        actor: str = "system",
+        ip: str = "",
+    ) -> dict[str, Any]:
+        """Refresh provider credentials without returning secret material."""
+
+        metadata = await self._metadata(account_id)
+        adapter = self.registry.get(str(metadata["channel"]))
+        provisioner = getattr(adapter, "provisioner", None) if adapter is not None else None
+        method = getattr(provisioner, "refresh_credential", None)
+        if not callable(method):
+            raise AccountLifecycleError("provider credential refresh is unavailable")
+        try:
+            result = method(str(metadata["native_id"]))
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            raise AccountLifecycleError("provider credential refresh failed") from exc
+        if isinstance(result, Mapping):
+            safe = dict(result)
+            safe.pop("credentials", None)
+            safe.pop("token", None)
+            safe["id"] = str(account_id)
+            safe["channel"] = str(metadata["channel"])
+            safe["refreshed"] = True
+            await self.store.record_account_refresh(account_id, actor=actor, ip=ip)
+            return safe
+        await self.store.record_account_refresh(account_id, actor=actor, ip=ip)
+        return {
+            "id": str(account_id),
+            "channel": str(metadata["channel"]),
+            "status": "refreshed",
+            "refreshed": True,
+        }
 
 
 __all__ = ["AccountLifecycleError", "AccountLifecycleService", "AccountNotFoundError"]

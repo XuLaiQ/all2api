@@ -36,6 +36,14 @@ export type ChannelTestResult = {
   tested_at: string;
 };
 
+export async function setChannelEnabled(slug: string, enabled: boolean): Promise<void> {
+  await apiClient.patch(`/channels/${encodeURIComponent(slug)}`, { enabled });
+}
+
+export async function resetChannelOverride(slug: string): Promise<void> {
+  await apiClient.delete(`/channels/${encodeURIComponent(slug)}`);
+}
+
 export async function testChannel(
   slug: string,
   signal?: AbortSignal,

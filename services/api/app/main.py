@@ -10,10 +10,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.adapters.registry import get_registry
 from app.config import get_settings
-from app.db import database, migrate
+from app.infrastructure.db import database, migrate
 from app.protocols.anthropic import anthropic_error_payload
+from app.infrastructure.provision_state import ProvisionStateStore
 from app.routers import admin, auth, gateway, keys, models, routes
-from app.security import initialize_bootstrap_key, require_same_origin
+from app.infrastructure.security import initialize_bootstrap_key, require_same_origin
 
 settings = get_settings()
 
@@ -59,6 +60,10 @@ def _admin_error_code(status_code: int) -> str:
 async def lifespan(_: FastAPI):
     migrate(settings.db_path)
     initialize_bootstrap_key()
+    ProvisionStateStore(
+        settings.db_path,
+        getattr(settings, "credential_master_key", ""),
+    ).purge_expired()
     # Browser workers are opt-in; the default registry uses NullBrowserWorker.
     # Starting here gives explicitly enabled Playwright workers one owned
     # lifecycle and ensures shutdown closes contexts before process exit.
@@ -232,13 +237,40 @@ admin_router = APIRouter(prefix="/admin/api")
 
 
 @admin_router.get("/healthz", tags=["system"])
-def healthz() -> dict[str, str]:
+def healthz(detail: bool = False) -> dict[str, object]:
     try:
         with database(settings.db_path) as conn:
             conn.execute("SELECT 1").fetchone()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="database unavailable") from exc
-    return {"status": "ok", "service": "all2api-api", "database": "ok"}
+    basic = {"status": "ok", "service": "all2api-api", "database": "ok"}
+    if not detail:
+        # Keep the small compatibility response used by deployment probes.
+        return basic
+
+    channels: dict[str, dict[str, object]] = {}
+    for adapter in get_registry(settings).values():
+        data_configured = bool(getattr(adapter, "models_configured", False))
+        provision_configured = bool(getattr(adapter, "provision_configured", False))
+        channels[adapter.slug] = {
+            "status": "ready" if data_configured else "not_configured",
+            "data_plane_configured": data_configured,
+            "provision_configured": provision_configured,
+            # Healthz must not trigger an upstream request.  The channel test
+            # endpoint is the explicit probe for platform reachability.
+            "platform_probe": "not_run",
+        }
+    overall = "ready" if all(
+        item["status"] == "ready" for item in channels.values()
+    ) else "degraded"
+    return {
+        **basic,
+        "status": overall,
+        "checks": {
+            "storage": {"status": "ready"},
+            "channels": channels,
+        },
+    }
 
 
 app.include_router(admin_router)

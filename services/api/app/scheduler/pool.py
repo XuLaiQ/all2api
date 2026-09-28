@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.config import get_settings
-from app.db import database
+from app.infrastructure.db import database
 
 WORKBUDDY_ACCOUNT_ATTEMPTS = 3
 WORKBUDDY_LOCAL_INFLIGHT_LIMIT = 1
@@ -20,9 +20,15 @@ _selection_seq = 0
 
 
 @dataclass(frozen=True)
-class WorkBuddyCandidate:
+class AccountCandidate:
     account_id: str
     native_id: str
+    channel: str = ""
+
+
+@dataclass(frozen=True)
+class WorkBuddyCandidate(AccountCandidate):
+    channel: str = "wb"
 
 
 @dataclass
@@ -93,6 +99,60 @@ def workbuddy_candidates(model: str) -> tuple[bool, list[WorkBuddyCandidate]]:
     return snapshot_exists, candidates
 
 
+def account_candidates(
+    channel: str,
+    model: str,
+    *,
+    max_candidates: int = WORKBUDDY_ACCOUNT_ATTEMPTS,
+) -> tuple[bool, list[AccountCandidate]]:
+    """Select enabled local accounts for any native channel.
+
+    WorkBuddy retains its realm/model filtering in ``workbuddy_candidates``;
+    Doubao and ChatGPT use the same durable account/runtime state and lease
+    ordering but do not expose WorkBuddy's realm-specific model metadata.
+    """
+
+    channel = str(channel or "").strip()
+    if not channel:
+        return False, []
+    now = int(time.time())
+    with database(get_settings().db_path) as conn:
+        snapshot_exists = conn.execute(
+            "SELECT 1 FROM accounts WHERE channel = ? LIMIT 1", (channel,)
+        ).fetchone() is not None
+        rows = conn.execute(
+            """SELECT a.id, a.native_id, a.ext
+            FROM accounts a LEFT JOIN account_runtime_state r ON r.account_id = a.id
+            WHERE a.channel = ? AND a.enabled = 1
+                AND COALESCE(a.status_override, a.status) IN (
+                    'ready', 'busy', 'cooldown', 'limited'
+                )
+                AND (r.cooldown_until IS NULL OR r.cooldown_until <= ?)
+                AND (r.breaker_until IS NULL OR r.breaker_until <= ?)
+            ORDER BY COALESCE(r.updated_at, 0), a.priority DESC, a.name, a.id""",
+            (channel, now, now),
+        ).fetchall()
+
+    ranked: list[tuple[int, int, AccountCandidate]] = []
+    with _lease_lock:
+        active_ids = {str(row["id"]) for row in rows}
+        for account_id in _last_selected.keys() - active_ids:
+            _last_selected.pop(account_id, None)
+        for order, row in enumerate(rows):
+            account_id = str(row["id"])
+            if _inflight.get(account_id, 0) >= WORKBUDDY_LOCAL_INFLIGHT_LIMIT:
+                continue
+            ranked.append(
+                (
+                    _last_selected.get(account_id, 0),
+                    order,
+                    AccountCandidate(account_id, str(row["native_id"]), channel),
+                )
+            )
+        ranked.sort(key=lambda item: (item[0], item[1]))
+    return snapshot_exists, [item[2] for item in ranked[: max(1, int(max_candidates))]]
+
+
 def _model_is_limited(ext_json: str, model: str, now: int) -> bool:
     try:
         ext = json.loads(ext_json)
@@ -117,6 +177,10 @@ def _model_is_limited(ext_json: str, model: str, now: int) -> bool:
 
 
 def acquire_workbuddy_lease(candidate: WorkBuddyCandidate) -> WorkBuddyLease | None:
+    return acquire_account_lease(candidate)
+
+
+def acquire_account_lease(candidate: AccountCandidate) -> WorkBuddyLease | None:
     global _selection_seq
     with _lease_lock:
         inflight = _inflight.get(candidate.account_id, 0)

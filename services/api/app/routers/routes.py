@@ -9,8 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.adapters.registry import get_registry
 from app.config import get_settings
-from app.db import database
-from app.security import require_admin_request
+from app.infrastructure.db import database
+from app.infrastructure.security import require_admin_request
 
 router = APIRouter(
     prefix="/admin/api/routes",

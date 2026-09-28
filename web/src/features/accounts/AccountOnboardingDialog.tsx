@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { Upload } from "lucide-react";
 import { ApiClientError } from "../../api/client";
+import type { ChangeEvent } from "react";
 import type { ChannelOverview } from "../usage/usageApi";
 import { Select } from "../../app/controls/Select";
 import {
@@ -106,6 +108,22 @@ function stringifyFieldValue(value: unknown, field: ProvisionFieldSchema): strin
   return String(value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractChatGptExportAccounts(value: unknown): Record<string, unknown>[] {
+  const candidates = isRecord(value) && Array.isArray(value.accounts)
+    ? value.accounts
+    : Array.isArray(value)
+      ? value
+      : null;
+  if (!candidates || candidates.length === 0 || !candidates.every(isRecord)) {
+    throw new Error("JSON 文件中未找到有效的 accounts 数组");
+  }
+  return candidates;
+}
+
 export function AccountOnboardingDialog({
   open,
   channels,
@@ -131,6 +149,8 @@ export function AccountOnboardingDialog({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [importFileName, setImportFileName] = useState("");
+  const [importSummary, setImportSummary] = useState("");
 
   const selectedChannel = channels.find((item) => item.slug === channel);
   const selectedFlow = schema?.flows.find((item) => item.id === flowId);
@@ -160,6 +180,8 @@ export function AccountOnboardingDialog({
     setBusy(false);
     setMessage("");
     setError("");
+    setImportFileName("");
+    setImportSummary("");
   }, [open]);
 
   useEffect(() => {
@@ -173,6 +195,8 @@ export function AccountOnboardingDialog({
     setSchemaLoading(true);
     setSchemaError("");
     setError("");
+    setImportFileName("");
+    setImportSummary("");
     fetchProvisionSchema(channel, controller.signal)
       .then((next) => setSchema(next))
       .catch((cause: unknown) => {
@@ -190,6 +214,8 @@ export function AccountOnboardingDialog({
     setSession(null);
     setMessage("");
     setError("");
+    setImportFileName("");
+    setImportSummary("");
   }, [selectedFlow]);
 
   useEffect(() => {
@@ -224,7 +250,46 @@ export function AccountOnboardingDialog({
   if (!open) return null;
 
   function setField(name: string, field: ProvisionFieldSchema, value: string) {
-    setPayload((current) => ({ ...current, [name]: parseFieldValue(value, field) }));
+    const parsed = parseFieldValue(value, field);
+    if (name === "accounts" && isRecord(parsed) && Array.isArray(parsed.accounts)) {
+      try {
+        const accounts = extractChatGptExportAccounts(parsed);
+        setPayload((current) => ({ ...current, accounts }));
+        setImportFileName("");
+        setImportSummary(`已解析 JSON 导出包：${accounts.length} 个账号`);
+        setError("");
+        return;
+      } catch (cause: unknown) {
+        setError(cause instanceof Error ? cause.message : "JSON 导出包格式不正确");
+      }
+    }
+    setPayload((current) => ({ ...current, [name]: parsed }));
+  }
+
+  async function importChatGptExport(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      if (file.size > 10 * 1024 * 1024) throw new Error("JSON 文件不能超过 10 MB");
+      const parsed: unknown = JSON.parse(await file.text());
+      const accounts = extractChatGptExportAccounts(parsed);
+      setPayload((current) => ({ ...current, accounts }));
+      setImportFileName(file.name);
+      setImportSummary(`已读取 ${accounts.length} 个账号，点击“开始授权”后批量导入`);
+    } catch (cause: unknown) {
+      setImportFileName("");
+      setImportSummary("");
+      setError(cause instanceof SyntaxError
+        ? "JSON 文件无法解析，请确认文件内容完整"
+        : cause instanceof Error ? cause.message : "JSON 导出包格式不正确");
+    } finally {
+      setBusy(false);
+      input.value = "";
+    }
   }
 
   function missingRequiredFields(): string[] {
@@ -336,6 +401,7 @@ export function AccountOnboardingDialog({
       : "";
   const qrValue = qrImage ? "" : authUrl || qrCode;
   const flowNeedsCompletion = Boolean(session && activeFlow?.supports?.complete);
+  const isChatGptTokenImport = channel === "chatgpt" && selectedFlow?.id === "token-import";
 
   return (
     <div className="key-modal-backdrop account-onboarding-backdrop" role="presentation" onMouseDown={(event) => {
@@ -377,10 +443,28 @@ export function AccountOnboardingDialog({
           {schema && schema.flows.length > 0 && <label><span>新增方式</span><Select value={flowId} onChange={setFlowId} disabled={busy || Boolean(session)} placeholder="请选择新增方式" options={schema.flows.map((flow) => ({ value: flow.id, label: flow.title || flow.id }))} /></label>}
           {activeFlow?.description && <p className="secondary-text">{activeFlow.description}</p>}
 
+          {isChatGptTokenImport && !session && <div className="onboarding-import-tools">
+            <div className="onboarding-import-heading">
+              <div><strong>导入 ChatGPT JSON</strong><small>支持 sub2api-export 导出文件，凭据只会提交到服务端加密存储。</small></div>
+              <Upload size={17} strokeWidth={1.8} aria-hidden="true" />
+            </div>
+            <label className="onboarding-file-picker">
+              <span>选择 JSON 文件</span>
+              <input type="file" accept=".json,application/json" onChange={(event) => void importChatGptExport(event)} disabled={busy} />
+            </label>
+            {(importFileName || importSummary) && <p className="onboarding-import-summary"><strong>{importFileName || "已粘贴 JSON"}</strong>{importSummary}</p>}
+          </div>}
+
           {activeFlow && Object.entries(activeFlow.schema.properties ?? {}).map(([name, field]) => {
             const value = payload[name];
             const label = fieldLabel(name, field);
             const required = activeFlow.schema.required?.includes(name) ?? false;
+            if (isChatGptTokenImport && name === "accounts" && importSummary) {
+              return <div key={name} className="onboarding-import-loaded" role="status">
+                <div><strong>{label}</strong><span>{importSummary}</span></div>
+                <button type="button" className="secondary-action" onClick={() => { setPayload((current) => ({ ...current, accounts: [] })); setImportFileName(""); setImportSummary(""); }} disabled={busy}>清除</button>
+              </div>;
+            }
             if (field.enum?.length) return <label key={name}><span>{label}{required ? " *" : ""}</span><Select value={String(value ?? "")} onChange={(selected) => setField(name, field, selected)} disabled={busy || Boolean(session)} placeholder="请选择" options={field.enum.map((option) => ({ value: String(option), label: String(option) }))} />{field.description && <small>{field.description}</small>}</label>;
             if (field.type === "boolean") return <label key={name} className="checkbox-label"><input type="checkbox" checked={Boolean(value)} onChange={(event) => setPayload((current) => ({ ...current, [name]: event.target.checked }))} disabled={busy || Boolean(session)} /><span>{label}{required ? " *" : ""}</span>{field.description && <small>{field.description}</small>}</label>;
             return <label key={name}><span>{label}{required ? " *" : ""}</span>{isMultiline(field) ? <textarea value={stringifyFieldValue(value, field)} onChange={(event) => setField(name, field, event.target.value)} rows={4} disabled={busy || Boolean(session)} /> : <input type={field.secret || field.format === "password" ? "password" : field.type === "number" || field.type === "integer" ? "number" : "text"} value={stringifyFieldValue(value, field)} onChange={(event) => setField(name, field, event.target.value)} minLength={field.minLength} maxLength={field.maxLength} disabled={busy || Boolean(session)} />}{field.description && <small>{field.description}</small>}</label>;

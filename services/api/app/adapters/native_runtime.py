@@ -20,6 +20,33 @@ import httpx
 from app.domain.channel import ChannelManifest
 from app.ports.adapters import NormalizedRequest
 
+CAPABILITY_PATHS: dict[str, str] = {
+    "chat": "/v1/chat/completions",
+    "image": "/v1/images/generations",
+    "video": "/v1/video/generations",
+    "audio": "/v1/audio/generations",
+    "search": "/v1/search",
+}
+
+
+def normalize_capability(capability: str) -> str:
+    """Normalize the public capability name used by the common data plane."""
+
+    value = str(capability or "").strip().lower().replace("_", "-")
+    aliases = {
+        "images": "image",
+        "image-generation": "image",
+        "images-generations": "image",
+        "video-generation": "video",
+        "videos": "video",
+        "videos-generations": "video",
+        "audio-generation": "audio",
+        "audios": "audio",
+        "audios-generations": "audio",
+        "web-search": "search",
+    }
+    return aliases.get(value, value)
+
 
 @dataclass
 class NativeStream:
@@ -66,24 +93,43 @@ class NativeHttpAdapter:
     @staticmethod
     def _credential_headers(credentials: Mapping[str, Any]) -> dict[str, str]:
         result: dict[str, str] = {}
-        authorization = credentials.get("authorization")
+        normalized = {str(key).lower(): value for key, value in credentials.items()}
+        authorization = normalized.get("authorization")
         access_token = (
-            credentials.get("access_token")
-            or credentials.get("accessToken")
-            or credentials.get("token")
+            normalized.get("access_token")
+            or normalized.get("accesstoken")
+            or normalized.get("token")
         )
         if authorization:
             result["Authorization"] = str(authorization)
         elif access_token:
             result["Authorization"] = f"Bearer {access_token}"
 
-        cookie = credentials.get("cookie") or credentials.get("cookies")
+        cookie = normalized.get("cookie") or normalized.get("cookies")
+        if cookie is None and isinstance(normalized.get("storage_state"), Mapping):
+            cookie = normalized["storage_state"].get("cookies")
         if isinstance(cookie, Mapping):
             cookie = "; ".join(
                 f"{key}={value}" for key, value in cookie.items() if value is not None
             )
+        if isinstance(cookie, list):
+            cookie = "; ".join(
+                f"{item.get('name')}={item.get('value')}"
+                for item in cookie
+                if isinstance(item, Mapping) and item.get("name") and item.get("value") is not None
+            )
         if cookie:
             result["Cookie"] = str(cookie)
+        ms_token = normalized.get("mstoken")
+        if ms_token:
+            # Native browser-backed Doubao credentials use msToken as a
+            # request parameter; this header preserves the value for HTTP
+            # runtimes and test transports that map it server-side.
+            result["X-Ms-Token"] = str(ms_token)
+        for key, value in credentials.items():
+            name = str(key)
+            if name.lower().startswith("x-") and value is not None:
+                result[name] = str(value)
         return result
 
     async def _account_credentials(self, account: Any) -> Mapping[str, Any]:
@@ -202,12 +248,33 @@ class NativeHttpAdapter:
     async def invoke(self, request: Any, account: Any = None) -> httpx.Response:
         """Perform one non-streaming chat request and return a buffered response."""
 
+        return await self.invoke_capability("chat", request, account)
+
+    async def invoke_capability(
+        self,
+        capability: str,
+        request: Any,
+        account: Any = None,
+    ) -> httpx.Response:
+        """Invoke one explicitly supported native capability.
+
+        Capability paths are deliberately allow-listed here.  Provider-specific
+        file/task endpoints must be added by a channel adapter with a contract;
+        callers cannot turn this transport into an arbitrary URL proxy.
+        """
+
+        normalized = normalize_capability(capability)
+        try:
+            path = CAPABILITY_PATHS[normalized]
+        except KeyError as exc:
+            raise ValueError(f"unsupported native capability: {capability}") from exc
+
         _model, payload, headers, _stream = self._payload(request)
         credentials = await self._account_credentials(account)
         client, owned = self._client()
         try:
             response = await client.post(
-                self._url(self.chat_path),
+                self._url(self.chat_path if normalized == "chat" else path),
                 content=json.dumps(
                     dict(payload), ensure_ascii=False, separators=(",", ":")
                 ).encode(),

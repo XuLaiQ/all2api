@@ -71,3 +71,12 @@ Thumbs.db
 Desktop.ini
 
 tests
+# Keep only focused tests added by the current migration work visible. The
+# broad rule above still hides unrelated generated or legacy test directories.
+!services/api/
+!services/api/tests/
+services/api/tests/*
+!services/api/tests/test_account_lifecycle_routing.py
+!services/api/tests/test_admin_settings.py
+!services/api/tests/test_healthz.py
+!services/api/tests/test_provision_state.py

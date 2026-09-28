@@ -38,6 +38,21 @@ export type SystemMetrics = {
   accounts: { total: number; enabled: number; available: number; runtime_observed: number };
 };
 
+export type AdminSettings = {
+  values: {
+    log_retention_days: number;
+    usage_retention_days: number;
+  };
+  sources: {
+    log_retention_days: "environment" | "database";
+    usage_retention_days: "environment" | "database";
+  };
+  mutable: string[];
+  restart_required: boolean;
+};
+
+export type AdminSettingsPatch = Partial<AdminSettings["values"]>;
+
 type DataResponse<T> = { data: T };
 
 export async function fetchSystemInfo(signal?: AbortSignal): Promise<SystemInfo> {
@@ -58,3 +73,15 @@ export async function fetchSystemMetrics(days: number, signal?: AbortSignal): Pr
   return response.data.data;
 }
 
+export async function fetchAdminSettings(signal?: AbortSignal): Promise<AdminSettings> {
+  const response = await apiClient.get<DataResponse<AdminSettings>>("/settings", { signal });
+  return response.data.data;
+}
+
+export async function updateAdminSettings(
+  patch: AdminSettingsPatch,
+  signal?: AbortSignal,
+): Promise<AdminSettings> {
+  const response = await apiClient.post<DataResponse<AdminSettings>>("/settings", patch, { signal });
+  return response.data.data;
+}

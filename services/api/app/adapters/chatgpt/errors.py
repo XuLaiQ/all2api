@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum
 
 
-class ErrorKind(StrEnum):
+class ErrorKind(str, Enum):
     INVALID_REQUEST = "invalid_request"
     AUTH_REQUIRED = "auth_required"
     CREDENTIAL_EXPIRED = "credential_expired"

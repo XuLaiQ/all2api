@@ -169,6 +169,75 @@ class WorkBuddyClient:
             "expires_at": int(data.get("expiresAt") or data.get("expires_at") or 0),
         }
 
+    async def refresh_token(
+        self,
+        credentials: Mapping[str, Any],
+        *,
+        account_id: str = "",
+    ) -> dict[str, Any]:
+        """Refresh one account without exposing token material to callers.
+
+        The endpoint is the same public WorkBuddy plugin endpoint used by the
+        native gateway.  ``account_id`` is only used for non-secret identity
+        headers; the refresh token stays inside this client call.
+        """
+
+        if not isinstance(credentials, Mapping):
+            raise WorkBuddyProtocolError("WorkBuddy credentials are invalid")
+        refresh = str(
+            credentials.get("refresh_token") or credentials.get("refreshToken") or ""
+        ).strip()
+        if not refresh:
+            raise WorkBuddyProtocolError("WorkBuddy credentials have no refresh token")
+        realm = normalize_realm(credentials.get("realm", "cn"))
+        access = str(
+            credentials.get("access_token") or credentials.get("accessToken") or ""
+        ).strip()
+        headers = self._headers(realm, access_token=access)
+        headers["X-Refresh-Token"] = refresh
+        headers["X-Auth-Refresh-Source"] = "plugin"
+        native_id = str(account_id or "")
+        if ":" in native_id:
+            _realm, uid = native_id.split(":", 1)
+            if uid:
+                headers["X-User-Id"] = uid
+        domain = str(credentials.get("domain") or "").strip()
+        if domain:
+            headers["X-Domain"] = domain
+        enterprise_id = str(
+            credentials.get("enterprise_id") or credentials.get("enterpriseId") or ""
+        ).strip()
+        if enterprise_id:
+            headers["X-Enterprise-Id"] = enterprise_id
+            headers["X-Tenant-Id"] = enterprise_id
+        payload = await self._request(
+            "post",
+            "/v2/plugin/auth/token/refresh",
+            realm=realm,
+            headers=headers,
+        )
+        code, data = self._envelope(payload)
+        if code != 0:
+            raise WorkBuddyProtocolError("WorkBuddy rejected token refresh")
+        refreshed_access = str(
+            data.get("accessToken") or data.get("access_token") or ""
+        ).strip()
+        if not refreshed_access:
+            raise WorkBuddyProtocolError("WorkBuddy refresh response has no access token")
+        return {
+            "access_token": refreshed_access,
+            "refresh_token": str(
+                data.get("refreshToken") or data.get("refresh_token") or refresh
+            ),
+            "device_token": str(
+                data.get("deviceToken") or data.get("device_token")
+                or credentials.get("device_token") or ""
+            ),
+            "expires_at": int(data.get("expiresAt") or data.get("expires_at") or 0),
+            "realm": realm,
+            "domain": str(data.get("domain") or domain),
+        }
+
     async def list_models(self) -> list[dict[str, Any]]:
         payload = await self._request(
             "get",

@@ -64,6 +64,10 @@ export async function deleteAccount(accountId: string): Promise<void> {
   await apiClient.delete(`/accounts/${encodeURIComponent(accountId)}`);
 }
 
+export async function refreshAccount(accountId: string): Promise<void> {
+  await apiClient.post(`/accounts/${encodeURIComponent(accountId)}/refresh`);
+}
+
 export type AccountOnboardingStart = {
   realm?: "cn" | "global";
   account_id?: string;

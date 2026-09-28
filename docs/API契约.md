@@ -44,9 +44,26 @@ GET  /v1/models
 POST /v1/chat/completions
 POST /v1/messages
 POST /v1/responses
+POST /v1/images/generations
+POST /v1/video/generations
+POST /v1/audio/generations
+POST /v1/search
 ```
 
 协议能力由渠道 manifest 声明；未声明的图像/视频/音频/文件能力必须返回明确的 `invalid_request_error` 或 `capability_not_supported`，不能静默丢弃字段。
+
+多媒体和搜索请求统一使用 JSON body，并要求 `model`（搜索可省略，由渠道使用
+`chatgpt/auto` 默认选择）。`model` 的渠道前缀仍参与 Key scope、渠道启用状态、账号租约、
+fallback、请求日志和用量统计。路由层只把请求发送到同时声明对应 capability 的渠道：
+
+- `image` -> `/v1/images/generations`；
+- `video` -> `/v1/video/generations`；
+- `audio` -> `/v1/audio/generations`；
+- `search` -> `/v1/search`。
+
+这些通用路由当前为非流式 JSON dispatch；请求 `stream=true` 返回
+`invalid_request_error`。文件上传/下载、图像编辑、PPT/PSD 和可编辑文件任务仍返回
+`capability_not_supported`，不会把 provider-specific 协议伪装成通用结果。
 
 ## 3. 通用格式
 
@@ -97,9 +114,14 @@ GET /admin/api/channels/adapters
 GET /admin/api/channels/{channel}/provision-schema
 GET /admin/api/channels/{channel}/runtime
 POST /admin/api/channels/{channel}/test
+POST /admin/api/channels
+PATCH /admin/api/channels/{channel}
+DELETE /admin/api/channels/{channel}
 ```
 
 `channels` 返回 registry/manifest 的安全视图：slug、名称、adapter version、enabled、protocols、capabilities、账号流程摘要、legacy `accounts_configured`、native `provision_configured` 和健康状态。不得返回 Secret 或内部路径。`/test` 只由用户显式触发，不在页面初次加载时自动探测。
+
+渠道写接口只允许已注册的内置渠道，保存 SQLite 中的本地启用覆盖和非敏感配置；不动态加载 provider、不写入环境配置，也不接受 token、Cookie、password、authorization、api_key 等字段。`DELETE` 删除本地覆盖并恢复 registry 默认值。写入要求 `admin` 角色和 `Origin` 与 `Host` 同源校验，并记录审计。当前启用覆盖不会重建进程内 adapter；数据面强制停用仍需后续 runtime integration 完成，接口会明确返回本地管理状态。
 
 ## 6. 账号新增和渠道 dispatch
 
@@ -145,9 +167,12 @@ POST /admin/api/accounts/{channel}/onboarding/finish
 
 ```http
 GET  /admin/api/accounts?page=1&page_size=50&channel=wb&status=ready&search=x
+POST /admin/api/accounts/{account_id}/refresh
 ```
 
 列表只返回 canonical Account 安全字段和网关运行态。账号新增由渠道 provision API 完成并直接写入本地账号表；该接口不会读取源项目数据库、文件或管理端口，也不会触发外部账号同步。
+`POST /admin/api/accounts/{account_id}/refresh` 仅允许管理员调用，调用对应 provisioner 的
+`refresh_credential`，只返回脱敏账号摘要并写入 `refresh_account` 审计事件。
 
 ## 7. 网关 Key 管理
 
@@ -185,9 +210,33 @@ PUT   /admin/api/routes/{alias}
 DELETE /admin/api/routes/{alias}
 GET   /admin/api/logs
 POST  /admin/api/logs/clear
+GET   /admin/api/settings
+POST  /admin/api/settings
+GET   /admin/api/users
+POST  /admin/api/users
+PATCH /admin/api/users/{name}
+DELETE /admin/api/users/{name}
+POST  /admin/api/playground/chat
+GET   /admin/api/playground/runs
+POST  /admin/api/channels
+PATCH /admin/api/channels/{slug}
+DELETE /admin/api/channels/{slug}
 ```
 
 alias target 为 `{channel, model}` 数组，顺序决定优先级。只对 429、连接失败、502/503/504 等可重试错误降级；流开始后不重放。日志至少记录 request_id、key_id、实际 channel/model、fallback_depth、status、error_kind、stream、usage 和 latency；不返回 token、Cookie、平台原始错误体或未脱敏账号标识。
+
+`GET /admin/api/settings` 返回可安全展示的运行时设置及其来源；当前支持
+`log_retention_days` 与 `usage_retention_days`。`POST` 只允许 `admin` 角色写入，值限制为
+1-36500 天，且用量保留期不得短于日志保留期。配置持久化在本地 SQLite `settings` 表，
+更新立即用于日志清理，并写入 `audit_logs`；环境变量、凭据、URL 和会话密钥不通过此接口
+读取或修改。
+
+用户 API 只维护本地管理目录和角色/启停状态，不存储密码；当前认证仍由环境管理员账号和
+会话系统提供。渠道写 API 只允许内置 registry 中已存在的渠道，配置内容仅接受非 Secret
+的 JSON 标量/对象，并写入审计；动态 provider 注册不在当前范围内。
+
+Playground 只支持管理员发起的非流式文本请求，调用 native runtime，不调用 legacy bridge；
+请求元数据写入 `playground_runs`，响应正文只在当前响应返回，不持久化到运行记录。
 
 ## 9. 会话、幂等和安全
 
@@ -207,6 +256,9 @@ alias target 为 `{channel, model}` 数组，顺序决定优先级。只对 429�
 | 模型/路由 | `/models`、`/routes` |
 | Key | `/keys`、`/keys/{id}/rotate` |
 | 日志/审计/用量 | `/logs`、`/audit-logs`、`/stats/*` |
+| 系统设置 | `/settings` |
+| 用户管理 | `/users` |
+| 调试台 | `/playground/chat`、`/playground/runs` |
 
 前端类型必须从 OpenAPI 或同一变更中的 DTO 同步，不在组件中复制渠道枚举、授权规则或调度逻辑。
 
@@ -252,7 +304,7 @@ Cookie 写操作校验 `Origin` 与 `Host`；脚本 Bearer 管理令牌不进入
 `X-Forwarded-*` 必须忽略。管理员密码至少 12 字符，`A2A_SESSION_SECRET` 至少 32 字符且
 生产不得使用默认值。
 
-### 12.3 当前只读运维接口
+### 12.3 当前运维与管理接口
 
 | 接口 | 当前行为 | 迁移要求 |
 |---|---|---|
@@ -261,6 +313,13 @@ Cookie 写操作校验 `Origin` 与 `Host`；脚本 Bearer 管理令牌不进入
 | `GET /admin/api/channels` | 读取当前 registry/config，不自动探测 | 升级为 manifest 安全视图和 provision schema 入口 |
 | `GET /admin/api/logs` | 服务端分页、请求/渠道/模型/状态/时间筛选 | 保留脱敏，不泄露 token、账号原值、IP/UA |
 | `GET /admin/api/metrics` | 读取本地请求/账号运行态，不主动探测 | 区分 adapter/config/platform/worker 健康 |
+| `GET /admin/api/settings` | 读取 retention 设置及来源 | 仅暴露白名单设置，不读取 Secret |
+| `POST /admin/api/settings` | 管理员更新 retention 设置并写审计 | 写操作要求 `admin` 和同源校验 |
+| `GET /admin/api/users` | 读取本地用户目录 | 用户目录不保存密码；实际登录仍使用环境管理员配置 |
+| `POST /admin/api/users` | 创建 viewer/admin 目录项 | 仅 admin + 同源；不创建可登录密码 |
+| `PATCH/DELETE /admin/api/users/{name}` | 修改启用/角色或删除目录项 | 环境配置管理员不可删除或停用；写审计 |
+| `GET /admin/api/playground/runs` | 读取 Playground 运行元数据 | 不保存消息正文、凭据或上游原始错误体 |
+| `POST /admin/api/playground/chat` | 对已配置 native runtime 执行一次非流式调试调用 | 仅 admin + 同源；不支持 stream；未配置 runtime 返回 `501`，不会回退到源项目 bridge |
 
 管理页不能通过初次加载触发模型发现或真实平台登录。所有兼容路径都必须在 M5
 切换前迁移到目标 adapter/provisioner，或明确删除。

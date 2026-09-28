@@ -88,6 +88,36 @@ class OAuthClient:
             raise OAuthProtocolError("OAuth token response is invalid")
         return result
 
+    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
+        """Exchange a stored refresh token without returning it to the API layer."""
+
+        token = str(refresh_token or "").strip()
+        if not token:
+            raise OAuthProtocolError("OAuth refresh token is required")
+        payload = {
+            "grant_type": "refresh_token",
+            "client_id": self.config.client_id,
+            "refresh_token": token,
+        }
+        if self.http_client is None:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5)) as client:
+                response = await client.post(self.config.token_endpoint, data=payload)
+        else:
+            response = await self.http_client.post(self.config.token_endpoint, data=payload)
+        try:
+            response.raise_for_status()
+            result = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise OAuthProtocolError("OAuth token refresh failed") from exc
+        if not isinstance(result, dict) or not isinstance(result.get("access_token"), str):
+            raise OAuthProtocolError("OAuth refresh response is invalid")
+        return {
+            "access_token": str(result["access_token"]),
+            "refresh_token": str(result.get("refresh_token") or token),
+            "id_token": str(result.get("id_token") or ""),
+            "expires_in": result.get("expires_in"),
+        }
+
     @staticmethod
     def parse_callback(callback: str) -> dict[str, str]:
         parsed = urllib.parse.urlparse(callback)

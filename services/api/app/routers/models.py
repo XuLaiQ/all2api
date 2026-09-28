@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from app.config import get_settings
-from app.db import database
-from app.security import require_admin_request
+from app.infrastructure.db import database
+from app.infrastructure.security import require_admin_request
 
 router = APIRouter(
     prefix="/admin/api/models",

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
-import { fetchChannelRuntime, testChannel, type ChannelRuntime, type ChannelTestResult } from "./channelsApi";
+import { fetchChannelRuntime, resetChannelOverride, setChannelEnabled, testChannel, type ChannelRuntime, type ChannelTestResult } from "./channelsApi";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 
 function runtimeLabel(state: string): { label: string; tone: string } {
@@ -25,6 +26,8 @@ function remaining(seconds: number | null): string {
 }
 
 export function ChannelsPage() {
+  const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
+  const canManage = role === "admin";
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [selected, setSelected] = useState("");
   const [states, setStates] = useState<ChannelRuntime[]>([]);
@@ -105,6 +108,27 @@ export function ChannelsPage() {
     ? runtimeLabel(channelRuntime?.state ?? "closed")
     : { label: "未配置", tone: "neutral" };
 
+  async function toggleSelectedChannel() {
+    if (!selectedChannel || !canManage) return;
+    try {
+      await setChannelEnabled(selectedChannel.slug, !selectedChannel.enabled);
+      setRetry((value) => value + 1);
+    } catch (cause: unknown) {
+      setError(cause instanceof ApiClientError ? cause.message : "更新渠道状态失败");
+    }
+  }
+
+  async function resetSelectedChannel() {
+    if (!selectedChannel || !canManage) return;
+    if (!window.confirm(`确定重置“${selectedChannel.name}”的本地覆盖配置吗？`)) return;
+    try {
+      await resetChannelOverride(selectedChannel.slug);
+      setRetry((value) => value + 1);
+    } catch (cause: unknown) {
+      setError(cause instanceof ApiClientError ? cause.message : "重置渠道配置失败");
+    }
+  }
+
   return (
     <main className={`page-content data-page channels-page${selectedChannel ? " has-runtime" : ""}`}>
       <div className="page-heading">
@@ -171,6 +195,10 @@ export function ChannelsPage() {
               >
                 {testLoading ? "测试中…" : "测试连接"}
               </button>
+              {canManage && <button className="secondary-action-button" type="button" onClick={() => void toggleSelectedChannel()}>
+                {selectedChannel.enabled ? "停用渠道" : "启用渠道"}
+              </button>}
+              {canManage && <button className="danger-action compact-action" type="button" onClick={() => void resetSelectedChannel()}>重置覆盖</button>}
             </div>
           </div>
           {runtimeError && <div className="notice notice-error" role="alert">{runtimeError}</div>}

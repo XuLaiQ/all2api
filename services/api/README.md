@@ -90,9 +90,10 @@ rg -n "F:\\token-p|wb2api|doubao2api|chatgpt2api|:7863|:7864|:9090|:8000" app te
 | 统一 `/v1`、管理会话、SQLite、基础 Key | 已有过渡实现 |
 | registry/manifest/provision schema/Key scope | 已实现，native provisioner 已接入 |
 | 模型/路由/日志/统计 | 部分已实现，需继续按目标 ports 重构 |
-| WorkBuddy native client + QR provisioner | 已接入；真实平台账号和数据面 E2E 待验收 |
-| Doubao native browser/profile + QR provisioner | 已接入；真实 Chromium/browser worker 和平台调用待验收 |
-| ChatGPT native OAuth/token provisioner | 已接入；OAuth/token 刷新和真实平台 E2E 待验收 |
+| WorkBuddy native client + QR provisioner | 已接入；本地 session、账号池和 refresh 已接入，真实平台账号和数据面 E2E 待验收 |
+| Doubao native browser/profile + QR provisioner | 已接入；本地 session、账号池和 profile 生命周期已接入，真实 Chromium/browser worker 和平台调用待验收 |
+| ChatGPT native OAuth/token provisioner | 已接入；本地 session、账号池和 OAuth refresh 已接入，真实平台 E2E 待验收 |
+| 管理面 Settings/Users/Playground/渠道覆盖 | 已接入；Playground 流式、真实用户凭据和动态 provider 注册仍未实现 |
 | 本地账号目录和同步接口边界 | provision 成功后写入本地 `accounts`；旧 `/accounts/sync` 已删除 |
 | 源项目断开后 clean build/run | clean gate 已具备；正式发布仍需在隔离 checkout 执行并留存证据 |
 

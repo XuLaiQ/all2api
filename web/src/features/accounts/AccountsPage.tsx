@@ -6,6 +6,7 @@ import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
   deleteAccount,
   fetchAccounts,
+  refreshAccount,
   setAccountEnabled,
   type AccountFilters,
   type AccountRecord,
@@ -182,6 +183,20 @@ export function AccountsPage() {
     }
   }
 
+  async function handleAccountRefresh(account: AccountRecord) {
+    setAccountActionId(account.id);
+    setError("");
+    try {
+      await refreshAccount(account.id);
+      setNoticeMessage("账号凭据已刷新");
+      setRetry((value) => value + 1);
+    } catch (cause: unknown) {
+      setError(cause instanceof ApiClientError ? cause.message : "刷新账号凭据失败");
+    } finally {
+      setAccountActionId(null);
+    }
+  }
+
   return (
     <main className="page-content data-page accounts-page">
       <div className="page-heading">
@@ -261,6 +276,7 @@ export function AccountsPage() {
                 canManage={canManageAccounts}
                 busy={accountActionId === account.id}
                 onToggle={() => void handleAccountEnabled(account)}
+                onRefresh={() => void handleAccountRefresh(account)}
                 onDelete={() => void handleAccountDelete(account)}
               />
             ))}</tbody>
@@ -293,12 +309,14 @@ function AccountRow({
   canManage,
   busy,
   onToggle,
+  onRefresh,
   onDelete,
 }: {
   account: AccountRecord;
   canManage: boolean;
   busy: boolean;
   onToggle: () => void;
+  onRefresh: () => void;
   onDelete: () => void;
 }) {
   const status = statusLabels[account.status] ?? account.status;
@@ -325,6 +343,9 @@ function AccountRow({
       {canManage && <td className="account-actions">
         <button type="button" className="secondary-action compact-action" onClick={onToggle} disabled={busy}>
           {busy ? "处理中…" : account.enabled ? "停用" : "启用"}
+        </button>
+        <button type="button" className="secondary-action compact-action" onClick={onRefresh} disabled={busy || !account.enabled}>
+          刷新凭据
         </button>
         <button type="button" className="danger-action compact-action" onClick={onDelete} disabled={busy}>
           删除

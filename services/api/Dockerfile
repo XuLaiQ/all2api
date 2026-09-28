@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir uv==0.11.29
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
+# Exclude legacy bridge code from production image
+RUN rm -rf ./app/compat/legacy_bridge || true
 RUN uv sync --frozen --no-dev
 
 EXPOSE 8080

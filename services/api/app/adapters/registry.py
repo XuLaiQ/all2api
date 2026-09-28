@@ -16,8 +16,9 @@ from app.adapters.workbuddy.client import WorkBuddyClient
 from app.adapters.workbuddy.manifest import WORKBUDDY_MANIFEST
 from app.adapters.workbuddy.provisioner import WorkBuddyProvisioner
 from app.config import Settings, get_settings
-from app.credentials import DatabaseCredentialStore
+from app.infrastructure.credentials import DatabaseCredentialStore
 from app.domain.channel import ChannelManifest
+from app.infrastructure.provision_state import ProvisionStateStore
 
 ModelReader = Callable[[str, str], Awaitable[list[dict[str, Any]]]]
 AccountReader = Callable[[str, str], Awaitable[list[dict[str, Any]]]]
@@ -190,6 +191,7 @@ def _registry_key(settings: Settings) -> tuple[str, ...]:
         str(getattr(settings, "doubao_browser_qr_selector", "")),
         str(getattr(settings, "doubao_browser_qr_code_attribute", "")),
         str(getattr(settings, "doubao_browser_authenticated_selector", "")),
+        str(getattr(settings, "provision_session_ttl_seconds", 600)),
         settings.chatgpt_upstream_base,
         secret(settings.chatgpt_auth_key),
     )
@@ -216,6 +218,10 @@ def get_registry(settings: Settings | None = None) -> dict[str, AdapterSpec]:
 
 def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
     credential_store = DatabaseCredentialStore(
+        settings.db_path,
+        getattr(settings, "credential_master_key", ""),
+    )
+    provision_state_store = ProvisionStateStore(
         settings.db_path,
         getattr(settings, "credential_master_key", ""),
     )
@@ -306,10 +312,18 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             else NullBrowserWorker()
         ),
         credential_store=credential_store,
+        session_ttl_seconds=float(
+            getattr(settings, "doubao_browser_session_ttl_seconds", 300.0)
+        ),
+        state_store=provision_state_store,
     )
     doubao_adapter = doubao.DoubaoAdapter(
         provisioner=doubao_provisioner,
-        base_url=doubao_platform_base if doubao_native_enabled else "",
+        # The native runtime must remain available for accounts provisioned
+        # through QR login even when no public/platform key is configured.
+        # ``native_model_configured`` below still controls public catalogue
+        # discovery and channel configuration reporting.
+        base_url=doubao_platform_base,
         auth_key=doubao_platform_key,
         credential_store=credential_store,
     )
@@ -340,6 +354,8 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             provisioner=WorkBuddyProvisioner.from_settings(
                 settings,
                 credential_store=credential_store,
+                state_store=provision_state_store,
+                ttl_seconds=int(getattr(settings, "provision_session_ttl_seconds", 600)),
             ),
         ),
         "doubao": AdapterSpec(
@@ -361,7 +377,7 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             caps=("chat", "image", "video", "audio", "file"),
             manifest=doubao.build_manifest(),
             provisioner=doubao_provisioner,
-            upstream_adapter=doubao_adapter if doubao_native_enabled else None,
+            upstream_adapter=doubao_adapter,
             native_model_configured=doubao_native_enabled,
         ),
         "chatgpt": AdapterSpec(
@@ -389,6 +405,8 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             native_model_configured=bool(chatgpt_platform_key),
             provisioner=ChatGPTProvisioner(
                 credential_store=credential_store,
+                session_ttl=int(getattr(settings, "provision_session_ttl_seconds", 600)),
+                state_store=provision_state_store,
                 oauth_client=OAuthClient(
                     OAuthConfig(
                         authorize_endpoint=(
