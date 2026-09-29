@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import json
 import random
 import re
 import time
 import uuid
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
+from curl_cffi import requests as curl_requests
 
 from .errors import (
     ChatGPTAuthError,
@@ -21,6 +24,7 @@ from .errors import (
     ChatGPTUpstreamUnavailableError,
 )
 from .manifest import CHATGPT_WEB_BASE_URL
+from .turnstile import solve_turnstile_token
 
 
 class ChatGPTWebClient:
@@ -40,12 +44,26 @@ class ChatGPTWebClient:
         self._http_client = http_client
         self.timeout = float(timeout)
         self.connect_timeout = float(connect_timeout)
-        self.device_id = str(self.credentials.get("oai_device_id") or uuid.uuid4())
-        self.session_id = str(self.credentials.get("oai_session_id") or uuid.uuid4())
+        self._fingerprint = (
+            self.credentials.get("fp")
+            if isinstance(self.credentials.get("fp"), Mapping)
+            else {}
+        )
+        self.device_id = str(
+            self.credentials.get("oai_device_id")
+            or self._fingerprint.get("oai-device-id")
+            or uuid.uuid4()
+        )
+        self.session_id = str(
+            self.credentials.get("oai_session_id")
+            or self._fingerprint.get("oai-session-id")
+            or uuid.uuid4()
+        )
         self.user_agent = str(
             self.credentials.get("user_agent")
+            or self._fingerprint.get("user-agent")
             or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+            "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
         )
         self._script_sources: list[str] = []
         self._data_build = ""
@@ -75,26 +93,64 @@ class ChatGPTWebClient:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
+            "Priority": "u=1, i",
+            "Sec-Ch-Ua": '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Ch-Ua-Arch": '"x86"',
+            "Sec-Ch-Ua-Bitness": '"64"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
             "OAI-Device-Id": self.device_id,
             "OAI-Session-Id": self.session_id,
             "OAI-Language": "zh-CN",
-            "OAI-Client-Version": "all2api-native",
+            "OAI-Client-Version": "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887",
+            "OAI-Client-Build-Number": "6708908",
             "X-OpenAI-Target-Path": path,
             "X-OpenAI-Target-Route": path.split("?", 1)[0],
         }
+        fingerprint_headers = {
+            "Sec-Ch-Ua": "sec-ch-ua",
+            "Sec-Ch-Ua-Mobile": "sec-ch-ua-mobile",
+            "Sec-Ch-Ua-Platform": "sec-ch-ua-platform",
+            "Sec-Ch-Ua-Arch": "sec-ch-ua-arch",
+            "Sec-Ch-Ua-Bitness": "sec-ch-ua-bitness",
+            "Sec-Ch-Ua-Full-Version": "sec-ch-ua-full-version",
+            "Sec-Ch-Ua-Full-Version-List": "sec-ch-ua-full-version-list",
+        }
+        for header, key in fingerprint_headers.items():
+            value = self.credentials.get(key) or self._fingerprint.get(key)
+            if value:
+                headers[header] = str(value)
         if extra:
             headers.update({str(key): str(value) for key, value in extra.items()})
         return headers
 
-    def _client(self) -> tuple[httpx.AsyncClient, bool]:
+    def _client(self) -> tuple[Any, bool]:
         if self._http_client is not None:
             return self._http_client, False
-        return (
-            httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout, connect=self.connect_timeout)
+        options: dict[str, Any] = {
+            "impersonate": str(
+                self.credentials.get("impersonate")
+                or self._fingerprint.get("impersonate")
+                or "chrome110"
             ),
-            True,
-        )
+            "verify": True,
+        }
+        proxy = str(self.credentials.get("proxy") or "").strip()
+        if proxy:
+            options["proxy"] = proxy
+        return curl_requests.AsyncSession(**options), True
+
+    @staticmethod
+    async def _close_resource(resource: Any) -> None:
+        closer = getattr(resource, "aclose", None) or getattr(resource, "close", None)
+        if not callable(closer):
+            return
+        result = closer()
+        if inspect.isawaitable(result):
+            await result
 
     async def _json_request(
         self,
@@ -128,7 +184,7 @@ class ChatGPTWebClient:
             return value
         finally:
             if owned:
-                await client.aclose()
+                await self._close_resource(client)
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:
@@ -174,29 +230,75 @@ class ChatGPTWebClient:
             match = re.search(r"c/[^/]*/_", html)
             if match:
                 self._data_build = match.group(0)
+            if not self._data_build:
+                build_match = re.search(
+                    r'<html[^>]+data-build=["\']([^"\']+)["\']',
+                    html,
+                    flags=re.IGNORECASE,
+                )
+                if build_match:
+                    self._data_build = build_match.group(1)
         finally:
             if owned:
-                await client.aclose()
+                await self._close_resource(client)
 
     def _requirements_token(self) -> str:
         sources = self._script_sources or [
             "https://chatgpt.com/backend-api/sentinel/sdk.js"
         ]
         navigator_keys = (
-            "webdriver-false",
-            "vendor-Google Inc.",
-            "language-zh-CN",
-            "hardwareConcurrency-32",
+            "registerProtocolHandler−function registerProtocolHandler() { [native code] }",
+            "storage−[object StorageManager]",
+            "locks−[object LockManager]",
+            "appCodeName−Mozilla",
+            "permissions−[object Permissions]",
+            "share−function share() { [native code] }",
+            "webdriver−false",
+            "managed−[object NavigatorManagedData]",
+            "canShare−function canShare() { [native code] }",
+            "vendor−Google Inc.",
+            "mediaDevices−[object MediaDevices]",
+            "vibrate−function vibrate() { [native code] }",
+            "storageBuckets−[object StorageBucketManager]",
+            "mediaCapabilities−[object MediaCapabilities]",
+            "cookieEnabled−true",
+            "virtualKeyboard−[object VirtualKeyboard]",
+            "product−Gecko",
+            "presentation−[object Presentation]",
+            "onLine−true",
+            "mimeTypes−[object MimeTypeArray]",
+            "credentials−[object CredentialsContainer]",
+            "serviceWorker−[object ServiceWorkerContainer]",
+            "keyboard−[object Keyboard]",
+            "gpu−[object GPU]",
+            "doNotTrack",
+            "serial−[object Serial]",
+            "pdfViewerEnabled−true",
+            "language−zh-CN",
+            "geolocation−[object Geolocation]",
+            "userAgentData−[object NavigatorUAData]",
+            "getUserMedia−function getUserMedia() { [native code] }",
+            "sendBeacon−function sendBeacon() { [native code] }",
+            "hardwareConcurrency−32",
+            "windowControlsOverlay−[object WindowControlsOverlay]",
         )
-        window_keys = ("location", "document", "navigator", "performance", "crypto")
+        document_keys = ["__reactContainer$fzelfjyxej8", "_reactListening5dehydibo78", "location"]
+        window_keys = (
+            "0", "window", "self", "document", "name", "location", "customElements",
+            "history", "navigation", "innerWidth", "innerHeight", "scrollX", "scrollY",
+            "visualViewport", "screenX", "screenY", "outerWidth", "outerHeight",
+            "devicePixelRatio", "screen", "chrome", "navigator", "onresize", "performance",
+            "crypto", "indexedDB", "sessionStorage", "localStorage", "scheduler", "alert",
+            "atob", "btoa", "fetch", "matchMedia", "postMessage", "queueMicrotask",
+            "requestAnimationFrame", "setInterval", "setTimeout", "caches", "__NEXT_DATA__",
+            "__BUILD_MANIFEST", "__NEXT_PRELOADREADY",
+        )
         resolutions = ((1920, 1080), (1440, 900), (2560, 1440), (3840, 2160))
-        width, height = random.choice(resolutions)
+        width, height = random.choices(resolutions, k=1)[0]
+        eastern = timezone(timedelta(hours=-5))
         config = [
-            f"{width}x{height}",
-            time.strftime(
-                "%a %b %d %Y %H:%M:%S GMT-0500 (Eastern Standard Time)",
-                time.localtime(),
-            ),
+            width + height,
+            datetime.now(eastern).strftime("%a %b %d %Y %H:%M:%S GMT-0500 (Eastern Standard Time)"),
             4294705152,
             1,
             self.user_agent,
@@ -206,23 +308,14 @@ class ChatGPTWebClient:
             "en-US,es-US,en,es",
             random.random(),
             random.choice(navigator_keys),
-            "location",
+            random.choice(document_keys),
             random.choice(window_keys),
             time.perf_counter() * 1000,
             str(uuid.uuid4()),
             "",
             random.choice((8, 16, 24, 32)),
-            time.time() * 1000,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
+            time.time() * 1000 - time.perf_counter() * 1000,
+            0, 0, 0, 0, 0, 0,
             0,
         ]
         encoded = base64.b64encode(
@@ -313,16 +406,22 @@ class ChatGPTWebClient:
     async def _requirements(self) -> dict[str, str]:
         await self._bootstrap()
         base = "/backend-api/sentinel/chat-requirements"
+        p_token = str(self.credentials.get("sentinel_p") or self._requirements_token())
         prepared = await self._json_request(
             "POST",
             f"{base}/prepare",
-            json_body={"p": str(self.credentials.get("sentinel_p") or self._requirements_token())},
+            json_body={"p": p_token},
             timeout=30,
         )
         if (prepared.get("arkose") or {}).get("required"):
             raise ChatGPTProtocolError("ChatGPT requires an unsupported Arkose challenge")
-        if (prepared.get("turnstile") or {}).get("required"):
-            raise ChatGPTProtocolError("ChatGPT requires an unsupported Turnstile challenge")
+        turnstile_token = ""
+        turnstile = prepared.get("turnstile") or {}
+        if turnstile.get("required"):
+            dx = str(turnstile.get("dx") or "")
+            turnstile_token = solve_turnstile_token(dx, p_token) if dx else None
+            if not turnstile_token:
+                raise ChatGPTProtocolError("ChatGPT Turnstile challenge could not be solved")
         proof = ""
         proof_info = prepared.get("proofofwork")
         if isinstance(proof_info, Mapping) and proof_info.get("required"):
@@ -336,7 +435,7 @@ class ChatGPTWebClient:
             json_body={
                 "prepare_token": str(prepared.get("prepare_token") or ""),
                 "proof_token": proof,
-                "turnstile_token": "",
+                "turnstile_token": turnstile_token,
             },
             timeout=30,
         )
@@ -346,6 +445,7 @@ class ChatGPTWebClient:
         return {
             "token": token,
             "proof": proof,
+            "turnstile": turnstile_token,
             "so_token": str(finalized.get("so_token") or ""),
         }
 
@@ -472,6 +572,11 @@ class ChatGPTWebClient:
                         extra={
                             "OpenAI-Sentinel-Chat-Requirements-Token": requirements["token"],
                             **(
+                                {"OpenAI-Sentinel-Turnstile-Token": requirements["turnstile"]}
+                                if requirements.get("turnstile")
+                                else {}
+                            ),
+                            **(
                                 {"OpenAI-Sentinel-Proof-Token": requirements["proof"]}
                                 if requirements["proof"]
                                 else {}
@@ -516,9 +621,9 @@ class ChatGPTWebClient:
             )
         finally:
             if response is not None:
-                await response.aclose()
+                await self._close_resource(response)
             if owned:
-                await client.aclose()
+                await self._close_resource(client)
 
     async def invoke(self, request: Mapping[str, Any]) -> httpx.Response:
         return await self.chat(request)

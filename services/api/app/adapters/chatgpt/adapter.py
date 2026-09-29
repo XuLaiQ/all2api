@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import httpx
@@ -16,7 +16,7 @@ import httpx
 from app.adapters.native_runtime import NativeHttpAdapter, NativeStream
 
 from .client import ChatGPTWebClient
-from .errors import ChatGPTError, map_error
+from .errors import ChatGPTAuthError, ChatGPTError, map_error
 from .manifest import CHATGPT_MANIFEST
 
 _TIMEOUT = httpx.Timeout(15, connect=3)
@@ -149,11 +149,15 @@ class ChatGPTAdapter:
         http_client: httpx.AsyncClient | Any | None = None,
         credential_store: Any | None = None,
         web_base_url: str = "https://chatgpt.com",
+        proxy_url: str = "",
+        refresh_callback: Callable[[str], Awaitable[Mapping[str, Any]]] | None = None,
     ) -> None:
         self.base_url = str(base_url or "").rstrip("/")
         self.auth_key = str(auth_key or "")
         self.credential_store = credential_store
         self.web_base_url = str(web_base_url or "https://chatgpt.com").rstrip("/")
+        self.proxy_url = str(proxy_url or "").strip()
+        self.refresh_callback = refresh_callback
         self._runtime = NativeHttpAdapter(
             self.manifest,
             self.base_url,
@@ -189,6 +193,8 @@ class ChatGPTAdapter:
         credentials = await self._credentials(account)
         if not credentials:
             raise ChatGPTError("ChatGPT local account credentials are unavailable", status_code=401)
+        if self.proxy_url and "proxy" not in credentials:
+            credentials["proxy"] = self.proxy_url
         return ChatGPTWebClient(credentials, base_url=self.web_base_url)
 
     async def health(self, context: Any = None) -> Mapping[str, Any]:
@@ -221,7 +227,24 @@ class ChatGPTAdapter:
         )
 
     async def invoke(self, request: Any, account: Any = None) -> Any:
-        return await (await self._web_client(account)).invoke(self._payload(request))
+        try:
+            return await (await self._web_client(account)).invoke(self._payload(request))
+        except ChatGPTError as exc:
+            if not isinstance(exc, ChatGPTAuthError) or self.refresh_callback is None:
+                raise
+            account_id = ""
+            if isinstance(account, Mapping):
+                account_id = str(
+                    account.get("id")
+                    or account.get("account_id")
+                    or account.get("lease_account_id")
+                    or account.get("native_id")
+                    or ""
+                )
+            if not account_id:
+                raise
+            await self.refresh_callback(account_id)
+            return await (await self._web_client(account)).invoke(self._payload(request))
 
     async def invoke_capability(self, capability: str, request: Any, account: Any = None) -> Any:
         if capability != "chat":

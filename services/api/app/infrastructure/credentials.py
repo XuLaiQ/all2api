@@ -57,6 +57,23 @@ def _fernet_key(value: Any) -> bytes:
     return base64.urlsafe_b64encode(digest)
 
 
+def encrypt_secret(value: str, master_key: Any = "") -> str:
+    """Encrypt a secret for service-owned persistence."""
+
+    fernet = Fernet(_fernet_key(master_key))
+    return fernet.encrypt(str(value).encode("utf-8")).decode("ascii")
+
+
+def decrypt_secret(value: str, master_key: Any = "") -> str | None:
+    """Decrypt a service-owned secret, returning None for invalid ciphertext."""
+
+    try:
+        fernet = Fernet(_fernet_key(master_key))
+        return fernet.decrypt(str(value).encode("ascii")).decode("utf-8")
+    except (InvalidToken, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
 def _public_value(value: Any, *, key: str = "") -> Any:
     """Drop secret-shaped values before writing canonical account metadata."""
 
@@ -329,6 +346,9 @@ class DatabaseCredentialStore:
         if not isinstance(ext, dict):
             ext = {}
         ext["credential_ref"] = str(credential_ref)
+        expires_at = account.get("expires_at")
+        if expires_at in (None, "", 0, "0"):
+            expires_at = None
         now = int(time.time())
         with database(self.db_path) as conn:
             conn.execute(
@@ -354,7 +374,7 @@ class DatabaseCredentialStore:
                     float(account.get("quota_used") or 0),
                     float(account.get("quota_total") or 0),
                     str(account.get("quota_unit") or "none")[:32],
-                    account.get("expires_at"),
+                     expires_at,
                     int(account.get("success_count") or 0),
                     int(account.get("fail_count") or 0),
                     int(account.get("streak") or 0),

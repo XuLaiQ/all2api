@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from fastapi import Header, HTTPException, Request
 
 from app.config import get_settings
+from app.infrastructure.credentials import encrypt_secret
 from app.infrastructure.db import database
 
 SESSION_COOKIE = "a2a_session"
@@ -310,13 +311,20 @@ def initialize_bootstrap_key() -> None:
     now = int(time.time())
     with database(settings.db_path) as conn:
         conn.execute(
-            """INSERT INTO api_keys(name, key_hash, prefix, created_at, limit_rpm)
-            VALUES ('bootstrap', ?, ?, ?, ?)
+            """INSERT INTO api_keys(name, key_hash, key_encrypted, prefix, created_at, limit_rpm)
+            VALUES ('bootstrap', ?, ?, ?, ?, ?)
             ON CONFLICT(name) WHERE name = 'bootstrap' DO UPDATE SET
-                key_hash=excluded.key_hash, prefix=excluded.prefix, enabled=1,
+                key_hash=excluded.key_hash, key_encrypted=excluded.key_encrypted,
+                prefix=excluded.prefix, enabled=1,
                 expires_at=NULL, channels='[]', models='["*"]',
                 limit_rpm=excluded.limit_rpm""",
-            (hash_api_key(configured), configured[:14], now, settings.bootstrap_rpm),
+            (
+                hash_api_key(configured),
+                encrypt_secret(configured, settings.credential_master_key),
+                configured[:14],
+                now,
+                settings.bootstrap_rpm,
+            ),
         )
 
 

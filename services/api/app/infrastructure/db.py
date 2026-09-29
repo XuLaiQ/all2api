@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.config import API_DIR
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels (
@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     key_hash TEXT NOT NULL UNIQUE,
+    key_encrypted TEXT,
     prefix TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     expires_at INTEGER,
@@ -214,6 +215,27 @@ CREATE TABLE IF NOT EXISTS playground_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_playground_runs_created
     ON playground_runs(created_at DESC);
+CREATE TABLE IF NOT EXISTS playground_conversations (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '新对话',
+    channel TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_playground_conversations_actor_updated
+    ON playground_conversations(actor, updated_at DESC);
+CREATE TABLE IF NOT EXISTS playground_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES playground_conversations(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    raw_response TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_playground_messages_conversation_created
+    ON playground_messages(conversation_id, created_at ASC);
 CREATE TABLE IF NOT EXISTS provision_sessions (
     channel TEXT NOT NULL,
     session_id TEXT NOT NULL,
@@ -273,12 +295,18 @@ def migrate(db_path: str) -> None:
         for table, column, definition in (
             ("request_logs", "usage_reported", "INTEGER NOT NULL DEFAULT 0"),
             ("usage_daily", "usage_reported_requests", "INTEGER NOT NULL DEFAULT 0"),
+            ("playground_runs", "conversation_id", "TEXT"),
+            ("api_keys", "key_encrypted", "TEXT"),
         ):
             columns = {
                 row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
             }
             if column not in columns:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        # WorkBuddy and other token imports use epoch 0 for no expiration.
+        # Keep the canonical account table nullable so health checks and the UI
+        # do not treat that sentinel as an expired account.
+        conn.execute("UPDATE accounts SET expires_at = NULL WHERE expires_at = 0")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) "
             "VALUES (?, unixepoch())",

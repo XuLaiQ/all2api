@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     wb_platform_data_key: SecretStr = SecretStr("")
     doubao_platform_base: str = "https://www.doubao.com"
     chatgpt_platform_base: str = "https://auth.openai.com"
+    chatgpt_proxy: str = ""
 
     # Migration-only HTTP bridge.  The bridge is disabled by default and is
     # kept separate from the native platform configuration above.  The older

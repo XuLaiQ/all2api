@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { Check, Copy } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
+import { CheckboxGroup } from "../../app/controls/CheckboxGroup";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import { Select } from "../../app/controls/Select";
 import { DateInput } from "../../app/controls/DateInput";
@@ -56,6 +59,35 @@ function keyStatus(row: ApiKeyRecord): { label: string; className: string } {
     : { label: "停用", className: "status-danger" };
 }
 
+function maskKey(value: string): string {
+  if (value.length <= 12) return `${value.slice(0, 4)}***`;
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+async function copyText(value: string): Promise<boolean> {
+  if (!value) return false;
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Fall back to the selection-based clipboard API below.
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    return document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function keyInput(editor: EditorState): KeyInput {
   const models = editor.modelsText.split(",").map((model) => model.trim()).filter(Boolean);
   const expiresAt = editor.expires
@@ -78,11 +110,12 @@ export function KeysPage() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [oneTimeKey, setOneTimeKey] = useState("");
   const [oneTimeTitle, setOneTimeTitle] = useState("");
+  const [copiedKeyId, setCopiedKeyId] = useState<number | null>(null);
   const [pendingAction, setPendingAction] = useState<{ id: number; kind: "rotate" | "revoke" } | null>(null);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [draftFilters, setDraftFilters] = useState<FilterDraft>(emptyFilters);
   const [filters, setFilters] = useState<KeyFilters>({});
-  const [totalPages, setTotalPages] = useState(0);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -99,11 +132,10 @@ export function KeysPage() {
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    fetchKeys(page, filters, controller.signal)
+    fetchKeys(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
         setTotal(result.pagination.total);
-        setTotalPages(result.pagination.total_pages);
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
@@ -113,15 +145,20 @@ export function KeysPage() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, filters, retry]);
+  }, [page, pageSize, filters, retry]);
+
+  function applyDraftFilters(nextDraft: FilterDraft) {
+    const next: KeyFilters = {};
+    if (nextDraft.search.trim()) next.search = nextDraft.search.trim();
+    if (nextDraft.enabled) next.enabled = nextDraft.enabled === "true";
+    setDraftFilters(nextDraft);
+    setPage(1);
+    setFilters(next);
+  }
 
   function applyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const next: KeyFilters = {};
-    if (draftFilters.search.trim()) next.search = draftFilters.search.trim();
-    if (draftFilters.enabled) next.enabled = draftFilters.enabled === "true";
-    setPage(1);
-    setFilters(next);
+    applyDraftFilters(draftFilters);
   }
 
   function clearFilters() {
@@ -198,11 +235,24 @@ export function KeysPage() {
   }
 
   async function copyOneTimeKey() {
-    try {
-      await navigator.clipboard.writeText(oneTimeKey);
-    } catch {
+    if (!(await copyText(oneTimeKey))) {
       setError("无法访问剪贴板，请手动复制当前密钥");
     }
+  }
+
+  async function copyRowKey(row: ApiKeyRecord) {
+    if (!row.key) {
+      setError("该密钥只保留了前缀，请先轮换密钥");
+      return;
+    }
+    if (!(await copyText(row.key))) {
+      setError("无法访问剪贴板，请手动复制当前密钥");
+      return;
+    }
+    setCopiedKeyId(row.id);
+    window.setTimeout(() => {
+      setCopiedKeyId((current) => (current === row.id ? null : current));
+    }, 1500);
   }
 
   return (
@@ -262,7 +312,7 @@ export function KeysPage() {
           <span>状态</span>
           <Select
             value={draftFilters.enabled}
-            onChange={(enabled) => setDraftFilters({ ...draftFilters, enabled })}
+            onChange={(enabled) => applyDraftFilters({ ...draftFilters, enabled })}
             options={[
               { value: "", label: "全部状态" },
               { value: "true", label: "启用" },
@@ -281,9 +331,9 @@ export function KeysPage() {
       ) : rows.length === 0 ? (
         <TableState>没有已创建的网关密钥</TableState>
       ) : (
-        <DataTable className="key-table" ariaLabel="网关密钥列表">
+        <DataTable className="key-table has-row-actions" ariaLabel="网关密钥列表">
             <thead>
-              <tr><th>名称 / 前缀</th><th>状态</th><th>渠道</th><th>模型</th><th>RPM</th><th>到期</th><th>最后使用</th><th>操作</th></tr>
+              <tr><th>名称 / 前缀</th><th>密钥</th><th>状态</th><th>渠道</th><th>模型</th><th>RPM</th><th>到期</th><th>最后使用</th><th>操作</th></tr>
             </thead>
             <tbody>
               {rows.map((row) => {
@@ -291,6 +341,23 @@ export function KeysPage() {
                 return (
                   <tr key={row.id}>
                     <td><span className="channel-name">{row.name}</span><span className="secondary-text">{row.prefix}…</span></td>
+                    <td>
+                      <div className="key-value-cell">
+                        <code title={row.key ?? "仅保留前缀，请先轮换密钥"}>
+                          {row.key ? maskKey(row.key) : `${row.prefix}…`}
+                        </code>
+                        <button
+                          type="button"
+                          className="key-copy-button"
+                          aria-label={copiedKeyId === row.id ? "已复制密钥" : "复制密钥"}
+                          title={row.key ? (copiedKeyId === row.id ? "已复制" : "复制密钥") : "仅保留前缀，请先轮换密钥"}
+                          disabled={!row.key}
+                          onClick={() => void copyRowKey(row)}
+                        >
+                          {copiedKeyId === row.id ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+                        </button>
+                      </div>
+                    </td>
                     <td><span className={`status-label ${state.className}`}>{state.label}</span></td>
                     <td>{row.channels.length ? row.channels.join(", ") : "全部"}</td>
                     <td><span className="key-model-scope">{row.models.join(", ")}</span></td>
@@ -316,7 +383,15 @@ export function KeysPage() {
         </DataTable>
       )}
 
-      <Pagination page={page} totalPages={totalPages} loading={loading} onPageChange={setPage} />
+      <Pagination
+        currentPage={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizes={PAGE_SIZE_OPTIONS}
+        disabled={loading}
+        onCurrentChange={setPage}
+        onSizeChange={(nextPageSize) => { setPage(1); setPageSize(nextPageSize); }}
+      />
 
       {editor && (
         <div className="key-modal-backdrop" role="presentation" onMouseDown={(event) => {
@@ -331,24 +406,13 @@ export function KeysPage() {
               <label><span>名称</span><input required maxLength={128} value={editor.name} onChange={(event) => setEditor({ ...editor, name: event.target.value })} /></label>
               <fieldset>
                 <legend>允许渠道</legend>
-                <div className="key-channel-options">
-                  {channels.map((channel) => (
-                    <label key={channel.slug}>
-                      <input
-                        type="checkbox"
-                        checked={editor.channels.includes(channel.slug)}
-                        onChange={(event) => setEditor({
-                          ...editor,
-                          channels: event.target.checked
-                            ? [...editor.channels, channel.slug]
-                            : editor.channels.filter((item) => item !== channel.slug),
-                        })}
-                      />
-                      {channel.name}
-                    </label>
-                  ))}
-                  <small>不选表示全部渠道</small>
-                </div>
+                <CheckboxGroup
+                  ariaLabel="允许渠道"
+                  options={channels.map((channel) => ({ value: channel.slug, label: channel.name }))}
+                  value={editor.channels}
+                  onChange={(selectedChannels) => setEditor({ ...editor, channels: selectedChannels })}
+                  hint="不选表示全部渠道"
+                />
               </fieldset>
               <label><span>模型范围</span><input required value={editor.modelsText} onChange={(event) => setEditor({ ...editor, modelsText: event.target.value })} /><small>用逗号分隔；`*` 表示全部模型</small></label>
               <div className="key-form-grid">

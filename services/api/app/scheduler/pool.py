@@ -52,8 +52,8 @@ class WorkBuddyLease:
 def workbuddy_candidates(model: str) -> tuple[bool, list[WorkBuddyCandidate]]:
     now = int(time.time())
     prefix, separator, bare_model = model.partition(":")
-    realm = prefix if separator and prefix in {"cn", "global"} else "cn"
-    model_name = bare_model if realm == prefix and separator else model
+    requested_realm = prefix if separator and prefix in {"cn", "global"} else None
+    model_name = bare_model if requested_realm else model
     with database(get_settings().db_path) as conn:
         snapshot_exists = conn.execute(
             "SELECT 1 FROM accounts WHERE channel = 'wb' LIMIT 1"
@@ -81,7 +81,11 @@ def workbuddy_candidates(model: str) -> tuple[bool, list[WorkBuddyCandidate]]:
             native_id = str(row["native_id"])
             if not _ACCOUNT_ID.fullmatch(native_id):
                 continue
-            if not native_id.startswith(f"{realm}:"):
+            # An unqualified public model is realm-neutral.  Prefer the
+            # account's stored realm at runtime so a global-only pool can
+            # serve the same model IDs as a cn-only pool.  Explicit realm
+            # prefixes remain strict and never cross between platforms.
+            if requested_realm and not native_id.startswith(f"{requested_realm}:"):
                 continue
             if _model_is_limited(str(row["ext"]), model_name, now):
                 continue

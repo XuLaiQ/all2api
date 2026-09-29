@@ -4,6 +4,7 @@ import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
   deleteAccount,
@@ -52,13 +53,21 @@ function displayName(name: string): string {
   return `${local.slice(0, 1)}•••@${domain}`;
 }
 
-function formatTimestamp(value: number | null): string {
-  if (!value) return "—";
+function formatTimestamp(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const numeric = typeof value === "number"
+    ? value
+    : /^-?\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+  const timestamp = Number.isFinite(numeric)
+    ? new Date(Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1000 : numeric)
+    : new Date(String(value));
+  if (numeric === 0) return "永不过期";
+  if (Number.isNaN(timestamp.getTime())) return "—";
   return new Intl.DateTimeFormat("zh-CN", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "UTC",
-  }).format(new Date(value * 1000));
+  }).format(timestamp);
 }
 
 function quotaLabel(account: AccountRecord): string {
@@ -84,8 +93,8 @@ export function AccountsPage() {
   const [draft, setDraft] = useState<FilterDraft>(emptyFilters);
   const [filters, setFilters] = useState<AccountFilters>({});
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [noticeMessage, setNoticeMessage] = useState("");
@@ -115,11 +124,10 @@ export function AccountsPage() {
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    fetchAccounts(page, filters, controller.signal)
+    fetchAccounts(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
         setTotal(result.pagination.total);
-        setTotalPages(result.pagination.total_pages);
         setUnconfiguredChannels(result.unconfigured_channels ?? []);
       })
       .catch((cause: unknown) => {
@@ -131,16 +139,21 @@ export function AccountsPage() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, filters, retry]);
+  }, [page, pageSize, filters, retry]);
+
+  function applyDraftFilters(nextDraft: FilterDraft) {
+    const next: AccountFilters = {};
+    if (nextDraft.channel) next.channel = nextDraft.channel;
+    if (nextDraft.status) next.status = nextDraft.status;
+    if (nextDraft.search.trim()) next.search = nextDraft.search.trim();
+    setDraft(nextDraft);
+    setPage(1);
+    setFilters(next);
+  }
 
   function applyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const next: AccountFilters = {};
-    if (draft.channel) next.channel = draft.channel;
-    if (draft.status) next.status = draft.status;
-    if (draft.search.trim()) next.search = draft.search.trim();
-    setPage(1);
-    setFilters(next);
+    applyDraftFilters(draft);
   }
 
   function clearFilters() {
@@ -239,7 +252,7 @@ export function AccountsPage() {
       <form className="log-filter-form account-filter-form" onSubmit={applyFilters}>
         <label><span>渠道</span><Select
           value={draft.channel}
-          onChange={(channel) => setDraft({ ...draft, channel })}
+          onChange={(channel) => applyDraftFilters({ ...draft, channel })}
           options={[
             { value: "", label: "全部渠道" },
             ...channels.map((channel) => ({ value: channel.slug, label: channel.name })),
@@ -247,7 +260,7 @@ export function AccountsPage() {
         /></label>
         <label><span>状态</span><Select
           value={draft.status}
-          onChange={(status) => setDraft({ ...draft, status })}
+          onChange={(status) => applyDraftFilters({ ...draft, status })}
           options={[
             { value: "", label: "全部状态" },
             ...Object.entries(statusLabels).map(([value, label]) => ({ value, label })),
@@ -268,7 +281,7 @@ export function AccountsPage() {
           {canManageAccounts && <span className="secondary-text">完成渠道授权后，账号会自动出现在本地账号池。</span>}
         </TableState>
       ) : (
-        <DataTable className="account-table" ariaLabel="账号列表">
+        <DataTable className={`account-table ${canManageAccounts ? "has-row-actions" : ""}`.trim()} ariaLabel="账号列表">
             <thead><tr><th>账号</th><th>渠道</th><th>状态</th><th>额度说明</th><th>到期</th><th>快照时间</th>{canManageAccounts && <th>操作</th>}</tr></thead>
             <tbody>{rows.map((account) => (
               <AccountRow
@@ -284,7 +297,15 @@ export function AccountsPage() {
         </DataTable>
       )}
 
-      <Pagination page={page} totalPages={totalPages} loading={loading} onPageChange={setPage} />
+      <Pagination
+        currentPage={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizes={PAGE_SIZE_OPTIONS}
+        disabled={loading}
+        onCurrentChange={setPage}
+        onSizeChange={(nextPageSize) => { setPage(1); setPageSize(nextPageSize); }}
+      />
       <AccountOnboardingDialog
         open={onboardingOpen}
         channels={channels}

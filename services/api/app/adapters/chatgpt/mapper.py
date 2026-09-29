@@ -35,6 +35,16 @@ _IMPORT_CREDENTIAL_FIELDS = {
     "expiresAt",
     "organization_id",
     "plan_type",
+    "proxy",
+    "user_agent",
+    "oai_device_id",
+    "oai_session_id",
+    "impersonate",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "fp",
+    "sentinel_p",
 }
 
 
@@ -81,7 +91,7 @@ def _merged_import_payload(item: Mapping[str, Any]) -> tuple[dict[str, Any], Map
     merged.update(item)
     if isinstance(credentials, Mapping):
         merged.update(credentials)
-        return merged, credentials
+        return merged, merged
     return merged, item
 
 

@@ -165,7 +165,7 @@ export function RoutesPage() {
       ) : routes.length === 0 ? (
         <TableState>还没有路由规则</TableState>
       ) : (
-        <DataTable className="route-table" ariaLabel="路由规则列表">
+        <DataTable className={`route-table ${canManage ? "has-row-actions" : ""}`.trim()} ariaLabel="路由规则列表">
             <thead><tr><th>别名</th><th>状态</th><th>目标顺序</th><th>创建时间</th>{canManage && <th>操作</th>}</tr></thead>
             <tbody>
               {routes.map((route) => (

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -78,6 +78,8 @@ class NativeHttpAdapter:
         models_path: str = "/v1/models",
         credential_store: Any | None = None,
         channel: str = "",
+        base_url_resolver: Callable[[Mapping[str, Any]], str] | None = None,
+        credential_headers_resolver: Callable[[Mapping[str, Any]], Mapping[str, str]] | None = None,
     ) -> None:
         self.manifest = manifest
         self.base_url = str(base_url or "").rstrip("/")
@@ -89,6 +91,8 @@ class NativeHttpAdapter:
         self.models_path = models_path
         self.credential_store = credential_store
         self.channel = str(channel or manifest.slug)
+        self.base_url_resolver = base_url_resolver
+        self.credential_headers_resolver = credential_headers_resolver
 
     @staticmethod
     def _credential_headers(credentials: Mapping[str, Any]) -> dict[str, str]:
@@ -182,13 +186,37 @@ class NativeHttpAdapter:
             result.update({str(key): str(value) for key, value in headers.items()})
         if credentials:
             result.update(self._credential_headers(credentials))
+            if self.credential_headers_resolver is not None:
+                result.update(
+                    {
+                        str(key): str(value)
+                        for key, value in self.credential_headers_resolver(credentials).items()
+                        if value is not None
+                    }
+                )
         return result
 
-    def _url(self, path: str) -> str:
+    def _url(self, path: str, credentials: Mapping[str, Any] | None = None) -> str:
         root = self.base_url
+        if self.base_url_resolver is not None:
+            root = str(self.base_url_resolver(credentials or {}) or root).rstrip("/")
         if root.endswith("/v1") and path.startswith("/v1/"):
             root = root[:-3]
         return f"{root}{path}"
+
+    def _prepare_chat_payload(
+        self,
+        payload: Mapping[str, Any],
+        credentials: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Apply channel-owned request normalization to every chat transport."""
+
+        if self.channel == "wb":
+            from app.adapters.workbuddy.mapper import prepare_chat_payload
+
+            realm = str(credentials.get("realm") or "cn")
+            return prepare_chat_payload(payload, realm=realm)
+        return payload
 
     def _client(self) -> tuple[httpx.AsyncClient, bool]:
         if self._http_client is not None:
@@ -226,7 +254,7 @@ class NativeHttpAdapter:
         client, owned = self._client()
         try:
             response = await client.get(
-                self._url(self.models_path),
+                self._url(self.models_path, credentials),
                 headers=self._headers(credentials=credentials),
             )
             response.raise_for_status()
@@ -279,15 +307,12 @@ class NativeHttpAdapter:
 
         _model, payload, headers, _stream = self._payload(request)
         credentials = await self._account_credentials(account)
-        if normalized == "chat" and self.channel == "wb":
-            from app.adapters.workbuddy.mapper import prepare_chat_payload
-
-            realm = str(credentials.get("realm") or "cn")
-            payload = prepare_chat_payload(payload, realm=realm)
+        if normalized == "chat":
+            payload = self._prepare_chat_payload(payload, credentials)
         client, owned = self._client()
         try:
             response = await client.post(
-                self._url(self.chat_path if normalized == "chat" else path),
+                self._url(self.chat_path if normalized == "chat" else path, credentials),
                 content=json.dumps(
                     dict(payload), ensure_ascii=False, separators=(",", ":")
                 ).encode(),
@@ -308,6 +333,7 @@ class NativeHttpAdapter:
 
         _model, payload, headers, _stream = self._payload(request)
         credentials = await self._account_credentials(account)
+        payload = self._prepare_chat_payload(payload, credentials)
         client, owned = self._client()
         if not owned:
             # Injected clients belong to the test/application composition root;
@@ -316,7 +342,7 @@ class NativeHttpAdapter:
         try:
             request_obj = client.build_request(
                 "POST",
-                self._url(self.chat_path),
+                self._url(self.chat_path, credentials),
                 content=json.dumps(
                     dict(payload), ensure_ascii=False, separators=(",", ":")
                 ).encode(),

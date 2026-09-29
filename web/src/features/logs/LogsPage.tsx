@@ -4,6 +4,7 @@ import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import { clearExpiredLogs, fetchLogs, type LogFilters, type RequestLog } from "./logsApi";
 import { Select } from "../../app/controls/Select";
@@ -62,10 +63,10 @@ export function LogsPage() {
   const [draft, setDraft] = useState<DraftFilters>(emptyFilters);
   const [filters, setFilters] = useState<LogFilters>({});
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [rows, setRows] = useState<RequestLog[]>([]);
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [total, setTotal] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -86,11 +87,10 @@ export function LogsPage() {
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    fetchLogs(page, filters, controller.signal)
+    fetchLogs(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
         setTotal(result.pagination.total);
-        setTotalPages(result.pagination.total_pages);
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
@@ -100,21 +100,26 @@ export function LogsPage() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, filters, retry]);
+  }, [page, pageSize, filters, retry]);
+
+  function applyDraftFilters(nextDraft: DraftFilters) {
+    const next: LogFilters = {};
+    if (nextDraft.request_id.trim()) next.request_id = nextDraft.request_id.trim();
+    if (nextDraft.channel) next.channel = nextDraft.channel;
+    if (nextDraft.model.trim()) next.model = nextDraft.model.trim();
+    if (nextDraft.status) next.status = Number(nextDraft.status);
+    if (nextDraft.error_kind) next.error_kind = nextDraft.error_kind;
+    if (nextDraft.stream) next.stream = nextDraft.stream === "true";
+    if (nextDraft.from) next.from = toUtcStart(nextDraft.from);
+    if (nextDraft.to) next.to = toUtcEndExclusive(nextDraft.to);
+    setDraft(nextDraft);
+    setPage(1);
+    setFilters(next);
+  }
 
   function applyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const next: LogFilters = {};
-    if (draft.request_id.trim()) next.request_id = draft.request_id.trim();
-    if (draft.channel) next.channel = draft.channel;
-    if (draft.model.trim()) next.model = draft.model.trim();
-    if (draft.status) next.status = Number(draft.status);
-    if (draft.error_kind) next.error_kind = draft.error_kind;
-    if (draft.stream) next.stream = draft.stream === "true";
-    if (draft.from) next.from = toUtcStart(draft.from);
-    if (draft.to) next.to = toUtcEndExclusive(draft.to);
-    setPage(1);
-    setFilters(next);
+    applyDraftFilters(draft);
   }
 
   function clearFilters() {
@@ -194,7 +199,7 @@ export function LogsPage() {
           <span>渠道</span>
           <Select
             value={draft.channel}
-            onChange={(channel) => setDraft({ ...draft, channel })}
+            onChange={(channel) => applyDraftFilters({ ...draft, channel })}
             options={[
               { value: "", label: "全部渠道" },
               ...channels.map((channel) => ({ value: channel.slug, label: channel.name })),
@@ -232,7 +237,7 @@ export function LogsPage() {
           <span>流式</span>
           <Select
             value={draft.stream}
-            onChange={(stream) => setDraft({ ...draft, stream })}
+            onChange={(stream) => applyDraftFilters({ ...draft, stream })}
             options={[
               { value: "", label: "全部" },
               { value: "true", label: "是" },
@@ -277,7 +282,15 @@ export function LogsPage() {
         </DataTable>
       )}
 
-      <Pagination page={page} totalPages={totalPages} loading={loading} onPageChange={setPage} />
+      <Pagination
+        currentPage={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizes={PAGE_SIZE_OPTIONS}
+        disabled={loading}
+        onCurrentChange={setPage}
+        onSizeChange={(nextPageSize) => { setPage(1); setPageSize(nextPageSize); }}
+      />
     </main>
   );
 }

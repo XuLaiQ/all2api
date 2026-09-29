@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import codecs
 import inspect
 import json
 import platform
@@ -14,9 +16,11 @@ from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.convertors import StringConvertor, register_url_convertor
 
+from app.adapters.chatgpt.errors import ChatGPTError
 from app.adapters.provisioner import ProvisioningUnsupportedError
 from app.adapters.registry import AdapterSpec, get_registry
 from app.adapters.workbuddy.errors import WorkBuddyError
@@ -154,6 +158,7 @@ class PlaygroundChatRequest(BaseModel):
 
     channel: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=256)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
     messages: list[PlaygroundMessage] = Field(min_length=1, max_length=32)
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int | None = Field(default=None, ge=1, le=8192)
@@ -2068,6 +2073,7 @@ def _playground_account(channel: str) -> dict[str, str] | None:
 def _playground_run_payload(row) -> dict[str, object]:
     return {
         "id": str(row["id"]),
+        "conversation_id": str(row["conversation_id"]) if row["conversation_id"] else None,
         "actor": str(row["actor"]),
         "channel": str(row["channel"]),
         "model": str(row["model"]),
@@ -2081,6 +2087,251 @@ def _playground_run_payload(row) -> dict[str, object]:
     }
 
 
+def _playground_conversation_payload(row) -> dict[str, object]:
+    return {
+        "id": str(row["id"]),
+        "title": str(row["title"]),
+        "channel": str(row["channel"]),
+        "model": str(row["model"]),
+        "message_count": int(row["message_count"]),
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+    }
+
+
+def _playground_message_payload(row) -> dict[str, object]:
+    raw = None
+    if row["raw_response"]:
+        try:
+            raw = json.loads(str(row["raw_response"]))
+        except (TypeError, ValueError):
+            raw = str(row["raw_response"])
+    payload: dict[str, object] = {
+        "id": str(row["id"]),
+        "role": str(row["role"]),
+        "content": str(row["content"]),
+        "created_at": int(row["created_at"]),
+    }
+    if raw is not None:
+        payload["raw"] = raw
+    return payload
+
+
+def _playground_exception_message(exc: Exception) -> str:
+    message = str(exc)
+    if "Turnstile" in message or "Arkose" in message:
+        return "ChatGPT 当前要求浏览器人机验证，请在 ChatGPT Web 完成验证后重新导入会话凭据。"
+    return message or "调试请求失败"
+
+
+def _playground_text(value: object) -> str:
+    """Extract assistant text while ignoring provider metadata and tool payloads."""
+
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return ""
+        if any(line.strip().startswith("data:") for line in trimmed.splitlines()):
+            chunks: list[str] = []
+            for frame in trimmed.replace("\r\n", "\n").split("\n\n"):
+                data = _playground_sse_data(frame)
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    parsed: object = json.loads(data)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    chunks.append(data)
+                else:
+                    chunks.append(_playground_text(parsed))
+            return "".join(chunks)
+        if trimmed.startswith(("{", "[")):
+            try:
+                return _playground_text(json.loads(trimmed))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        return value
+    if isinstance(value, list):
+        return "".join(_playground_text(item) for item in value)
+    if not isinstance(value, Mapping):
+        return ""
+
+    choices = value.get("choices")
+    if isinstance(choices, list):
+        text = "".join(_playground_text(item) for item in choices)
+        if text:
+            return text
+    for key in ("message", "delta"):
+        if key in value:
+            text = _playground_text(value[key])
+            if text:
+                return text
+    for key in ("output_text", "text", "content"):
+        if key in value:
+            text = _playground_text(value[key])
+            if text:
+                return text
+    for key in ("output", "data"):
+        nested = value.get(key)
+        if isinstance(nested, str):
+            return nested
+        if isinstance(nested, (Mapping, list)):
+            text = _playground_text(nested)
+            if text:
+                return text
+    return ""
+
+
+def _playground_error(value: object) -> tuple[str, str | None]:
+    if not isinstance(value, Mapping):
+        return "", None
+    error = value.get("error")
+    if isinstance(error, Mapping):
+        message = str(error.get("message") or "").strip()
+        code = str(error.get("code") or "upstream_error").strip() or "upstream_error"
+        if message:
+            return message[:16_000], code[:128]
+    elif isinstance(error, str) and error.strip():
+        return error.strip()[:16_000], "upstream_error"
+    code = value.get("code")
+    message = value.get("message") or value.get("msg")
+    display = value.get("displayMsg")
+    if isinstance(display, Mapping):
+        message = display.get("zh") or display.get("en") or message
+    if code not in (None, "", 0, "0") and str(message or "").strip():
+        return str(message).strip()[:16_000], str(code)[:128]
+    nested = value.get("data")
+    if isinstance(nested, Mapping):
+        return _playground_error(nested)
+    return "", None
+
+
+def _playground_sse_data(frame: str) -> str:
+    return "\n".join(
+        line[5:].lstrip(" ")
+        for line in frame.replace("\r\n", "\n").split("\n")
+        if line.startswith("data:")
+    ).strip()
+
+
+def _playground_event(payload: Mapping[str, object]) -> bytes:
+    serialized = json.dumps(dict(payload), ensure_ascii=False, separators=(",", ":"))
+    return f"data: {serialized}\n\n".encode()
+
+
+@router.get("/playground/conversations", tags=["playground"])
+def list_playground_conversations(
+    user: AdminContext,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    actor = _actor(user)
+    offset = (page - 1) * page_size
+    with database(get_settings().db_path) as conn:
+        total = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM playground_conversations WHERE actor = ?",
+                (actor,),
+            ).fetchone()[0]
+        )
+        rows = conn.execute(
+            """SELECT c.id, c.title, c.channel, c.model, c.created_at, c.updated_at,
+            (SELECT COUNT(*) FROM playground_messages m
+             WHERE m.conversation_id = c.id) AS message_count
+            FROM playground_conversations c
+            WHERE c.actor = ?
+            ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?""",
+            (actor, page_size, offset),
+        ).fetchall()
+    return {
+        "data": [_playground_conversation_payload(row) for row in rows],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": (total + page_size - 1) // page_size,
+        },
+    }
+
+
+@router.get("/playground/conversations/{conversation_id}", tags=["playground"])
+def get_playground_conversation(
+    user: AdminContext,
+    conversation_id: str,
+) -> dict:
+    actor = _actor(user)
+    with database(get_settings().db_path) as conn:
+        conversation = conn.execute(
+            """SELECT c.id, c.title, c.channel, c.model, c.created_at, c.updated_at,
+            (SELECT COUNT(*) FROM playground_messages m
+             WHERE m.conversation_id = c.id) AS message_count
+            FROM playground_conversations c WHERE c.id = ? AND c.actor = ?""",
+            (conversation_id, actor),
+        ).fetchone()
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        messages = conn.execute(
+            """SELECT id, role, content, raw_response, created_at
+            FROM playground_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC""",
+            (conversation_id,),
+        ).fetchall()
+    return {
+        "data": {
+            **_playground_conversation_payload(conversation),
+            "messages": [_playground_message_payload(row) for row in messages],
+        }
+    }
+
+
+@router.delete(
+    "/playground/conversations/{conversation_id}",
+    tags=["playground"],
+    dependencies=[Depends(_require_admin_write)],
+)
+def delete_playground_conversation(
+    conversation_id: str,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    actor = _actor(user)
+    with database(get_settings().db_path) as conn:
+        conversation = conn.execute(
+            "SELECT id FROM playground_conversations WHERE id = ? AND actor = ?",
+            (conversation_id, actor),
+        ).fetchone()
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        running = conn.execute(
+            """SELECT 1 FROM playground_runs
+            WHERE conversation_id = ? AND status = 'running' LIMIT 1""",
+            (conversation_id,),
+        ).fetchone()
+        if running is not None:
+            raise HTTPException(status_code=409, detail="conversation has a running request")
+        deleted_runs = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM playground_runs WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()[0]
+        )
+        conn.execute("DELETE FROM playground_runs WHERE conversation_id = ?", (conversation_id,))
+        conn.execute("DELETE FROM playground_conversations WHERE id = ?", (conversation_id,))
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="delete_playground_conversation",
+            target=conversation_id,
+            detail=f"request_records_deleted={deleted_runs}",
+        )
+    return {
+        "data": {
+            "id": conversation_id,
+            "deleted": True,
+            "request_records_deleted": deleted_runs,
+        }
+    }
+
+
 @router.get("/playground/runs", tags=["playground"])
 def list_playground_runs(
     page: int = Query(default=1, ge=1),
@@ -2090,7 +2341,8 @@ def list_playground_runs(
     with database(get_settings().db_path) as conn:
         total = int(conn.execute("SELECT COUNT(*) FROM playground_runs").fetchone()[0])
         rows = conn.execute(
-            """SELECT id, actor, channel, model, status, message_count, request_bytes,
+            """SELECT id, conversation_id, actor, channel, model, status,
+            message_count, request_bytes,
             response_status, error_code, created_at, completed_at
             FROM playground_runs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?""",
             (page_size, offset),
@@ -2109,15 +2361,14 @@ def list_playground_runs(
 @router.post(
     "/playground/chat",
     tags=["playground"],
+    response_model=None,
     dependencies=[Depends(_require_admin_write)],
 )
 async def playground_chat(
     body: PlaygroundChatRequest,
     request: Request,
     user: AdminContext,
-) -> dict:
-    if body.stream:
-        raise HTTPException(status_code=501, detail="playground streaming is not implemented")
+) -> dict | StreamingResponse:
     adapter = get_registry().get(body.channel)
     if adapter is None:
         raise HTTPException(status_code=404, detail="channel is not registered")
@@ -2126,10 +2377,19 @@ async def playground_chat(
         raise HTTPException(status_code=503, detail="channel_disabled")
     runtime = getattr(adapter, "runtime", None)
     invoke = getattr(runtime, "invoke", None)
+    invoke_stream = getattr(runtime, "invoke_stream", None)
     if not callable(invoke):
         raise HTTPException(
             status_code=501,
             detail="playground requires a native channel runtime; no upstream call was made",
+        )
+    if body.stream and not callable(invoke_stream):
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "playground streaming requires a native streaming runtime; "
+                "no upstream call was made"
+            ),
         )
     model = body.model
     prefix = f"{body.channel}/"
@@ -2137,26 +2397,249 @@ async def playground_chat(
         model = model[len(prefix) :]
     if "/" in model:
         raise HTTPException(status_code=422, detail="model must belong to the selected channel")
+    actor = _actor(user)
+    conversation_id = (body.conversation_id or "").strip()
+    now = int(time.time())
+    with database(get_settings().db_path) as conn:
+        if conversation_id:
+            conversation = conn.execute(
+                "SELECT id FROM playground_conversations WHERE id = ? AND actor = ?",
+                (conversation_id, actor),
+            ).fetchone()
+            if conversation is None:
+                raise HTTPException(status_code=404, detail="conversation not found")
+            conn.execute(
+                "UPDATE playground_conversations SET channel=?, model=?, updated_at=? WHERE id=?",
+                (body.channel, model, now, conversation_id),
+            )
+        else:
+            conversation_id = f"conv_{uuid.uuid4().hex}"
+            title = body.messages[0].content.strip()[:80] or "新对话"
+            conn.execute(
+                """INSERT INTO playground_conversations
+                (id, actor, title, channel, model, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (conversation_id, actor, title, body.channel, model, now, now),
+            )
+        last_message = body.messages[-1]
+        if last_message.role == "user":
+            conn.execute(
+                """INSERT INTO playground_messages
+                (id, conversation_id, role, content, created_at)
+                VALUES (?, ?, 'user', ?, ?)""",
+                (f"msg_{uuid.uuid4().hex}", conversation_id, last_message.content, time.time_ns()),
+            )
+        conn.execute(
+            "UPDATE playground_conversations SET updated_at=? WHERE id=?",
+            (now, conversation_id),
+        )
     payload: dict[str, object] = {
         "model": model,
         "messages": [item.model_dump() for item in body.messages],
-        "stream": False,
+        "stream": body.stream,
     }
     if body.temperature is not None:
         payload["temperature"] = body.temperature
     if body.max_tokens is not None:
         payload["max_tokens"] = body.max_tokens
     run_id = f"pg_{uuid.uuid4().hex}"
-    now = int(time.time())
     request_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
     account = _playground_account(body.channel)
     with database(get_settings().db_path) as conn:
         conn.execute(
             """INSERT INTO playground_runs
-            (id, actor, channel, model, status, message_count, request_bytes, created_at)
-            VALUES (?, ?, ?, ?, 'running', ?, ?, ?)""",
-            (run_id, _actor(user), body.channel, model, len(body.messages), request_bytes, now),
+            (id, conversation_id, actor, channel, model, status, message_count,
+             request_bytes, created_at)
+            VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)""",
+            (run_id, conversation_id, actor, body.channel, model, len(body.messages),
+             request_bytes, now),
         )
+
+    if body.stream:
+        async def stream_body():
+            status_code = 200
+            status = "ok"
+            error_code: str | None = None
+            error_detail = ""
+            assistant_content = ""
+            pending = ""
+            cancelled = False
+            utf8_decoder = codecs.getincrementaldecoder("utf-8")()
+
+            def consume_data(data: str) -> bytes | None:
+                nonlocal assistant_content, error_code, error_detail
+                if not data or data == "[DONE]":
+                    return None
+                try:
+                    parsed: object = json.loads(data)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    text = data if not data.lstrip().startswith("{") else ""
+                else:
+                    detail, code = _playground_error(parsed)
+                    if detail and not error_detail:
+                        error_detail = detail
+                        error_code = code
+                    text = _playground_text(parsed)
+                if not text:
+                    return None
+                remaining = 16_000 - len(assistant_content)
+                if remaining <= 0:
+                    return None
+                text = text[:remaining]
+                assistant_content += text
+                return _playground_event({"type": "delta", "content": text})
+
+            try:
+                stream = invoke_stream(
+                    {"model": model, "payload": payload, "stream": True},
+                    account,
+                )
+                if inspect.isawaitable(stream):
+                    stream = await stream
+                async for chunk in stream:
+                    raw_bytes = chunk if isinstance(chunk, bytes) else str(chunk).encode()
+                    pending += utf8_decoder.decode(raw_bytes)
+                    while True:
+                        boundaries = [
+                            (pending.find(separator), len(separator))
+                            for separator in ("\r\n\r\n", "\n\n")
+                            if pending.find(separator) >= 0
+                        ]
+                        if not boundaries:
+                            break
+                        index, separator_length = min(boundaries, key=lambda item: item[0])
+                        frame, pending = pending[:index], pending[index + separator_length :]
+                        data = _playground_sse_data(frame)
+                        if not data and frame.strip() and not frame.lstrip().startswith("data:"):
+                            data = frame.strip()
+                        event = consume_data(data)
+                        if event:
+                            yield event
+                pending += utf8_decoder.decode(b"", final=True)
+                if pending.strip():
+                    data = _playground_sse_data(pending) or pending.strip()
+                    event = consume_data(data)
+                    if event:
+                        yield event
+            except asyncio.CancelledError:
+                status = "failed"
+                status_code = 499
+                error_code = "client_disconnected"
+                error_detail = "客户端已断开连接"
+                cancelled = True
+            except ChatGPTError as exc:
+                status = "failed"
+                status_code = int(getattr(exc, "status_code", 502))
+                error_code = str(getattr(exc, "code", "chatgpt_error"))[:128]
+                error_detail = _playground_exception_message(exc)
+            except Exception:
+                status = "failed"
+                status_code = 502
+                error_code = "upstream_error"
+                error_detail = "调试请求失败"
+
+            if error_detail and not cancelled:
+                status = "failed"
+                status_code = status_code if status_code >= 400 else 502
+                yield _playground_event(
+                    {
+                        "type": "error",
+                        "message": error_detail,
+                        "response_status": status_code,
+                        "error_code": error_code or "upstream_error",
+                    }
+                )
+
+            if status == "ok" and not assistant_content and not cancelled:
+                status = "failed"
+                status_code = 502
+                error_code = "empty_response"
+                error_detail = "上游返回了空内容"
+                yield _playground_event(
+                    {
+                        "type": "error",
+                        "message": error_detail,
+                        "response_status": status_code,
+                        "error_code": error_code,
+                    }
+                )
+
+            response_payload: dict[str, object]
+            if status == "ok":
+                response_payload = {"content": assistant_content}
+            else:
+                response_payload = {
+                    "error": {
+                        "message": error_detail or "调试请求失败",
+                        "code": error_code or "upstream_error",
+                    }
+                }
+            raw_response = json.dumps(response_payload, ensure_ascii=False)[:128_000]
+            finished = int(time.time())
+            with database(get_settings().db_path) as conn:
+                conn.execute(
+                    """UPDATE playground_runs
+                    SET status=?, response_status=?, error_code=?, completed_at=?
+                    WHERE id=?""",
+                    (status, status_code, error_code, finished, run_id),
+                )
+                if status == "ok":
+                    conn.execute(
+                        """INSERT INTO playground_messages
+                        (id, conversation_id, role, content, raw_response, created_at)
+                        VALUES (?, ?, 'assistant', ?, ?, ?)""",
+                        (
+                            f"msg_{uuid.uuid4().hex}",
+                            conversation_id,
+                            assistant_content,
+                            raw_response,
+                            time.time_ns(),
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO playground_messages
+                        (id, conversation_id, role, content, created_at)
+                        VALUES (?, ?, 'error', ?, ?)""",
+                        (
+                            f"msg_{uuid.uuid4().hex}",
+                            conversation_id,
+                            error_detail or "调试请求失败",
+                            time.time_ns(),
+                        ),
+                    )
+                conn.execute(
+                    "UPDATE playground_conversations SET updated_at=? WHERE id=?",
+                    (finished, conversation_id),
+                )
+                _audit_write(
+                    conn,
+                    user=user,
+                    request=request,
+                    action="playground_chat",
+                    target=run_id,
+                    detail=f"channel={body.channel};model={model};status={status_code}",
+                )
+            if not cancelled:
+                yield _playground_event(
+                    {
+                        "type": "done",
+                        "run_id": run_id,
+                        "conversation_id": conversation_id,
+                        "channel": body.channel,
+                        "model": model,
+                        "status": status,
+                        "response_status": status_code,
+                        "response": response_payload,
+                    }
+                )
+
+        return StreamingResponse(
+            stream_body(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     try:
         response = invoke({"model": model, "payload": payload, "stream": False}, account)
         if inspect.isawaitable(response):
@@ -2167,24 +2650,37 @@ async def playground_chat(
         except (ValueError, TypeError):
             result_body = {"content": str(getattr(response, "text", ""))[:64_000]}
         error_code = None
+        error_detail, parsed_error_code = _playground_error(result_body)
         if status_code >= 400:
-            if isinstance(result_body, Mapping):
-                error = result_body.get("error")
-                error_code = str(
-                    error.get("code")
-                    if isinstance(error, Mapping)
-                    else result_body.get("code") or "upstream_error"
-                )[:128]
-            else:
-                error_code = "upstream_error"
+            error_code = (parsed_error_code or "upstream_error")[:128]
         finished = int(time.time())
         status = "ok" if status_code < 400 else "failed"
+        raw_response = json.dumps(result_body, ensure_ascii=False)[:128_000]
+        assistant_content = _playground_text(result_body)[:16_000]
+        if not assistant_content and status_code >= 400:
+            assistant_content = (error_detail or error_code or "调试请求失败")[:16_000]
         with database(get_settings().db_path) as conn:
             conn.execute(
                 """UPDATE playground_runs
                 SET status=?, response_status=?, error_code=?, completed_at=?
                 WHERE id=?""",
                 (status, status_code, error_code, finished, run_id),
+            )
+            conn.execute(
+                """INSERT INTO playground_messages
+                (id, conversation_id, role, content, raw_response, created_at)
+                VALUES (?, ?, 'assistant', ?, ?, ?)""",
+                (
+                    f"msg_{uuid.uuid4().hex}",
+                    conversation_id,
+                    assistant_content,
+                    raw_response,
+                    time.time_ns(),
+                ),
+            )
+            conn.execute(
+                "UPDATE playground_conversations SET updated_at=? WHERE id=?",
+                (finished, conversation_id),
             )
             _audit_write(
                 conn,
@@ -2197,6 +2693,7 @@ async def playground_chat(
         return {
             "data": {
                 "run_id": run_id,
+                "conversation_id": conversation_id,
                 "channel": body.channel,
                 "model": model,
                 "status": status,
@@ -2204,6 +2701,48 @@ async def playground_chat(
                 "response": result_body,
             }
         }
+    except ChatGPTError as exc:
+        failed_at = int(time.time())
+        detail = _playground_exception_message(exc)
+        with database(get_settings().db_path) as conn:
+            conn.execute(
+                """UPDATE playground_runs
+                SET status='failed', response_status=?, error_code=?, completed_at=?
+                WHERE id=?""",
+                (
+                    int(getattr(exc, "status_code", 502)),
+                    str(getattr(exc, "code", "chatgpt_error"))[:128],
+                    failed_at,
+                    run_id,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO playground_messages
+                (id, conversation_id, role, content, created_at)
+                VALUES (?, ?, 'error', ?, ?)""",
+                (f"msg_{uuid.uuid4().hex}", conversation_id, detail, time.time_ns()),
+            )
+            conn.execute(
+                "UPDATE playground_conversations SET updated_at=? WHERE id=?",
+                (failed_at, conversation_id),
+            )
+            _audit_write(
+                conn,
+                user=user,
+                request=request,
+                action="playground_chat",
+                target=run_id,
+                detail=f"error_code={getattr(exc, 'code', 'chatgpt_error')}",
+            )
+        headers = {}
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            headers["Retry-After"] = str(retry_after)
+        raise HTTPException(
+            status_code=int(getattr(exc, "status_code", 502)),
+            detail=detail,
+            headers=headers or None,
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -2213,6 +2752,17 @@ async def playground_chat(
                 SET status='failed', error_code='upstream_error', completed_at=?
                 WHERE id=?""",
                 (int(time.time()), run_id),
+            )
+            failed_at = int(time.time())
+            conn.execute(
+                """INSERT INTO playground_messages
+                (id, conversation_id, role, content, created_at)
+                VALUES (?, ?, 'error', ?, ?)""",
+                (f"msg_{uuid.uuid4().hex}", conversation_id, "调试请求失败", time.time_ns()),
+            )
+            conn.execute(
+                "UPDATE playground_conversations SET updated_at=? WHERE id=?",
+                (failed_at, conversation_id),
             )
             _audit_write(
                 conn,

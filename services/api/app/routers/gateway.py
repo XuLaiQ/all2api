@@ -55,6 +55,7 @@ from app.scheduler.runtime import (
 router = APIRouter(prefix="/v1")
 KeyContext = Annotated[dict, Depends(require_api_key)]
 _upstream_slots = asyncio.Semaphore(64)
+PUBLIC_MODEL_DISCOVERY_TIMEOUT_SECONDS = 5
 
 
 _CAPABILITY_DEFAULT_MODELS = {
@@ -222,6 +223,11 @@ def _account_selection_mismatch(
     response: httpx.Response,
     target: dict[str, str],
 ) -> bool:
+    # The X-WB headers are emitted by the legacy bridge only.  Native
+    # WorkBuddy requests are bound to the selected encrypted credential and
+    # the public platform does not echo these internal routing headers.
+    if target.get("verify_account_selection") != "true":
+        return False
     if target.get("channel") != "wb":
         return False
     expected = target.get("account_id")
@@ -575,6 +581,85 @@ def _extract_sse_usage(buffer: bytes) -> tuple[bytes, tuple[int, int] | None]:
             buffer = b""
 
 
+def _sse_to_chat_response(body: bytes, model: str) -> dict[str, Any]:
+    """Aggregate a provider SSE body for a non-streaming OpenAI request."""
+
+    choices: dict[int, dict[str, Any]] = {}
+    response_id = ""
+    created = int(time.time())
+    response_model = model
+    usage: dict[str, Any] | None = None
+    saw_chunk = False
+    normalized = body.replace(b"\r\n", b"\n")
+    for frame in normalized.split(b"\n\n"):
+        data_lines = [
+            line[5:].lstrip()
+            for line in frame.split(b"\n")
+            if line.startswith(b"data:")
+        ]
+        if not data_lines:
+            continue
+        raw = b"\n".join(data_lines)
+        if raw.strip() == b"[DONE]":
+            continue
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("upstream returned an invalid SSE frame") from exc
+        if not isinstance(payload, dict):
+            continue
+        if isinstance(payload.get("error"), dict):
+            raise ValueError(str(payload["error"].get("message") or "upstream returned an error"))
+        saw_chunk = True
+        response_id = str(payload.get("id") or response_id)
+        response_model = str(payload.get("model") or response_model)
+        if isinstance(payload.get("created"), int):
+            created = payload["created"]
+        if isinstance(payload.get("usage"), dict):
+            usage = payload["usage"]
+        for raw_choice in payload.get("choices", []):
+            if not isinstance(raw_choice, dict):
+                continue
+            index = raw_choice.get("index", 0)
+            if type(index) is not int or index < 0:
+                index = 0
+            choice = choices.setdefault(
+                index,
+                {
+                    "index": index,
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": None,
+                },
+            )
+            delta = raw_choice.get("delta")
+            if isinstance(delta, dict):
+                role = delta.get("role")
+                if isinstance(role, str) and role:
+                    choice["message"]["role"] = role
+                content = delta.get("content")
+                if isinstance(content, str):
+                    choice["message"]["content"] += content
+                reasoning = delta.get("reasoning_content")
+                if isinstance(reasoning, str):
+                    choice["message"]["reasoning_content"] = (
+                        choice["message"].get("reasoning_content", "") + reasoning
+                    )
+            finish_reason = raw_choice.get("finish_reason")
+            if finish_reason is not None:
+                choice["finish_reason"] = finish_reason
+
+    if not saw_chunk or not choices:
+        raise ValueError("upstream returned no chat completion choices")
+    return {
+        "id": response_id or f"chatcmpl-{int(time.time() * 1000)}",
+        "object": "chat.completion",
+        "created": created,
+        "model": response_model,
+        "choices": [choices[index] for index in sorted(choices)],
+        **({"usage": usage} if usage is not None else {}),
+    }
+
+
 @router.get("/models", tags=["gateway"], response_model=None)
 async def list_models(key: KeyContext) -> dict:
     adapters = get_registry()
@@ -585,26 +670,43 @@ async def list_models(key: KeyContext) -> dict:
         if adapter_catalogue_enabled(adapter, db_path)
     ]
     results = await asyncio.gather(
-        *(fetch_adapter_models(adapter) for adapter in configured),
+        *(
+            asyncio.wait_for(
+                fetch_adapter_models(adapter),
+                timeout=PUBLIC_MODEL_DISCOVERY_TIMEOUT_SECONDS,
+            )
+            for adapter in configured
+        ),
         return_exceptions=True,
     )
-    failures = [
-        adapter.slug
-        for adapter, result in zip(configured, results, strict=True)
-        if isinstance(result, Exception)
-    ]
+    unavailable_channels: set[str] = set()
     models: list[dict[str, Any]] = []
+    model_ids: set[str] = set()
     now = int(time.time())
     for adapter, result in zip(configured, results, strict=True):
         if isinstance(result, Exception):
+            unavailable_channels.add(adapter.slug)
             continue
         items = [dict(item) for item in result if isinstance(item, Mapping) and item.get("id")]
+        if not items:
+            unavailable_channels.add(adapter.slug)
+            continue
         upsert_model_cache(adapter.slug, items, db_path=db_path)
+        with database(db_path) as conn:
+            enabled_ids = {
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM models WHERE channel = ? AND enabled = 1",
+                    (adapter.slug,),
+                )
+            }
         for item in items:
             upstream_id = item.get("id")
             if not isinstance(upstream_id, str) or not upstream_id:
                 continue
             model_id = f"{adapter.slug}/{upstream_id}"
+            if model_id in model_ids or model_id not in enabled_ids:
+                continue
             if not _allowed(key, adapter.slug, model_id):
                 continue
             display_name = str(item.get("name") or item.get("display_name") or upstream_id)
@@ -617,11 +719,32 @@ async def list_models(key: KeyContext) -> dict:
                     "name": display_name,
                 }
             )
-        with database(get_settings().db_path) as conn:
-            enabled_ids = {
-                row["id"] for row in conn.execute("SELECT id FROM models WHERE enabled = 1")
-            }
-        models = [item for item in models if item["id"] in enabled_ids]
+            model_ids.add(model_id)
+
+    if unavailable_channels:
+        with database(db_path) as conn:
+            cached_rows = conn.execute(
+                """SELECT id, channel, upstream_id, display_name
+                FROM models WHERE enabled = 1 ORDER BY channel, display_name, id"""
+            ).fetchall()
+        for row in cached_rows:
+            channel = str(row["channel"])
+            model_id = str(row["id"])
+            if channel not in unavailable_channels or model_id in model_ids:
+                continue
+            if not _allowed(key, channel, model_id):
+                continue
+            models.append(
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "created": now,
+                    "owned_by": channel,
+                    "name": str(row["display_name"] or row["upstream_id"]),
+                }
+            )
+            model_ids.add(model_id)
+
     with database(get_settings().db_path) as conn:
         aliases = [
             row["alias"]
@@ -640,7 +763,7 @@ async def list_models(key: KeyContext) -> dict:
                 "owned_by": "all2api",
             }
         )
-    if configured and failures and len(failures) == len(configured) and not models:
+    if configured and len(unavailable_channels) == len(configured) and not models:
         raise HTTPException(status_code=502, detail="all configured model services are unavailable")
     return {"object": "list", "data": models}
 
@@ -972,9 +1095,15 @@ async def _dispatch_chat(
         )
     expanded_targets: list[dict[str, str]] = []
     for route_depth, target in enumerate(targets):
-        base_target = {**target, "route_depth": str(route_depth)}
         target_channel = target["channel"]
         adapter = adapters.get(target_channel)
+        base_target = {
+            **target,
+            "route_depth": str(route_depth),
+            "verify_account_selection": str(
+                adapter is not None and getattr(adapter, "runtime", None) is None
+            ).lower(),
+        }
         if adapter is None:
             expanded_targets.append(base_target)
             continue
@@ -1483,7 +1612,7 @@ async def _dispatch_chat(
             )
             raise HTTPException(status_code=502, detail=f"{adapter.name} is unavailable") from exc
         if _account_selection_mismatch(request_id, upstream, target):
-            upstream.close()
+            await upstream.aclose()
             if account_lease is not None:
                 account_lease.release()
             _upstream_slots.release()
@@ -1524,7 +1653,7 @@ async def _dispatch_chat(
             or model_not_found
             or account_unavailable
         ) and attempt_index + 1 < len(targets):
-            upstream.close()
+            await upstream.aclose()
             last_status = 503 if account_unavailable else upstream.status_code
             fallback_depth = depth
             if account_lease is not None:
@@ -1533,7 +1662,7 @@ async def _dispatch_chat(
         if account_lease is not None:
             account_lease.release()
         if account_unavailable:
-            upstream.close()
+            await upstream.aclose()
             _upstream_slots.release()
             log_request(
                 request_id=request_id,
@@ -1584,8 +1713,13 @@ async def _dispatch_chat(
     account_id = _selected_account_id(request_id, upstream.headers, selected_target)
     prompt_tokens = completion_tokens = 0
     usage_reported = False
+    content_type = upstream.headers.get("content-type", "application/json")
     try:
-        result = upstream.json()
+        if "text/event-stream" in content_type.lower():
+            result = _sse_to_chat_response(upstream.content, selected_target["upstream_model"])
+            content_type = "application/json"
+        else:
+            result = upstream.json()
         usage = result.get("usage", {}) if isinstance(result, dict) else {}
         token_usage = _token_usage(usage)
         if token_usage is not None:
@@ -1608,7 +1742,7 @@ async def _dispatch_chat(
         account_id=account_id,
         fallback_depth=fallback_depth,
     )
-    content_type = upstream.headers.get("content-type", "application/json")
+    await upstream.aclose()
     return Response(
         content=response_body, status_code=upstream.status_code, media_type=content_type,
         headers=_client_response_headers(request_id, upstream),

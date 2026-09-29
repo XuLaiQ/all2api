@@ -1,4 +1,5 @@
 import { apiClient } from "../../api/client";
+import { DEFAULT_PAGE_SIZE, type PaginationMeta } from "../../app/data/pagination.constants";
 
 export type RequestLog = {
   id: number;
@@ -33,7 +34,7 @@ export type LogFilters = {
 
 export type LogPage = {
   data: RequestLog[];
-  pagination: { page: number; page_size: number; total: number; total_pages: number };
+  pagination: PaginationMeta;
 };
 
 export type ClearLogsResult = {
@@ -49,9 +50,10 @@ export async function fetchLogs(
   page: number,
   filters: LogFilters,
   signal?: AbortSignal,
+  pageSize = DEFAULT_PAGE_SIZE,
 ): Promise<LogPage> {
   const response = await apiClient.get<LogPage>("/logs", {
-    params: { page, page_size: 50, ...filters },
+    params: { page, page_size: pageSize, ...filters },
     signal,
   });
   return response.data;

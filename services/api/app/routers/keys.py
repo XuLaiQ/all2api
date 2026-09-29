@@ -10,8 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.adapters.registry import get_registry
 from app.config import get_settings
-from app.infrastructure.db import database
 from app.domain.scope import ScopeValidationError, validate_scope
+from app.infrastructure.credentials import decrypt_secret, encrypt_secret
+from app.infrastructure.db import database
 from app.infrastructure.security import hash_api_key, issue_api_key, require_admin_request
 
 router = APIRouter(
@@ -21,6 +22,7 @@ router = APIRouter(
 )
 _NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 AdminUser = Annotated[dict, Depends(require_admin_request)]
+_admin_user_dependency = Depends(require_admin_request)
 
 
 class ApiKeyCreate(BaseModel):
@@ -138,8 +140,8 @@ class ApiKeyPatch(BaseModel):
         return self
 
 
-def _safe_key(row) -> dict:
-    return {
+def _safe_key(row, *, include_key: bool = False) -> dict:
+    result = {
         "id": int(row["id"]),
         "name": row["name"],
         "prefix": row["prefix"],
@@ -151,6 +153,14 @@ def _safe_key(row) -> dict:
         "created_at": int(row["created_at"]),
         "last_used_at": row["last_used_at"],
     }
+    if include_key:
+        encrypted = row["key_encrypted"] if "key_encrypted" in row.keys() else None
+        result["key"] = (
+            decrypt_secret(encrypted, getattr(get_settings(), "credential_master_key", ""))
+            if encrypted
+            else None
+        )
+    return result
 
 
 def _require_key_admin(user: AdminUser) -> dict:
@@ -179,7 +189,12 @@ def list_api_keys(
     page_size: int = Query(default=50, ge=1, le=200),
     search: str | None = Query(default=None, min_length=1, max_length=128),
     enabled: bool | None = None,
+    response: Response = None,
+    user: dict | None = _admin_user_dependency,
 ) -> dict:
+    include_key = not isinstance(user, dict) or user.get("role") == "admin"
+    if include_key and response is not None:
+        response.headers["Cache-Control"] = "no-store"
     filters = []
     values: list[object] = []
     if search:
@@ -196,13 +211,13 @@ def list_api_keys(
             conn.execute(f"SELECT COUNT(*) FROM api_keys {where}", values).fetchone()[0]
         )
         rows = conn.execute(
-            f"""SELECT id, name, prefix, enabled, expires_at, channels, models,
+            f"""SELECT id, name, prefix, key_encrypted, enabled, expires_at, channels, models,
             limit_rpm, created_at, last_used_at
             FROM api_keys {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?""",
             [*values, page_size, offset],
         ).fetchall()
     return {
-        "data": [_safe_key(row) for row in rows],
+        "data": [_safe_key(row, include_key=include_key) for row in rows],
         "pagination": {
             "page": page,
             "page_size": page_size,
@@ -226,12 +241,13 @@ def create_api_key(body: ApiKeyCreate, request: Request, response: Response) -> 
             raise HTTPException(status_code=409, detail="key name already exists")
         cursor = conn.execute(
             """INSERT INTO api_keys
-            (name, key_hash, prefix, enabled, expires_at, channels, models, limit_rpm,
-             created_at)
-            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)""",
+            (name, key_hash, key_encrypted, prefix, enabled, expires_at, channels,
+             models, limit_rpm, created_at)
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)""",
             (
                 body.name,
                 hash_api_key(raw_key),
+                encrypt_secret(raw_key, getattr(get_settings(), "credential_master_key", "")),
                 raw_key[:14],
                 body.expires_at,
                 json.dumps(body.channels),
@@ -243,8 +259,9 @@ def create_api_key(body: ApiKeyCreate, request: Request, response: Response) -> 
         key_id = int(cursor.lastrowid)
         _audit_key(conn, request, "create_api_key", key_id)
         row = conn.execute(
-            """SELECT id, name, prefix, enabled, expires_at, channels, models, limit_rpm,
-            created_at, last_used_at FROM api_keys WHERE id = ?""",
+            """SELECT id, name, prefix, key_encrypted, enabled, expires_at, channels,
+            models, limit_rpm, created_at, last_used_at
+            FROM api_keys WHERE id = ?""",
             (key_id,),
         ).fetchone()
     response.headers["Cache-Control"] = "no-store"
@@ -314,8 +331,9 @@ def patch_api_key(key_id: int, body: ApiKeyPatch, request: Request) -> dict:
         conn.execute(f"UPDATE api_keys SET {', '.join(sets)} WHERE id = ?", values)
         _audit_key(conn, request, "update_api_key", key_id, ",".join(sorted(changes)))
         updated = conn.execute(
-            """SELECT id, name, prefix, enabled, expires_at, channels, models, limit_rpm,
-            created_at, last_used_at FROM api_keys WHERE id = ?""",
+            """SELECT id, name, prefix, key_encrypted, enabled, expires_at, channels,
+            models, limit_rpm, created_at, last_used_at
+            FROM api_keys WHERE id = ?""",
             (key_id,),
         ).fetchone()
     return {"data": _safe_key(updated)}
@@ -332,14 +350,21 @@ def rotate_api_key(key_id: int, request: Request, response: Response) -> dict:
         if row["name"].casefold() == "bootstrap":
             raise HTTPException(status_code=409, detail="bootstrap key is managed by configuration")
         conn.execute(
-            "UPDATE api_keys SET key_hash = ?, prefix = ?, enabled = 1 WHERE id = ?",
-            (hash_api_key(raw_key), raw_key[:14], key_id),
+            """UPDATE api_keys SET key_hash = ?, key_encrypted = ?, prefix = ?,
+            enabled = 1 WHERE id = ?""",
+            (
+                hash_api_key(raw_key),
+                encrypt_secret(raw_key, getattr(get_settings(), "credential_master_key", "")),
+                raw_key[:14],
+                key_id,
+            ),
         )
         conn.execute("DELETE FROM api_key_rate_events WHERE key_id = ?", (key_id,))
         _audit_key(conn, request, "rotate_api_key", key_id)
         updated = conn.execute(
-            """SELECT id, name, prefix, enabled, expires_at, channels, models, limit_rpm,
-            created_at, last_used_at FROM api_keys WHERE id = ?""",
+            """SELECT id, name, prefix, key_encrypted, enabled, expires_at, channels,
+            models, limit_rpm, created_at, last_used_at
+            FROM api_keys WHERE id = ?""",
             (key_id,),
         ).fetchone()
     response.headers["Cache-Control"] = "no-store"

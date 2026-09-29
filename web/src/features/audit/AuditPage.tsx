@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { ApiClientError } from "../../api/client";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { fetchAuditLogs, type AuditFilters, type AuditRecord } from "./auditApi";
 import { DateInput } from "../../app/controls/DateInput";
 
@@ -32,9 +33,9 @@ export function AuditPage() {
   const [draft, setDraft] = useState<FilterDraft>(emptyFilters);
   const [filters, setFilters] = useState<AuditFilters>({});
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [rows, setRows] = useState<AuditRecord[]>([]);
   const [total, setTotal] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -43,11 +44,10 @@ export function AuditPage() {
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    fetchAuditLogs(page, filters, controller.signal)
+    fetchAuditLogs(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
         setTotal(result.pagination.total);
-        setTotalPages(result.pagination.total_pages);
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
@@ -58,7 +58,7 @@ export function AuditPage() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, filters, retry]);
+  }, [page, pageSize, filters, retry]);
 
   function applyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -112,7 +112,15 @@ export function AuditPage() {
         </DataTable>
       )}
 
-      <Pagination page={page} totalPages={totalPages} total={total} loading={loading} onPageChange={setPage} />
+      <Pagination
+        currentPage={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizes={PAGE_SIZE_OPTIONS}
+        disabled={loading}
+        onCurrentChange={setPage}
+        onSizeChange={(nextPageSize) => { setPage(1); setPageSize(nextPageSize); }}
+      />
     </main>
   );
 }

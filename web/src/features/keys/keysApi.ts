@@ -1,8 +1,10 @@
 import { apiClient } from "../../api/client";
+import { DEFAULT_PAGE_SIZE, type PaginationMeta } from "../../app/data/pagination.constants";
 
 export type ApiKeyRecord = {
   id: number;
   name: string;
+  key?: string | null;
   prefix: string;
   enabled: boolean;
   expires_at: number | null;
@@ -28,16 +30,17 @@ export type KeyFilters = {
 
 type ListResponse = {
   data: ApiKeyRecord[];
-  pagination: { page: number; page_size: number; total: number; total_pages: number };
+  pagination: PaginationMeta;
 };
 
 export async function fetchKeys(
   page: number,
   filters: KeyFilters = {},
   signal?: AbortSignal,
+  pageSize = DEFAULT_PAGE_SIZE,
 ): Promise<ListResponse> {
   const response = await apiClient.get<ListResponse>("/keys", {
-    params: { page, page_size: 50, ...filters },
+    params: { page, page_size: pageSize, ...filters },
     signal,
   });
   return response.data;

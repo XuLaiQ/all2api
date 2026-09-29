@@ -1,4 +1,5 @@
 import { apiClient } from "../../api/client";
+import { DEFAULT_PAGE_SIZE, type PaginationMeta } from "../../app/data/pagination.constants";
 
 export type AccountRecord = {
   id: string;
@@ -11,7 +12,7 @@ export type AccountRecord = {
   quota_used: number;
   quota_total: number;
   quota_unit: string;
-  expires_at: number | null;
+  expires_at: number | string | null;
   cooldown_until: number | null;
   gateway_runtime: {
     state: "unobserved" | "closed" | "cooldown" | "breaker_open";
@@ -25,7 +26,7 @@ export type AccountRecord = {
     updated_at: number | null;
     retry_after: number | null;
   };
-  updated_at: number;
+  updated_at: number | string;
 };
 
 export type AccountFilters = {
@@ -36,7 +37,7 @@ export type AccountFilters = {
 
 export type AccountPage = {
   data: AccountRecord[];
-  pagination: { page: number; page_size: number; total: number; total_pages: number };
+  pagination: PaginationMeta;
   unconfigured_channels: string[];
 };
 
@@ -44,9 +45,10 @@ export async function fetchAccounts(
   page: number,
   filters: AccountFilters,
   signal?: AbortSignal,
+  pageSize = DEFAULT_PAGE_SIZE,
 ): Promise<AccountPage> {
   const response = await apiClient.get<AccountPage>("/accounts", {
-    params: { page, page_size: 50, ...filters },
+    params: { page, page_size: pageSize, ...filters },
     signal,
   });
   return response.data;

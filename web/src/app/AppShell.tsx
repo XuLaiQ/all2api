@@ -14,7 +14,7 @@ const searchablePages = [
   { label: "运行总览", path: "/", keywords: ["overview", "dashboard"] },
   { label: "渠道", path: "/channels", keywords: ["channel"] },
   { label: "账号池", path: "/accounts", keywords: ["account", "账号"] },
-  { label: "模型目录", path: "/models", keywords: ["model", "模型"] },
+  { label: "模型广场", path: "/models", keywords: ["model", "模型"] },
   { label: "路由规则", path: "/routes", keywords: ["route", "路由"] },
   { label: "网关密钥", path: "/keys", keywords: ["key", "密钥"] },
   { label: "请求日志", path: "/logs", keywords: ["request", "log", "请求"] },
@@ -37,7 +37,7 @@ export function AppShell() {
     "/": "运行总览",
     "/channels": "渠道",
     "/accounts": "账号池",
-    "/models": "模型目录",
+    "/models": "模型广场",
     "/routes": "路由规则",
     "/keys": "网关密钥",
     "/logs": "请求日志",
@@ -184,7 +184,7 @@ export function AppShell() {
                 <span className="side-icon side-icon-accounts" aria-hidden="true" />账号池
               </NavLink>
               <NavLink to="/models" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
-                <span className="side-icon side-icon-models" aria-hidden="true" />模型目录
+                <span className="side-icon side-icon-models" aria-hidden="true" />模型广场
               </NavLink>
               <NavLink to="/routes" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
                 <span className="side-icon side-icon-routes" aria-hidden="true" />路由规则
@@ -224,7 +224,7 @@ export function AppShell() {
             <span><i aria-hidden="true" /> Gateway Healthy</span>
           </section>
         </aside>
-        <div className={`page-stage ${location.pathname === "/" ? "page-stage-overview" : "page-stage-data"}`}>
+        <div className={`page-stage ${location.pathname === "/" ? "page-stage-overview" : location.pathname === "/system" ? "page-stage-system" : "page-stage-data"}`}>
           <Outlet context={{ role: auth.role }} />
         </div>
       </div>

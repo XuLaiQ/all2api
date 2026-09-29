@@ -7,11 +7,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.infrastructure import db, security
 from app.adapters.chatgpt.provisioner import ChatGPTProvisioner
 from app.adapters.native_runtime import NativeHttpAdapter
+from app.adapters.workbuddy.client import WorkBuddyClient
 from app.adapters.workbuddy.provisioner import MemoryCredentialStore as WorkBuddyStore
 from app.adapters.workbuddy.provisioner import WorkBuddyProvisioner
+from app.infrastructure import db, security
 from app.ports.credentials import InMemoryCredentialStore
 from app.routers import admin, gateway
 from app.scheduler import pool
@@ -103,6 +104,27 @@ def test_account_candidates_share_runtime_state_for_native_channels(tmp_path, mo
     lease.release()
 
 
+def test_workbuddy_unqualified_model_uses_global_account_realm(tmp_path, monkeypatch):
+    db_path = tmp_path / "workbuddy-realm-pool.db"
+    db.migrate(str(db_path))
+    monkeypatch.setattr(pool, "get_settings", lambda: SimpleNamespace(db_path=str(db_path)))
+    with db.database(str(db_path)) as conn:
+        conn.execute(
+            """INSERT INTO accounts
+            (id, channel, native_id, name, kind, status, enabled, created_at, updated_at)
+            VALUES ('wb:global:user-1', 'wb', 'global:user-1', 'Global account',
+                    'oauth', 'ready', 1, 1, 1)"""
+        )
+
+    has_snapshot, candidates = pool.workbuddy_candidates("default-model")
+    assert has_snapshot is True
+    assert [item.native_id for item in candidates] == ["global:user-1"]
+
+    has_snapshot, candidates = pool.workbuddy_candidates("cn:default-model")
+    assert has_snapshot is True
+    assert candidates == []
+
+
 @pytest.mark.asyncio
 async def test_native_runtime_injects_selected_doubao_cookie_credentials():
     seen: list[httpx.Request] = []
@@ -133,6 +155,54 @@ async def test_native_runtime_injects_selected_doubao_cookie_credentials():
     assert response.status_code == 200
     assert seen[0].headers["cookie"] == "session=cookie-value"
     assert seen[0].headers["x-ms-token"] == "ms-token-value"
+
+
+@pytest.mark.asyncio
+async def test_workbuddy_runtime_routes_global_credentials_to_global_platform():
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "native", "choices": []})
+
+    store = WorkBuddyStore()
+    await store.atomic_write(
+        "wb",
+        "global:user-1",
+        {
+            "access_token": "access-token",
+            "realm": "global",
+            "domain": "www.workbuddy.ai",
+            "uid": "user-1",
+        },
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    workbuddy = WorkBuddyClient("https://copilot.tencent.com", http_client=client)
+    adapter = NativeHttpAdapter(
+        SimpleNamespace(slug="wb"),
+        workbuddy.base_url,
+        http_client=client,
+        credential_store=store,
+        channel="wb",
+        chat_path=WorkBuddyClient.CHAT_PATH,
+        base_url_resolver=workbuddy.base_url_for_credentials,
+        credential_headers_resolver=workbuddy.runtime_headers,
+    )
+    response = await adapter.invoke(
+        {
+            "model": "model-a",
+            "payload": {
+                "model": "model-a",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        },
+        {"account_id": "global:user-1"},
+    )
+    await client.aclose()
+    assert response.status_code == 200
+    assert str(seen[0].url) == "https://www.workbuddy.ai/v2/chat/completions"
+    assert seen[0].headers["x-machine-id"]
+    assert seen[0].headers["x-session-id"]
 
 
 def test_admin_refresh_is_admin_only_and_audited(tmp_path, monkeypatch):

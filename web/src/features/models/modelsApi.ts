@@ -1,4 +1,5 @@
 import { apiClient } from "../../api/client";
+import { DEFAULT_PAGE_SIZE, type PaginationMeta } from "../../app/data/pagination.constants";
 
 export type ModelRecord = {
   id: string;
@@ -22,7 +23,7 @@ export type ModelFilters = {
 
 export type ModelPage = {
   data: ModelRecord[];
-  pagination: { page: number; page_size: number; total: number; total_pages: number };
+  pagination: PaginationMeta;
   source: "observed_cache";
   facets: { kinds: string[] };
 };
@@ -38,9 +39,10 @@ export async function fetchModels(
   page: number,
   filters: ModelFilters,
   signal?: AbortSignal,
+  pageSize = DEFAULT_PAGE_SIZE,
 ): Promise<ModelPage> {
   const response = await apiClient.get<ModelPage>("/models", {
-    params: { page, page_size: 50, ...filters },
+    params: { page, page_size: pageSize, ...filters },
     signal,
   });
   return response.data;

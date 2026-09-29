@@ -27,6 +27,8 @@ class WorkBuddyAdapter:
             chat_path=WorkBuddyClient.CHAT_PATH,
             credential_store=getattr(self.provisioner, "credential_store", None),
             channel="wb",
+            base_url_resolver=client.base_url_for_credentials,
+            credential_headers_resolver=client.runtime_headers,
         )
 
     async def health(self, context: Any = None) -> Mapping[str, Any]:

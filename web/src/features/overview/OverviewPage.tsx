@@ -183,7 +183,7 @@ export function OverviewPage() {
       data: dailySeries.map((point) => shortDay(point.day)),
       axisLine: { lineStyle: { color: chartPalette.grid } },
       axisTick: { show: false },
-      axisLabel: { color: chartPalette.muted, fontSize: 10, interval: Math.max(0, Math.floor(dailySeries.length / 5)) },
+      axisLabel: { color: chartPalette.muted, fontSize: 12, interval: Math.max(0, Math.floor(dailySeries.length / 5)) },
     },
     yAxis: {
       type: "value",
@@ -238,7 +238,7 @@ export function OverviewPage() {
         axisTick: { show: false },
         axisLabel: {
           color: chartPalette.muted,
-          fontSize: 11,
+          fontSize: 12,
           hideOverlap: true,
           formatter: (value: number) => recentAxisTime(value),
         },
@@ -248,7 +248,7 @@ export function OverviewPage() {
         type: "value",
         min: 0,
         splitNumber: 6,
-        axisLabel: { color: chartPalette.muted, fontSize: 11, formatter: (value: number) => formatMagnitude(value) },
+        axisLabel: { color: chartPalette.muted, fontSize: 12, formatter: (value: number) => formatMagnitude(value) },
         axisTick: { show: false },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: chartPalette.grid } },

@@ -184,7 +184,7 @@ POST   /admin/api/keys/{id}/rotate
 DELETE /admin/api/keys/{id}
 ```
 
-创建/编辑 body 至少包含：`name`、`channels`、`models`、`expires_at`、`limit_rpm`。`channels=[]` 表示全部当前已启用且已配置渠道；模型范围必须与渠道交叉校验。明文只在创建/轮换响应出现一次，响应 `Cache-Control: no-store`，数据库仅存 hash/prefix。
+创建/编辑 body 至少包含：`name`、`channels`、`models`、`expires_at`、`limit_rpm`。`channels=[]` 表示全部当前已启用且已配置渠道；模型范围必须与渠道交叉校验。创建/轮换响应和管理员 Key 列表均使用 `Cache-Control: no-store`；数据库使用 `key_hash` 鉴权，并以服务主密钥加密保存当前 Key 以支持管理员列表脱敏展示和复制，禁止保存未加密明文。viewer 列表只返回 prefix 和安全元数据，历史上没有加密密文的旧 Key 需要轮换后才能复制。
 
 创建 Key 的最小请求：
 
@@ -216,6 +216,9 @@ GET   /admin/api/users
 POST  /admin/api/users
 PATCH /admin/api/users/{name}
 DELETE /admin/api/users/{name}
+GET   /admin/api/playground/conversations
+GET   /admin/api/playground/conversations/{id}
+DELETE /admin/api/playground/conversations/{id}
 POST  /admin/api/playground/chat
 GET   /admin/api/playground/runs
 POST  /admin/api/channels
@@ -235,8 +238,8 @@ alias target 为 `{channel, model}` 数组，顺序决定优先级。只对 429�
 会话系统提供。渠道写 API 只允许内置 registry 中已存在的渠道，配置内容仅接受非 Secret
 的 JSON 标量/对象，并写入审计；动态 provider 注册不在当前范围内。
 
-Playground 只支持管理员发起的非流式文本请求，调用 native runtime，不调用 legacy bridge；
-请求元数据写入 `playground_runs`，响应正文只在当前响应返回，不持久化到运行记录。
+Playground 只支持管理员发起的文本请求，调用 native runtime，不调用 legacy bridge；请求支持流式
+SSE 输出，回答正文以会话消息形式持久化，运行元数据写入 `playground_runs`。
 
 ## 9. 会话、幂等和安全
 
@@ -258,7 +261,7 @@ Playground 只支持管理员发起的非流式文本请求，调用 native runt
 | 日志/审计/用量 | `/logs`、`/audit-logs`、`/stats/*` |
 | 系统设置 | `/settings` |
 | 用户管理 | `/users` |
-| 调试台 | `/playground/chat`、`/playground/runs` |
+| 调试台 | `/playground/conversations`、`/playground/chat`、`/playground/runs` |
 
 前端类型必须从 OpenAPI 或同一变更中的 DTO 同步，不在组件中复制渠道枚举、授权规则或调度逻辑。
 
@@ -318,8 +321,9 @@ Cookie 写操作校验 `Origin` 与 `Host`；脚本 Bearer 管理令牌不进入
 | `GET /admin/api/users` | 读取本地用户目录 | 用户目录不保存密码；实际登录仍使用环境管理员配置 |
 | `POST /admin/api/users` | 创建 viewer/admin 目录项 | 仅 admin + 同源；不创建可登录密码 |
 | `PATCH/DELETE /admin/api/users/{name}` | 修改启用/角色或删除目录项 | 环境配置管理员不可删除或停用；写审计 |
+| `GET/DELETE /admin/api/playground/conversations/{id}` | 读取或删除对话及其消息、请求记录 | 仅 admin 可删除；删除在同一事务内清理关联记录 |
 | `GET /admin/api/playground/runs` | 读取 Playground 运行元数据 | 不保存消息正文、凭据或上游原始错误体 |
-| `POST /admin/api/playground/chat` | 对已配置 native runtime 执行一次非流式调试调用 | 仅 admin + 同源；不支持 stream；未配置 runtime 返回 `501`，不会回退到源项目 bridge |
+| `POST /admin/api/playground/chat` | 对已配置 native runtime 执行一次流式或非流式调试调用 | 仅 admin + 同源；未配置 runtime 返回 `501`，不会回退到源项目 bridge |
 
 管理页不能通过初次加载触发模型发现或真实平台登录。所有兼容路径都必须在 M5
 切换前迁移到目标 adapter/provisioner，或明确删除。

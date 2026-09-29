@@ -60,6 +60,15 @@ class WorkBuddyClient:
     def _base_url(self, realm: str) -> str:
         return self.global_base_url if normalize_realm(realm) == "global" else self.base_url
 
+    def base_url_for_credentials(self, credentials: Mapping[str, Any] | None = None) -> str:
+        values = credentials if isinstance(credentials, Mapping) else {}
+        return self._base_url(resolve_realm(values.get("realm"), values.get("domain")))
+
+    def runtime_headers(self, credentials: Mapping[str, Any]) -> Mapping[str, str]:
+        values = credentials if isinstance(credentials, Mapping) else {}
+        realm = resolve_realm(values.get("realm"), values.get("domain"))
+        return self._headers(realm, credentials=values)
+
     @staticmethod
     def _stable_id(prefix: str, uid: str) -> str:
         digest = hashlib.sha256(f"{prefix}:{uid}".encode()).hexdigest()

@@ -177,6 +177,7 @@ def _registry_key(settings: Settings) -> tuple[str, ...]:
         secret(getattr(settings, "wb_platform_data_key", "")),
         str(getattr(settings, "doubao_platform_base", "https://www.doubao.com")),
         str(getattr(settings, "chatgpt_platform_base", "https://auth.openai.com")),
+        str(getattr(settings, "chatgpt_proxy", "")),
         str(getattr(settings, "legacy_wb_upstream_base", "")),
         secret(getattr(settings, "legacy_wb_data_key", "")),
         secret(getattr(settings, "legacy_wb_admin_token", "")),
@@ -283,9 +284,29 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
     # not import the old wb.py/chatgpt.py bridge modules and therefore cannot
     # accidentally read a source project's environment or storage.
     wb_client = WorkBuddyClient(wb_platform_base, data_key=wb_platform_key)
+    chatgpt_oauth_client = OAuthClient(
+        OAuthConfig(
+            authorize_endpoint=(
+                str(getattr(settings, "chatgpt_platform_base", "https://auth.openai.com") or "https://auth.openai.com").rstrip("/")
+                + "/oauth/authorize"
+            ),
+            token_endpoint=(
+                str(getattr(settings, "chatgpt_platform_base", "https://auth.openai.com") or "https://auth.openai.com").rstrip("/")
+                + "/oauth/token"
+            ),
+        )
+    )
+    chatgpt_provisioner = ChatGPTProvisioner(
+        credential_store=credential_store,
+        session_ttl=int(getattr(settings, "provision_session_ttl_seconds", 600)),
+        state_store=provision_state_store,
+        oauth_client=chatgpt_oauth_client,
+    )
     chatgpt_client = ChatGPTAdapter(
         credential_store=credential_store,
         web_base_url="https://chatgpt.com",
+        proxy_url=str(getattr(settings, "chatgpt_proxy", "") or ""),
+        refresh_callback=chatgpt_provisioner.refresh_credential,
     )
 
     async def native_wb_models(_base_url: str, _key: str) -> list[dict[str, Any]]:
@@ -357,6 +378,8 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
         chat_path=WorkBuddyClient.CHAT_PATH,
         credential_store=credential_store,
         channel="wb",
+        base_url_resolver=wb_client.base_url_for_credentials,
+        credential_headers_resolver=wb_client.runtime_headers,
     )
     chatgpt_runtime = chatgpt_client
     doubao_platform_base = str(
@@ -490,36 +513,6 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             manifest=CHATGPT_MANIFEST,
             upstream_adapter=chatgpt_runtime,
             native_model_configured=bool(chatgpt_platform_key),
-            provisioner=ChatGPTProvisioner(
-                credential_store=credential_store,
-                session_ttl=int(getattr(settings, "provision_session_ttl_seconds", 600)),
-                state_store=provision_state_store,
-                oauth_client=OAuthClient(
-                    OAuthConfig(
-                        authorize_endpoint=(
-                            str(
-                                getattr(
-                                    settings,
-                                    "chatgpt_platform_base",
-                                    "https://auth.openai.com",
-                                )
-                                or "https://auth.openai.com"
-                            ).rstrip("/")
-                            + "/oauth/authorize"
-                        ),
-                        token_endpoint=(
-                            str(
-                                getattr(
-                                    settings,
-                                    "chatgpt_platform_base",
-                                    "https://auth.openai.com",
-                                )
-                                or "https://auth.openai.com"
-                            ).rstrip("/")
-                            + "/oauth/token"
-                        ),
-                    )
-                ),
-            ),
+            provisioner=chatgpt_provisioner,
         ),
     }
