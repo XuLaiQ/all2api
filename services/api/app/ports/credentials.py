@@ -39,5 +39,13 @@ class InMemoryCredentialStore:
     async def read(self, channel: str, account_id: str) -> dict[str, Any] | None:
         return self.get(channel, account_id)
 
+    async def delete(self, credential_ref: str) -> None:
+        """Remove one test credential using the same port shape as SQLite."""
+
+        target = str(credential_ref)
+        for key, _value in list(self.records.items()):
+            if f"{key[0]}:{key[1]}" == target:
+                self.records.pop(key, None)
+
     def snapshot(self) -> dict[tuple[str, str], dict[str, Any]]:
         return {key: dict(value) for key, value in self.records.items()}

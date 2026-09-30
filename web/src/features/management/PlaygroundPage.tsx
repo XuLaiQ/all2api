@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { Select } from "../../app/controls/Select";
@@ -19,6 +20,11 @@ import {
   type PlaygroundResult,
   type PlaygroundRun,
 } from "./managementApi";
+import {
+  PlaygroundEditableFilePanel,
+  PlaygroundSearchPanel,
+  PlaygroundSkillPanel,
+} from "./PlaygroundCapabilities";
 
 type ChatMessage = {
   id: string;
@@ -26,6 +32,8 @@ type ChatMessage = {
   content: string;
   raw?: unknown;
 };
+
+type PlaygroundTab = "skills" | "search" | "ppt" | "psd" | "chat";
 
 function responseContent(value: unknown): string {
   if (typeof value === "string") {
@@ -156,6 +164,7 @@ export function PlaygroundPage() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [channel, setChannel] = useState("");
   const [model, setModel] = useState("");
+  const [playgroundTab, setPlaygroundTab] = useState<PlaygroundTab>("chat");
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [response, setResponse] = useState<unknown>(null);
@@ -239,7 +248,7 @@ export function PlaygroundPage() {
         setModels(result.data);
         setModel((current) => result.data.some((item) => item.upstream_id === current)
           ? current
-          : result.data[0]?.upstream_id ?? "");
+          : result.data[0]?.upstream_id ?? (channel === "chatgpt" ? "auto" : ""));
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
@@ -255,7 +264,19 @@ export function PlaygroundPage() {
   }, [channel, modelsRetry]);
 
   const selectedChannel = useMemo(() => channels.find((item) => item.slug === channel), [channels, channel]);
-  const selectedModel = useMemo(() => models.find((item) => item.upstream_id === model), [models, model]);
+  const availableModels = useMemo<ModelRecord[]>(() => models.length > 0 ? models : channel === "chatgpt" ? [{
+    id: "chatgpt/auto",
+    channel: "chatgpt",
+    upstream_id: "auto",
+    display_name: "自动选择",
+    kind: "chat",
+    caps: ["chat", "search"],
+    context_window: null,
+    max_output: null,
+    multiplier: 1,
+    enabled: true,
+  }] : [], [channel, models]);
+  const selectedModel = useMemo(() => availableModels.find((item) => item.upstream_id === model), [availableModels, model]);
   const modelLabel = selectedModel?.display_name ?? model;
 
   function handleChannelChange(nextChannel: string) {
@@ -319,7 +340,7 @@ export function PlaygroundPage() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const selected = models.find((item) => item.upstream_id === model);
+    const selected = availableModels.find((item) => item.upstream_id === model);
     const prompt = message.trim();
     if (role !== "admin" || !channel || !selected || !prompt || busy) return;
 
@@ -393,15 +414,32 @@ export function PlaygroundPage() {
           <h1>调试台</h1>
           <p>选择渠道和模型，开始一段新的测试对话</p>
         </div>
-        <button className="secondary-action-button" type="button" onClick={() => setReload((value) => value + 1)} disabled={historyLoading}>
+        <Button variant="secondary" onClick={() => setReload((value) => value + 1)} disabled={historyLoading}>
           <RefreshCw size={15} aria-hidden="true" className={historyLoading ? "spin" : undefined} />
           刷新记录
-        </button>
+        </Button>
       </div>
 
       {error && <div className="notice notice-error playground-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{error}</span></div>}
 
-      <div className="playground-layout">
+      <div className="playground-mode-tabs" role="tablist" aria-label="调试功能">
+        {([
+          ["skills", "搜索 Skill"],
+          ["search", "联网搜索"],
+          ["ppt", "PPT 生成"],
+          ["psd", "PSD 生成"],
+          ["chat", "对话"],
+        ] as const).map(([value, label]) => (
+          <Button key={value} variant="unstyled" role="tab" aria-selected={playgroundTab === value} className={`playground-mode-tab${playgroundTab === value ? " is-active" : ""}`} onClick={() => setPlaygroundTab(value)}>{label}</Button>
+        ))}
+      </div>
+
+      {playgroundTab === "skills" && <PlaygroundSkillPanel />}
+      {playgroundTab === "search" && <PlaygroundSearchPanel channel={channel || "chatgpt"} model={model || "auto"} />}
+      {playgroundTab === "ppt" && <PlaygroundEditableFilePanel kind="ppt" channel={channel || "chatgpt"} model={model || "auto"} />}
+      {playgroundTab === "psd" && <PlaygroundEditableFilePanel kind="psd" channel={channel || "chatgpt"} model={model || "auto"} />}
+
+      {playgroundTab === "chat" && <div className="playground-layout">
         <section className="playground-conversation" aria-label="调试对话">
           <header className="playground-toolbar">
             <div className="playground-context">
@@ -422,17 +460,17 @@ export function PlaygroundPage() {
               <label className="playground-select-field"><span>模型</span><Select
                 value={model}
                 onChange={setModel}
-                disabled={role !== "admin" || !channel || modelsLoading || models.length === 0}
+                disabled={role !== "admin" || !channel || modelsLoading || availableModels.length === 0}
                 placeholder={modelsLoading ? "读取模型…" : !channel ? "先选渠道" : "选择模型"}
-                options={models.map((item) => ({
+                options={availableModels.map((item) => ({
                   value: item.upstream_id,
                   label: item.display_name === item.upstream_id ? item.display_name : `${item.display_name} (${item.upstream_id})`,
                 }))}
               /></label>
-              <button className="playground-new-button" type="button" onClick={startNewConversation} title="新建对话">
+              <Button variant="unstyled" className="playground-new-button" onClick={startNewConversation} title="新建对话">
                 <Plus size={16} aria-hidden="true" />
                 新对话
-              </button>
+              </Button>
             </div>
           </header>
 
@@ -475,9 +513,9 @@ export function PlaygroundPage() {
                 disabled={role !== "admin" || busy || !selectedModel}
                 aria-label="消息"
               />
-              <button className="playground-send-button" type="submit" disabled={role !== "admin" || busy || !channel || !selectedModel || !message.trim()} title="发送消息" aria-label="发送消息">
+              <Button variant="unstyled" className="playground-send-button" type="submit" disabled={role !== "admin" || busy || !channel || !selectedModel || !message.trim()} title="发送消息" aria-label="发送消息">
                 <Send size={17} aria-hidden="true" />
-              </button>
+              </Button>
             </div>
             <div className="playground-composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><span>{selectedModel ? `${selectedChannel?.name ?? channel} / ${model}` : "请选择可用模型"}</span></div>
           </form>
@@ -487,12 +525,12 @@ export function PlaygroundPage() {
           <header className="playground-history-header">
             <div>
               <div className="playground-sidebar-tabs" role="tablist" aria-label="调试台侧栏视图">
-                <button className={`playground-sidebar-tab${sidebarTab === "conversations" ? " is-active" : ""}`} type="button" role="tab" aria-selected={sidebarTab === "conversations"} onClick={() => setSidebarTab("conversations")}>对话历史</button>
-                <button className={`playground-sidebar-tab${sidebarTab === "requests" ? " is-active" : ""}`} type="button" role="tab" aria-selected={sidebarTab === "requests"} onClick={() => setSidebarTab("requests")}>请求记录</button>
+                <Button variant="unstyled" className={`playground-sidebar-tab${sidebarTab === "conversations" ? " is-active" : ""}`} role="tab" aria-selected={sidebarTab === "conversations"} onClick={() => setSidebarTab("conversations")}>对话历史</Button>
+                <Button variant="unstyled" className={`playground-sidebar-tab${sidebarTab === "requests" ? " is-active" : ""}`} role="tab" aria-selected={sidebarTab === "requests"} onClick={() => setSidebarTab("requests")}>请求记录</Button>
               </div>
               <span>{sidebarTab === "conversations" ? (total ? `${total} 个会话` : "暂无历史会话") : (requestTotal ? `${requestTotal} 条请求` : "暂无请求记录")}</span>
             </div>
-            <button className="playground-icon-button" type="button" onClick={() => setReload((value) => value + 1)} disabled={historyLoading || requestLoading} title="刷新当前列表" aria-label="刷新当前列表"><RefreshCw size={16} aria-hidden="true" /></button>
+            <Button variant="unstyled" className="playground-icon-button" onClick={() => setReload((value) => value + 1)} disabled={historyLoading || requestLoading} title="刷新当前列表" aria-label="刷新当前列表"><RefreshCw size={16} aria-hidden="true" /></Button>
           </header>
           <div className="playground-history-list">
             {sidebarTab === "conversations" && (
@@ -504,20 +542,18 @@ export function PlaygroundPage() {
                     className={`playground-history-item${conversation.id === conversationId ? " is-active" : ""}`}
                     key={conversation.id}
                   >
-                    <button className="playground-history-item-open" type="button" onClick={() => void openConversation(conversation.id)}>
+                    <Button variant="unstyled" className="playground-history-item-open" onClick={() => void openConversation(conversation.id)}>
                       <div className="playground-history-item-top"><span className="playground-status-dot is-ok" /><strong>{conversation.title}</strong><span>{conversation.message_count} 条</span></div>
                       <div className="playground-history-item-meta"><span>{conversation.channel} · {conversation.model}</span><span>{new Date(conversation.updated_at * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span></div>
-                    </button>
-                    {role === "admin" && <button
-                      className="playground-history-delete"
-                      type="button"
+                    </Button>
+                    {role === "admin" && <Button variant="unstyled" className="playground-history-delete"
                       disabled={busy || deletingConversationId !== null}
                       onClick={() => void deleteConversation(conversation.id, conversation.title)}
                       title="删除对话"
                       aria-label={`删除对话 ${conversation.title}`}
                     >
                       {deletingConversationId === conversation.id ? <RefreshCw size={14} className="spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
-                    </button>}
+                    </Button>}
                   </div>
                 ))}
               </>
@@ -550,10 +586,10 @@ export function PlaygroundPage() {
               setPageSize(nextPageSize);
             }}
           />
-          {response !== null && <details className="playground-latest-response"><summary><span>最新原始响应</span><button type="button" onClick={(event) => { event.preventDefault(); void copyLatestResponse(); }} title="复制最新响应" aria-label="复制最新响应">{copied ? <Check size={14} /> : <Copy size={14} />}</button></summary><pre>{JSON.stringify(response, null, 2)}</pre></details>}
+          {response !== null && <details className="playground-latest-response"><summary><span>最新原始响应</span><Button variant="unstyled" onClick={(event) => { event.preventDefault(); void copyLatestResponse(); }} title="复制最新响应" aria-label="复制最新响应">{copied ? <Check size={14} /> : <Copy size={14} />}</Button></summary><pre>{JSON.stringify(response, null, 2)}</pre></details>}
           {modelsError && <div className="playground-history-error">{modelsError}</div>}
         </aside>
-      </div>
+      </div>}
     </main>
   );
 }

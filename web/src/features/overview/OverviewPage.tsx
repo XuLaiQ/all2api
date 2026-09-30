@@ -5,8 +5,9 @@ import type { EChartsCoreOption } from "echarts/core";
 import { LineChart, PieChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { Link } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button, ButtonLink } from "../../app/controls/Button";
+import { Select } from "../../app/controls/Select";
 import { fetchAccounts, type AccountRecord } from "../accounts/accountsApi";
 import { fetchRoutes, type ModelRoute } from "../routes/routesApi";
 import { fetchSystemMetrics, type SystemMetrics } from "../system/systemApi";
@@ -100,6 +101,12 @@ const chartPalette = {
   grid: "rgba(129, 146, 165, .20)",
 };
 
+const trendRangeOptions = [
+  { value: "7", label: "7d" },
+  { value: "30", label: "30d" },
+  { value: "90", label: "90d" },
+];
+
 function EChart({
   option,
   className,
@@ -143,6 +150,7 @@ export function OverviewPage() {
   const [routes, setRoutes] = useState<ModelRoute[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [trendDays, setTrendDays] = useState(30);
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -150,7 +158,7 @@ export function OverviewPage() {
     setLoading(true);
     setError("");
     Promise.allSettled([
-      fetchOverview(30, controller.signal),
+      fetchOverview(trendDays, controller.signal),
       fetchSystemMetrics(1, controller.signal),
       fetchAccounts(1, {}, controller.signal),
       fetchRoutes(controller.signal),
@@ -168,7 +176,7 @@ export function OverviewPage() {
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [retry]);
+  }, [retry, trendDays]);
 
   const summary = overview?.summary;
   const channels = overview?.channels ?? [];
@@ -310,13 +318,13 @@ export function OverviewPage() {
           <p>统一查看渠道健康、账号池状态、路由表现和请求指标。</p>
         </div>
         <div className="page-actions">
-          <Link className="secondary-action-button" to="/usage">导出报表</Link>
-          <Link className="secondary-action-button" to="/channels">测试全部渠道</Link>
-          <Link className="key-primary-action" to="/channels">+ 添加渠道</Link>
+          <ButtonLink to="/usage">导出报表</ButtonLink>
+          <ButtonLink to="/channels">测试全部渠道</ButtonLink>
+          <ButtonLink variant="primary" to="/channels">+ 添加渠道</ButtonLink>
         </div>
       </div>
 
-      {error && <div className="notice notice-error" role="alert"><span>{error}</span><button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button></div>}
+      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button></div>}
 
       <section className="overview-kpis" aria-label="运行指标">
         <Metric label="今日请求" value={loading ? "…" : number(metrics?.requests ?? 0)} icon="↗" meta={metrics ? "最近 24h" : "等待数据"} />
@@ -328,16 +336,28 @@ export function OverviewPage() {
 
       <section className="overview-grid overview-top-grid">
         <article className="overview-panel chart-panel">
-          <PanelHead title="请求量趋势" desc="最近 30 天 · UTC 记账日" action={<Link className="secondary-action-button compact-action" to="/usage">30d⌄</Link>} />
+          <PanelHead
+            title="请求量趋势"
+            desc={`最近 ${trendDays} 天 · UTC 记账日`}
+            action={(
+              <Select
+                value={String(trendDays)}
+                ariaLabel="请求量趋势日期范围"
+                options={trendRangeOptions}
+                onChange={(value) => setTrendDays(Number(value))}
+                className="overview-range-select"
+              />
+            )}
+          />
           <div className="panel-content">
-            {loading ? <div className="table-state">正在读取请求趋势…</div> : dailySeries.length === 0 ? <div className="table-state">最近 30 天暂无请求记录</div> : (
-              <EChart option={dailyChartOption} className="overview-chart" ariaLabel="最近 30 天请求量趋势" />
+            {loading ? <div className="table-state">正在读取请求趋势…</div> : dailySeries.length === 0 ? <div className="table-state">最近 {trendDays} 天暂无请求记录</div> : (
+              <EChart option={dailyChartOption} className="overview-chart" ariaLabel={`最近 ${trendDays} 天请求量趋势`} />
             )}
           </div>
         </article>
 
         <article className="overview-panel health-panel">
-          <PanelHead title="渠道健康" desc="实时聚合 · 本地网关运行态" action={<Link className="secondary-action-button compact-action" to="/channels">查看全部</Link>} />
+          <PanelHead title="渠道健康" desc="实时聚合 · 本地网关运行态" action={<ButtonLink size="sm" to="/channels">查看全部</ButtonLink>} />
           <div className="panel-content health-list">
             {loading ? <div className="table-state">正在读取渠道…</div> : channels.length === 0 ? <div className="table-state">没有已注册渠道</div> : channels.slice(0, 4).map((channel) => {
               const state = channelState(channel);
@@ -349,7 +369,7 @@ export function OverviewPage() {
 
       <section className="overview-grid overview-middle-grid">
         <article className="overview-panel table-panel">
-          <PanelHead title="账号池" desc="最近活跃账号与额度状态" action={<Link className="secondary-action-button compact-action" to="/accounts">查看全部</Link>} />
+          <PanelHead title="账号池" desc="最近活跃账号与额度状态" action={<ButtonLink size="sm" to="/accounts">查看全部</ButtonLink>} />
           <div className="panel-content account-visual-content">
             {loading ? <div className="table-state">正在读取账号…</div> : (
               <div className="account-visual-layout">
@@ -379,7 +399,7 @@ export function OverviewPage() {
         </article>
 
         <article className="overview-panel routes-panel">
-          <PanelHead title="路由规则" desc="跨渠道降级链 · 当前配置" action={<Link className="secondary-action-button compact-action" to="/routes">管理路由</Link>} />
+          <PanelHead title="路由规则" desc="跨渠道降级链 · 当前配置" action={<ButtonLink size="sm" to="/routes">管理路由</ButtonLink>} />
           <div className="panel-content route-list">
             {loading ? <div className="table-state">正在读取路由…</div> : routes.length === 0 ? <div className="table-state">还没有路由规则</div> : routes.map((route) => <div className="route-card" key={route.alias}><div className="route-card-head"><strong>{route.alias}</strong><span>{route.strategy === "priority" ? "Priority" : route.strategy} · {route.targets.length} targets</span></div><div className="route-flow">{route.targets.slice(0, 3).map((target, index) => <span className="route-target" key={`${target.channel}-${target.model}`}><b>{index + 1}</b><strong>{target.channel}</strong><small>{target.model}</small></span>)}</div></div>)}
           </div>

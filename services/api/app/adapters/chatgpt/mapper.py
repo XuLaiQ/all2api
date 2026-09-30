@@ -120,8 +120,18 @@ def token_record(item: Any) -> dict[str, Any]:
         if str(key) in _IMPORT_CREDENTIAL_FIELDS and value is not None
     }
     credentials["access_token"] = access
-    credentials["refresh_token"] = refresh
-    credentials["id_token"] = identity
+    if refresh:
+        credentials["refresh_token"] = refresh
+    if identity:
+        credentials["id_token"] = identity
+    credentials["auth_mode"] = (
+        "codex"
+        if any(
+            credentials.get(key)
+            for key in ("client_id", "organization_id", "id_token", "chatgpt_account_id")
+        )
+        else "web"
+    )
     return {
         "fingerprint": token_fingerprint(access),
         "credential_ref": credential_reference(access),

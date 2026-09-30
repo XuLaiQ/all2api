@@ -12,17 +12,18 @@ import time
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.convertors import StringConvertor, register_url_convertor
 
 from app.adapters.chatgpt.errors import ChatGPTError
 from app.adapters.provisioner import ProvisioningUnsupportedError
-from app.adapters.registry import AdapterSpec, get_registry
+from app.adapters.registry import AdapterSpec, data_plane_configured, get_registry
 from app.adapters.workbuddy.errors import WorkBuddyError
 from app.application.accounts.lifecycle import (
     AccountLifecycleError,
@@ -88,6 +89,12 @@ class ProvisionPayloadRequest(BaseModel):
 
 class AccountStatePatch(BaseModel):
     enabled: bool
+
+
+class AccountBatchDeleteRequest(BaseModel):
+    """Account ids selected in the console; one batch covers one page at most."""
+
+    ids: list[str] = Field(default_factory=list, max_length=200)
 
 
 class SettingsPatch(BaseModel):
@@ -163,6 +170,20 @@ class PlaygroundChatRequest(BaseModel):
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int | None = Field(default=None, ge=1, le=8192)
     stream: bool = False
+
+
+class PlaygroundSearchRequest(BaseModel):
+    model: str = Field(default="auto", min_length=1, max_length=256)
+    channel: str = Field(default="chatgpt", min_length=1, max_length=64)
+    prompt: str = Field(min_length=1, max_length=16_000)
+
+
+class PlaygroundEditableFileRequest(BaseModel):
+    model: str = Field(default="auto", min_length=1, max_length=256)
+    channel: str = Field(default="chatgpt", min_length=1, max_length=64)
+    kind: Literal["ppt", "psd"]
+    prompt: str = Field(default="", max_length=16_000)
+    base64_images: list[str] = Field(default_factory=list, max_length=4)
 
 
 _RETENTION_SETTING_DEFAULTS = {
@@ -362,9 +383,7 @@ def list_users(
     offset = (page - 1) * page_size
     with database(get_settings().db_path) as conn:
         _ensure_configured_admin(conn)
-        total = int(
-            conn.execute(f"SELECT COUNT(*) FROM users {where}", values).fetchone()[0]
-        )
+        total = int(conn.execute(f"SELECT COUNT(*) FROM users {where}", values).fetchone()[0])
         rows = conn.execute(
             f"""SELECT username, role, enabled, created_at, updated_at
             FROM users {where} ORDER BY username LIMIT ? OFFSET ?""",
@@ -651,14 +670,11 @@ def clear_request_logs(request: Request, user: AdminContext) -> dict:
     retention, _ = _retention_settings()
     now = int(time.time())
     log_cutoff = now - retention["log_retention_days"] * 86400
-    usage_cutoff_date = (
-        datetime.fromtimestamp(now, UTC).date()
-        - timedelta(days=retention["usage_retention_days"] - 1)
+    usage_cutoff_date = datetime.fromtimestamp(now, UTC).date() - timedelta(
+        days=retention["usage_retention_days"] - 1
     )
     usage_cutoff_day = usage_cutoff_date.isoformat()
-    log_cutoff_iso = datetime.fromtimestamp(log_cutoff, UTC).isoformat().replace(
-        "+00:00", "Z"
-    )
+    log_cutoff_iso = datetime.fromtimestamp(log_cutoff, UTC).isoformat().replace("+00:00", "Z")
     with database(settings.db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         request_logs_deleted = int(
@@ -744,9 +760,7 @@ def list_audit_logs(
     where = f"WHERE {' AND '.join(filters)}" if filters else ""
     offset = (page - 1) * page_size
     with database(get_settings().db_path) as conn:
-        total = int(
-            conn.execute(f"SELECT COUNT(*) FROM audit_logs {where}", values).fetchone()[0]
-        )
+        total = int(conn.execute(f"SELECT COUNT(*) FROM audit_logs {where}", values).fetchone()[0])
         rows = conn.execute(
             f"""SELECT id, ts, actor, action, target, detail
             FROM audit_logs {where}
@@ -805,8 +819,9 @@ def get_sysinfo() -> dict:
             "channels": [
                 {
                     "slug": adapter.slug,
-                    "models_configured": adapter.models_configured,
+                    "models_configured": data_plane_configured(adapter, get_settings().db_path),
                     "accounts_configured": adapter.accounts_configured,
+                    "provision_configured": bool(getattr(adapter, "provision_configured", False)),
                 }
                 for adapter in adapters.values()
             ],
@@ -878,9 +893,7 @@ def get_metrics(days: int = Query(default=1, ge=1, le=366)) -> dict:
     start, end = _usage_period(days)
     now = int(time.time())
     start_ts = int(datetime.fromisoformat(f"{start}T00:00:00+00:00").timestamp())
-    end_ts = int(
-        datetime.fromisoformat(f"{end}T00:00:00+00:00").timestamp()
-    ) + 86400
+    end_ts = int(datetime.fromisoformat(f"{end}T00:00:00+00:00").timestamp()) + 86400
     with database(get_settings().db_path) as conn:
         rows = conn.execute(
             """SELECT channel, status, latency_ms, stream
@@ -930,9 +943,7 @@ def get_metrics(days: int = Query(default=1, ge=1, le=366)) -> dict:
                 "requests": requests,
                 "errors": int(metric["errors"]),
                 "error_rate": (int(metric["errors"]) / requests) if requests else 0,
-                "avg_latency_ms": (
-                    int(metric["latency_ms_total"]) / requests if requests else 0
-                ),
+                "avg_latency_ms": (int(metric["latency_ms_total"]) / requests if requests else 0),
             }
         )
     p95_index = max(0, min(len(latency_values) - 1, int(len(latency_values) * 0.95) - 1))
@@ -944,9 +955,7 @@ def get_metrics(days: int = Query(default=1, ge=1, le=366)) -> dict:
             "errors": error_count,
             "error_rate": (error_count / request_count) if request_count else 0,
             "streams": stream_count,
-            "avg_latency_ms": (
-                sum(latency_values) / request_count if request_count else 0
-            ),
+            "avg_latency_ms": (sum(latency_values) / request_count if request_count else 0),
             "p95_latency_ms": latency_values[p95_index] if latency_values else 0,
             "channels": channels,
             "accounts": {
@@ -992,10 +1001,7 @@ def _usage_grouped(days: int, dimension: str) -> dict:
             GROUP BY {group_by} ORDER BY requests DESC""",
             (start, end),
         ).fetchall()
-    data = [
-        {**dict(row), "credits": None, "credits_available": False}
-        for row in rows
-    ]
+    data = [{**dict(row), "credits": None, "credits_available": False} for row in rows]
     return {"data": data, "from": start, "to": end}
 
 
@@ -1115,7 +1121,7 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
             COUNT(*) AS requests
             FROM request_logs l
             WHERE l.ts >= ? AND l.ts < ?
-              AND ({' OR '.join(key_filters)})
+              AND ({" OR ".join(key_filters)})
             GROUP BY bucket_ts, l.key_id
             ORDER BY bucket_ts, l.key_id""",
             key_values,
@@ -1142,9 +1148,7 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
             point = key_points.get(bucket_ts, zero_point)
             points.append(
                 {
-                    "ts": datetime.fromtimestamp(bucket_ts, UTC)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
+                    "ts": datetime.fromtimestamp(bucket_ts, UTC).isoformat().replace("+00:00", "Z"),
                     "prompt_tokens": point[0],
                     "completion_tokens": point[1],
                     "tokens": point[2],
@@ -1211,10 +1215,7 @@ def get_overview(days: int = Query(default=30, ge=1, le=366)) -> dict:
         "to": end,
     }
     daily = {
-        "data": [
-            {**dict(row), "credits": None, "credits_available": False}
-            for row in daily_rows
-        ],
+        "data": [{**dict(row), "credits": None, "credits_available": False} for row in daily_rows],
         "from": start,
         "to": end,
     }
@@ -1327,9 +1328,7 @@ def list_accounts(
     where = f"WHERE {' AND '.join(filters)}" if filters else ""
     offset = (page - 1) * page_size
     with database(get_settings().db_path) as conn:
-        total = int(
-            conn.execute(f"SELECT COUNT(*) FROM accounts a {where}", values).fetchone()[0]
-        )
+        total = int(conn.execute(f"SELECT COUNT(*) FROM accounts a {where}", values).fetchone()[0])
         rows = conn.execute(
             f"""SELECT a.id, a.channel, a.name, a.kind, a.tier, a.status,
             a.status_override, a.enabled, a.quota_used, a.quota_total, a.quota_unit,
@@ -1428,6 +1427,30 @@ async def delete_account(
             "credentials_deleted": result["credentials_deleted"],
         }
     }
+
+
+@router.post(
+    "/accounts/batch-delete",
+    tags=["accounts"],
+    dependencies=[Depends(_require_admin_role)],
+)
+async def batch_delete_accounts(
+    body: AccountBatchDeleteRequest,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    """Delete every selected account best-effort without returning secrets."""
+
+    ids = [str(item).strip() for item in body.ids if str(item).strip()]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids is required")
+    result = await _account_lifecycle_service().delete_many(
+        ids,
+        actor=str(user.get("username") or "admin"),
+        ip=request.client.host if request.client else "",
+    )
+    return {"data": result}
 
 
 @router.post(
@@ -1609,8 +1632,8 @@ def _channel_management_state(slug: str) -> dict[str, object] | None:
 def _channel_payload(adapter: AdapterSpec) -> dict:
     managed = _channel_management_state(adapter.slug)
     management_enabled = bool(managed["enabled"]) if managed is not None else True
-    data_plane_configured = bool(adapter.models_configured)
-    enabled = management_enabled and data_plane_configured
+    data_plane_ready = data_plane_configured(adapter, get_settings().db_path)
+    enabled = management_enabled and data_plane_ready
     runtime = channel_state(adapter.slug)
     manifest = getattr(adapter, "manifest", None)
     if manifest is None:
@@ -1626,7 +1649,7 @@ def _channel_payload(adapter: AdapterSpec) -> dict:
         "legacy_bridge_enabled": bool(getattr(adapter, "legacy_bridge_enabled", False)),
         "enabled": enabled,
         "management_enabled": management_enabled,
-        "data_plane_configured": data_plane_configured,
+        "data_plane_configured": data_plane_ready,
         "management": managed or {"source": "registry"},
         "state": runtime["state"] if enabled else "available",
         "protocols": list(adapter.protocols),
@@ -1836,7 +1859,7 @@ async def test_channel(slug: str) -> dict:
     adapter = get_registry().get(slug)
     if adapter is None:
         raise HTTPException(status_code=404, detail="channel is not registered")
-    if not adapter.models_configured:
+    if not data_plane_configured(adapter, get_settings().db_path):
         raise HTTPException(status_code=409, detail="channel is not configured")
     started = time.perf_counter()
     try:
@@ -1999,7 +2022,11 @@ def patch_channel_override(
         _validate_public_channel_config(body.config)
     current = _channel_management_state(slug)
     current_config = dict(current["config"]) if current else {}
-    enabled = bool(current["enabled"]) if current else bool(adapter.models_configured)
+    enabled = (
+        bool(current["enabled"])
+        if current
+        else data_plane_configured(adapter, get_settings().db_path)
+    )
     if body.config is not None:
         current_config = body.config
     if body.enabled is not None:
@@ -2061,13 +2088,31 @@ def _playground_account(channel: str) -> dict[str, str] | None:
         row = conn.execute(
             """SELECT id, native_id FROM accounts
             WHERE channel = ? AND enabled = 1
-                AND COALESCE(status_override, status) NOT IN ('disabled', 'expired')
+                AND COALESCE(status_override, status) IN (
+                    'ready', 'busy', 'cooldown', 'limited'
+                )
+                AND EXISTS (
+                    SELECT 1 FROM credentials c
+                    WHERE c.channel = accounts.channel AND c.account_id = accounts.native_id
+                )
             ORDER BY priority DESC, updated_at DESC, id LIMIT 1""",
             (channel,),
         ).fetchone()
     if row is None:
         return None
     return {"id": str(row["id"]), "account_id": str(row["id"]), "native_id": str(row["native_id"])}
+
+
+def _playground_file_root() -> Path:
+    root = Path(get_settings().db_path).expanduser().resolve().parent / "playground-files"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _playground_safe_filename(value: object, fallback: str) -> str:
+    name = Path(str(value or "")).name.replace("\x00", "").strip()
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
+    return (name or fallback)[:160]
 
 
 def _playground_run_payload(row) -> dict[str, object]:
@@ -2451,11 +2496,20 @@ async def playground_chat(
             (id, conversation_id, actor, channel, model, status, message_count,
              request_bytes, created_at)
             VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)""",
-            (run_id, conversation_id, actor, body.channel, model, len(body.messages),
-             request_bytes, now),
+            (
+                run_id,
+                conversation_id,
+                actor,
+                body.channel,
+                model,
+                len(body.messages),
+                request_bytes,
+                now,
+            ),
         )
 
     if body.stream:
+
         async def stream_body():
             status_code = 200
             status = "ok"
@@ -2773,3 +2827,138 @@ async def playground_chat(
                 detail="status=exception",
             )
         raise HTTPException(status_code=502, detail="playground upstream request failed") from exc
+
+
+@router.post(
+    "/playground/search",
+    tags=["playground"],
+    response_model=None,
+    dependencies=[Depends(_require_admin_write)],
+)
+async def playground_search(
+    body: PlaygroundSearchRequest,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    adapter = get_registry().get(body.channel)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="channel is not registered")
+    managed = _channel_management_state(body.channel)
+    if managed is not None and not bool(managed["enabled"]):
+        raise HTTPException(status_code=503, detail="channel_disabled")
+    runtime = getattr(adapter, "runtime", None)
+    search = getattr(runtime, "search", None)
+    if not callable(search):
+        raise HTTPException(
+            status_code=501, detail="selected channel does not implement native search"
+        )
+    model = body.model
+    prefix = f"{body.channel}/"
+    if model.startswith(prefix):
+        model = model[len(prefix) :]
+    account = _playground_account(body.channel)
+    try:
+        result = search(body.prompt, model, account)
+        if inspect.isawaitable(result):
+            result = await result
+    except ChatGPTError as exc:
+        raise HTTPException(
+            status_code=int(getattr(exc, "status_code", 502)),
+            detail=_playground_exception_message(exc),
+        ) from exc
+    if not isinstance(result, Mapping):
+        raise HTTPException(status_code=502, detail="search returned an invalid response")
+    with database(get_settings().db_path) as conn:
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="playground_search",
+            target=body.channel,
+            detail=f"model={model}",
+        )
+    return {"data": dict(result)}
+
+
+@router.post(
+    "/playground/editable-file",
+    tags=["playground"],
+    response_model=None,
+    dependencies=[Depends(_require_admin_write)],
+)
+async def playground_editable_file(
+    body: PlaygroundEditableFileRequest,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    adapter = get_registry().get(body.channel)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="channel is not registered")
+    runtime = getattr(adapter, "runtime", None)
+    generate = getattr(runtime, "generate_editable", None)
+    if not callable(generate):
+        raise HTTPException(
+            status_code=501, detail="selected channel does not implement editable file generation"
+        )
+    model = body.model
+    prefix = f"{body.channel}/"
+    if model.startswith(prefix):
+        model = model[len(prefix) :]
+    account = _playground_account(body.channel)
+    try:
+        result = generate(body.kind, body.prompt, body.base64_images, model, account)
+        if inspect.isawaitable(result):
+            result = await result
+    except ChatGPTError as exc:
+        raise HTTPException(
+            status_code=int(getattr(exc, "status_code", 502)),
+            detail=_playground_exception_message(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="editable file generation failed") from exc
+    if not isinstance(result, Mapping):
+        raise HTTPException(
+            status_code=502, detail="editable file generation returned an invalid response"
+        )
+    raw_files = result.get("files")
+    if not isinstance(raw_files, list):
+        raise HTTPException(status_code=502, detail="editable file generation returned no files")
+    task_id = f"file_{uuid.uuid4().hex}"
+    task_root = _playground_file_root() / task_id
+    task_root.mkdir(parents=True, exist_ok=False)
+    urls: dict[str, str] = {}
+    for index, item in enumerate(raw_files, start=1):
+        if not isinstance(item, Mapping) or not isinstance(item.get("content"), (bytes, bytearray)):
+            continue
+        filename = _playground_safe_filename(item.get("name"), f"{body.kind}-{index}")
+        path = task_root / filename
+        path.write_bytes(bytes(item["content"]))
+        key = "zip_url" if filename.lower().endswith(".zip") else "primary_url"
+        if key == "primary_url" and "primary_url" in urls:
+            continue
+        urls[key] = f"/admin/api/playground/files/{task_id}/{filename}"
+    if "primary_url" not in urls or "zip_url" not in urls:
+        raise HTTPException(
+            status_code=502, detail="editable file generation did not return both files"
+        )
+    with database(get_settings().db_path) as conn:
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="playground_editable_file",
+            target=body.channel,
+            detail=f"kind={body.kind};model={model}",
+        )
+    return {"data": {"task_id": task_id, "kind": body.kind, "status": "success", **urls}}
+
+
+@router.get("/playground/files/{task_id}/{filename:path}", tags=["playground"])
+def download_playground_file(task_id: str, filename: str) -> FileResponse:
+    if not re.fullmatch(r"file_[a-f0-9]{32}", task_id):
+        raise HTTPException(status_code=404, detail="file not found")
+    root = _playground_file_root() / task_id
+    path = (root / Path(filename).name).resolve()
+    if root.resolve() not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    return FileResponse(path, filename=path.name)

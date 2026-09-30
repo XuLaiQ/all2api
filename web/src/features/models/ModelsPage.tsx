@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -128,16 +129,16 @@ export function ModelsPage() {
           <h1>模型广场</h1>
           <p>{total} 个模型 · 目录来自真实渠道接口，结果缓存在本地</p>
         </div>
-        {canManage && <button className="secondary-action-button" type="button" onClick={() => void refreshCatalog()} disabled={refreshing}>
+        {canManage && <Button variant="secondary" onClick={() => void refreshCatalog()} disabled={refreshing}>
           <RefreshCw size={15} aria-hidden="true" className={refreshing ? "spin" : undefined} />
           {refreshing ? "刷新中…" : "刷新真实目录"}
-        </button>}
+        </Button>}
       </div>
 
       {error && (
         <div className="notice notice-error" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
+          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
         </div>
       )}
       {catalogMessage && <div className="notice notice-info" role="status">{catalogMessage}</div>}
@@ -148,8 +149,8 @@ export function ModelsPage() {
             确认{pending.enabled ? "停用" : "启用"} {pending.id}？
           </span>
           <div className="log-filter-actions">
-            <button type="button" disabled={saving} onClick={() => void confirmToggle()}>{saving ? "处理中…" : "确认"}</button>
-            <button type="button" className="secondary-action" disabled={saving} onClick={() => setPending(null)}>取消</button>
+            <Button variant="primary" disabled={saving} onClick={() => void confirmToggle()}>{saving ? "处理中…" : "确认"}</Button>
+            <Button variant="secondary" disabled={saving} onClick={() => setPending(null)}>取消</Button>
           </div>
         </div>
       )}
@@ -182,8 +183,8 @@ export function ModelsPage() {
         /></label>
         <label><span>模型</span><input value={draft.search} onChange={(event) => setDraft({ ...draft, search: event.target.value })} placeholder="模型 ID 或名称" onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }} /></label>
         <div className="log-filter-actions">
-          <button type="button" onClick={applyFilters}>筛选</button>
-          <button type="button" className="secondary-action" onClick={() => { setDraft(emptyFilters); setFilters({}); setPage(1); }}>清除</button>
+          <Button variant="primary" onClick={applyFilters}>筛选</Button>
+          <Button variant="secondary" onClick={() => { setDraft(emptyFilters); setFilters({}); setPage(1); }}>清除</Button>
         </div>
       </div>
 
@@ -203,7 +204,7 @@ export function ModelsPage() {
                 <td>{formatCount(model.context_window)}</td>
                 <td>{formatCount(model.max_output)}</td>
                 <td><span className={`status-label ${model.enabled ? "status-success" : "status-danger"}`}>{model.enabled ? "启用" : "停用"}</span></td>
-                {canManage && <td><button type="button" className={model.enabled ? "model-disable-button" : "model-enable-button"} onClick={() => setPending(model)}>{model.enabled ? "停用" : "启用"}</button></td>}
+                {canManage && <td><Button variant={model.enabled ? "danger" : "secondary"} size="sm" className={model.enabled ? "model-disable-button" : "model-enable-button"} onClick={() => setPending(model)}>{model.enabled ? "停用" : "启用"}</Button></td>}
               </tr>
             ))}</tbody>
         </DataTable>

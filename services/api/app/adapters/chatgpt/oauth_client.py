@@ -88,15 +88,20 @@ class OAuthClient:
             raise OAuthProtocolError("OAuth token response is invalid")
         return result
 
-    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
-        """Exchange a stored refresh token without returning it to the API layer."""
+    async def refresh_token(self, refresh_token: str, *, client_id: str = "") -> dict[str, Any]:
+        """Exchange a stored refresh token without returning it to the API layer.
+
+        A refresh token is bound to the client it was issued to, so callers
+        that imported third-party OAuth exports pass the ``client_id`` stored
+        with the credentials; the empty default keeps the built-in PKCE flow.
+        """
 
         token = str(refresh_token or "").strip()
         if not token:
             raise OAuthProtocolError("OAuth refresh token is required")
         payload = {
             "grant_type": "refresh_token",
-            "client_id": self.config.client_id,
+            "client_id": client_id.strip() or self.config.client_id,
             "refresh_token": token,
         }
         if self.http_client is None:

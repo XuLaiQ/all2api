@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,10 +11,12 @@ from app.adapters.chatgpt.manifest import CHATGPT_MANIFEST
 from app.adapters.chatgpt.oauth_client import OAuthClient, OAuthConfig
 from app.adapters.chatgpt.provisioner import ChatGPTProvisioner
 from app.adapters.doubao.native_qr import NativeDoubaoQrWorker
+from app.adapters.doubao.transport import DoubaoHttpTransport
 from app.adapters.native_runtime import NativeHttpAdapter
 from app.adapters.provisioner import DeclarativeProvisioner
 from app.adapters.workbuddy.client import WorkBuddyClient
 from app.adapters.workbuddy.manifest import WORKBUDDY_MANIFEST
+from app.adapters.workbuddy.mapper import prepare_chat_payload
 from app.adapters.workbuddy.provisioner import WorkBuddyProvisioner
 from app.config import Settings, get_settings
 from app.domain.channel import ChannelManifest
@@ -24,6 +26,8 @@ from app.infrastructure.provision_state import ProvisionStateStore
 
 ModelReader = Callable[[str, str], Awaitable[list[dict[str, Any]]]]
 AccountReader = Callable[[str, str], Awaitable[list[dict[str, Any]]]]
+CandidateReader = Callable[[str, str], tuple[bool, list[Any]]]
+RequestHeadersResolver = Callable[[Mapping[str, Any], str, str], Mapping[str, str]]
 
 
 def _merge_models(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -36,10 +40,79 @@ def _merge_models(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
     return list(merged.values())
 
 
+def _set_account_observation(
+    db_path: str,
+    channel: str,
+    native_id: str,
+    status: str,
+    message: str,
+) -> None:
+    """Persist a non-secret catalogue observation without changing overrides."""
+
+    with database(db_path) as conn:
+        conn.execute(
+            """UPDATE accounts
+            SET status = ?, last_error = ?, updated_at = unixepoch()
+            WHERE channel = ? AND native_id = ? AND status_override IS NULL""",
+            (status, str(message or "")[:1000], channel, native_id),
+        )
+
+
 async def _empty_accounts(_base_url: str, _key: str) -> list[dict[str, Any]]:
     """Native account catalogue is owned by the local credential store."""
 
     return []
+
+
+def _workbuddy_candidate_reader(model: str, db_path: str) -> tuple[bool, list[Any]]:
+    from app.scheduler.pool import workbuddy_candidates
+
+    return workbuddy_candidates(model, db_path=db_path)
+
+
+def _workbuddy_request_headers(
+    target: Mapping[str, Any], trace_secret: str, request_id: str
+) -> Mapping[str, str]:
+    if not trace_secret:
+        return {}
+    headers = {
+        "X-A2A-Trace-Secret": trace_secret,
+        "X-A2A-Request-ID": request_id,
+    }
+    account_id = str(target.get("account_id") or "")
+    if account_id:
+        headers["X-A2A-Account-ID"] = account_id
+    return headers
+
+
+def has_local_account(channel: str, db_path: str) -> bool:
+    """Return whether a usable account exists in the local account pool."""
+
+    with database(db_path) as conn:
+        row = conn.execute(
+            """SELECT 1 FROM accounts
+            WHERE channel = ? AND enabled = 1
+                AND COALESCE(status_override, status)
+                    IN ('ready', 'busy', 'cooldown', 'limited')
+            LIMIT 1""",
+            (str(channel),),
+        ).fetchone()
+    return row is not None
+
+
+def data_plane_configured(adapter: Any, db_path: str) -> bool:
+    """Resolve readiness from local accounts for native adapters.
+
+    Compatibility adapters may still expose ``models_configured``. Native
+    adapters become ready when their runtime and local account pool are ready.
+    """
+
+    if bool(getattr(adapter, "models_configured", False)):
+        return True
+    return bool(
+        getattr(adapter, "runtime", None) is not None
+        and has_local_account(str(getattr(adapter, "slug", "")), db_path)
+    )
 
 
 @dataclass(frozen=True)
@@ -65,7 +138,11 @@ class AdapterSpec:
     manifest: ChannelManifest | None = None
     provisioner: Any | None = field(default=None, repr=False)
     upstream_adapter: Any | None = field(default=None, repr=False)
+    # Compatibility hook for test/fake adapters. Native channels are ready
+    # through the local account store, not through a public channel key.
     native_model_configured: bool = False
+    candidate_reader: CandidateReader | None = field(default=None, repr=False)
+    request_headers_resolver: RequestHeadersResolver | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.manifest is None:
@@ -174,7 +251,6 @@ def _registry_key(settings: Settings) -> tuple[str, ...]:
         secret(getattr(settings, "credential_master_key", "")),
         str(bool(getattr(settings, "legacy_bridge_enabled", False))),
         str(getattr(settings, "wb_platform_base", "https://copilot.tencent.com")),
-        secret(getattr(settings, "wb_platform_data_key", "")),
         str(getattr(settings, "doubao_platform_base", "https://www.doubao.com")),
         str(getattr(settings, "chatgpt_platform_base", "https://auth.openai.com")),
         str(getattr(settings, "chatgpt_proxy", "")),
@@ -190,7 +266,6 @@ def _registry_key(settings: Settings) -> tuple[str, ...]:
         secret(settings.wb_admin_token),
         settings.doubao_upstream_base,
         secret(settings.doubao_api_key),
-        str(bool(getattr(settings, "doubao_public_data_plane", False))),
         str(getattr(settings, "doubao_profile_root", "./data/doubao/profiles")),
         str(bool(getattr(settings, "doubao_browser_enabled", False))),
         str(getattr(settings, "doubao_browser_executable", "")),
@@ -273,17 +348,15 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
         getattr(settings, "wb_platform_base", "https://copilot.tencent.com")
         or "https://copilot.tencent.com"
     ).rstrip("/")
-    wb_platform_key = secret_value("wb_platform_data_key", "wb_data_key")
     chatgpt_platform_base = str(
         getattr(settings, "chatgpt_platform_base", "https://auth.openai.com")
         or "https://auth.openai.com"
     ).rstrip("/")
-    chatgpt_platform_key = chatgpt_legacy_key
 
     # Native model readers are closures over the in-process clients.  They do
     # not import the old wb.py/chatgpt.py bridge modules and therefore cannot
     # accidentally read a source project's environment or storage.
-    wb_client = WorkBuddyClient(wb_platform_base, data_key=wb_platform_key)
+    wb_client = WorkBuddyClient(wb_platform_base)
     chatgpt_oauth_client = OAuthClient(
         OAuthConfig(
             authorize_endpoint=(
@@ -334,10 +407,7 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             if group
         ]
         if not groups:
-            if rows and not wb_platform_key:
-                raise RuntimeError("no WorkBuddy account returned a model catalogue")
-            values = await wb_client.list_models()
-            groups.append([dict(item) for item in values])
+            return []
         return _merge_models(groups)
 
     async def native_chatgpt_models(_base_url: str, _key: str) -> list[dict[str, Any]]:
@@ -352,44 +422,60 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             if not credentials:
                 return []
             try:
-                values = await chatgpt_client.list_models({"credentials": credentials})
+                catalogue = await chatgpt_client.catalogue_status(
+                    {"credentials": credentials}
+                )
             except Exception:
                 return []
-            return [dict(item) for item in values]
+            status = str(catalogue.get("status") or "failed")
+            if status == "empty":
+                _set_account_observation(
+                    settings.db_path,
+                    "chatgpt",
+                    str(row["native_id"]),
+                    "no_entitlement",
+                    str(catalogue.get("message") or "ChatGPT 账号没有可用模型权益"),
+                )
+            elif status == "auth_failed":
+                _set_account_observation(
+                    settings.db_path,
+                    "chatgpt",
+                    str(row["native_id"]),
+                    "needLogin",
+                    str(catalogue.get("message") or "ChatGPT 凭据已失效"),
+                )
+            if status != "ok":
+                return []
+            values = catalogue.get("models")
+            return [dict(item) for item in values if isinstance(item, Mapping)]
 
         groups = [
             group
             for group in await asyncio.gather(*(read_one(row) for row in rows))
             if group
         ]
-        if not groups and chatgpt_platform_key:
-            values = await chatgpt_client.list_models(
-                {"base_url": chatgpt_platform_base, "auth_key": chatgpt_platform_key}
-            )
-            groups.append([dict(item) for item in values])
-        if rows and not groups:
-            raise RuntimeError("no ChatGPT account returned a model catalogue")
+        if not groups:
+            return []
         return _merge_models(groups)
 
     wb_runtime = NativeHttpAdapter(
         WORKBUDDY_MANIFEST,
         wb_platform_base,
-        auth_key=wb_platform_key,
         chat_path=WorkBuddyClient.CHAT_PATH,
         credential_store=credential_store,
         channel="wb",
         base_url_resolver=wb_client.base_url_for_credentials,
         credential_headers_resolver=wb_client.runtime_headers,
+        request_preparer=lambda payload, credentials: prepare_chat_payload(
+            payload,
+            realm=str(credentials.get("realm") or "cn"),
+        ),
     )
     chatgpt_runtime = chatgpt_client
     doubao_platform_base = str(
         getattr(settings, "doubao_platform_base", "https://www.doubao.com")
         or "https://www.doubao.com"
     ).rstrip("/")
-    doubao_platform_key = secret_value("doubao_platform_data_key", "doubao_api_key")
-    doubao_native_enabled = bool(
-        getattr(settings, "doubao_public_data_plane", False) or doubao_platform_key
-    )
     doubao_provisioner = doubao.DoubaoProvisioner(
         profile_root=getattr(settings, "doubao_profile_root", "./data/doubao/profiles"),
         # Direct HTTP QR login is the default. Playwright remains an optional
@@ -407,13 +493,14 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
     )
     doubao_adapter = doubao.DoubaoAdapter(
         provisioner=doubao_provisioner,
-        # The native runtime must remain available for accounts provisioned
-        # through QR login even when no public/platform key is configured.
-        # ``native_model_configured`` below still controls public catalogue
-        # discovery and channel configuration reporting.
+        # The native runtime authenticates with credentials from the selected
+        # local account. It does not use a public channel key.
         base_url=doubao_platform_base,
-        auth_key=doubao_platform_key,
         credential_store=credential_store,
+        runtime=DoubaoHttpTransport(
+            doubao_platform_base,
+            credential_store=credential_store,
+        ),
     )
 
     async def native_doubao_models(_base_url: str, _key: str) -> list[dict[str, Any]]:
@@ -436,9 +523,7 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             if group
         ]
         if not groups:
-            if rows:
-                raise RuntimeError("no Doubao account returned a model catalogue")
-            groups.append([dict(item) for item in await doubao_adapter.list_models()])
+            return []
         return _merge_models(groups)
 
     return {
@@ -460,13 +545,14 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             caps=("chat",),
             manifest=WORKBUDDY_MANIFEST,
             upstream_adapter=wb_runtime,
-            native_model_configured=bool(wb_platform_key),
             provisioner=WorkBuddyProvisioner.from_settings(
                 settings,
                 credential_store=credential_store,
                 state_store=provision_state_store,
                 ttl_seconds=int(getattr(settings, "provision_session_ttl_seconds", 600)),
             ),
+            candidate_reader=_workbuddy_candidate_reader,
+            request_headers_resolver=_workbuddy_request_headers,
         ),
         "doubao": AdapterSpec(
             slug="doubao",
@@ -482,13 +568,11 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             base_env="A2A_DOUBAO_UPSTREAM_BASE",
             model_env="A2A_DOUBAO_API_KEY",
             account_env="A2A_DOUBAO_API_KEY",
-            allow_empty_key=settings.doubao_public_data_plane,
             protocols=("openai", "anthropic", "responses"),
-            caps=("chat", "image", "video", "audio", "file"),
+            caps=("chat",),
             manifest=doubao.build_manifest(),
             provisioner=doubao_provisioner,
             upstream_adapter=doubao_adapter,
-            native_model_configured=doubao_native_enabled,
         ),
         "chatgpt": AdapterSpec(
             slug="chatgpt",
@@ -505,14 +589,13 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             model_env="A2A_CHATGPT_AUTH_KEY",
             account_env="A2A_CHATGPT_AUTH_KEY",
             protocols=("openai", "anthropic", "responses"),
-            caps=("chat", "image", "search", "ppt", "psd"),
+            caps=("chat",),
             # ChatGPT onboarding is implemented in-process.  Keep the legacy
             # manifest fields below during the compatibility migration, but
             # use the canonical package manifest and CredentialStore port for
             # all target provision endpoints.
             manifest=CHATGPT_MANIFEST,
             upstream_adapter=chatgpt_runtime,
-            native_model_configured=bool(chatgpt_platform_key),
             provisioner=chatgpt_provisioner,
         ),
     }

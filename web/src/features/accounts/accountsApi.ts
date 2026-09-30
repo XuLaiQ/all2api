@@ -66,6 +66,20 @@ export async function deleteAccount(accountId: string): Promise<void> {
   await apiClient.delete(`/accounts/${encodeURIComponent(accountId)}`);
 }
 
+export type BatchDeleteResult = {
+  requested: number;
+  deleted: Array<{ id: string; channel: string; credentials_deleted: boolean }>;
+  failed: Array<{ id: string; error: string }>;
+};
+
+export async function batchDeleteAccounts(ids: string[]): Promise<BatchDeleteResult> {
+  const response = await apiClient.post<{ data: BatchDeleteResult }>(
+    "/accounts/batch-delete",
+    { ids },
+  );
+  return response.data.data;
+}
+
 export async function refreshAccount(accountId: string): Promise<void> {
   await apiClient.post(`/accounts/${encodeURIComponent(accountId)}/refresh`);
 }

@@ -49,15 +49,20 @@ class WorkBuddyLease:
                 _inflight.pop(self.account_id, None)
 
 
-def workbuddy_candidates(model: str) -> tuple[bool, list[WorkBuddyCandidate]]:
+def workbuddy_candidates(
+    model: str,
+    *,
+    db_path: str | None = None,
+) -> tuple[bool, list[WorkBuddyCandidate]]:
     now = int(time.time())
     prefix, separator, bare_model = model.partition(":")
     requested_realm = prefix if separator and prefix in {"cn", "global"} else None
     model_name = bare_model if requested_realm else model
-    with database(get_settings().db_path) as conn:
-        snapshot_exists = conn.execute(
-            "SELECT 1 FROM accounts WHERE channel = 'wb' LIMIT 1"
-        ).fetchone() is not None
+    with database(db_path or get_settings().db_path) as conn:
+        snapshot_exists = (
+            conn.execute("SELECT 1 FROM accounts WHERE channel = 'wb' LIMIT 1").fetchone()
+            is not None
+        )
         rows = conn.execute(
             """SELECT a.id, a.native_id, a.ext
             FROM accounts a LEFT JOIN account_runtime_state r ON r.account_id = a.id
@@ -108,6 +113,8 @@ def account_candidates(
     model: str,
     *,
     max_candidates: int = WORKBUDDY_ACCOUNT_ATTEMPTS,
+    db_path: str | None = None,
+    require_credentials: bool = False,
 ) -> tuple[bool, list[AccountCandidate]]:
     """Select enabled local accounts for any native channel.
 
@@ -120,17 +127,25 @@ def account_candidates(
     if not channel:
         return False, []
     now = int(time.time())
-    with database(get_settings().db_path) as conn:
-        snapshot_exists = conn.execute(
-            "SELECT 1 FROM accounts WHERE channel = ? LIMIT 1", (channel,)
-        ).fetchone() is not None
+    with database(db_path or get_settings().db_path) as conn:
+        snapshot_exists = (
+            conn.execute("SELECT 1 FROM accounts WHERE channel = ? LIMIT 1", (channel,)).fetchone()
+            is not None
+        )
+        credential_filter = (
+            "AND EXISTS (SELECT 1 FROM credentials c "
+            "WHERE c.channel = a.channel AND c.account_id = a.native_id)"
+            if require_credentials
+            else ""
+        )
         rows = conn.execute(
-            """SELECT a.id, a.native_id, a.ext
+            f"""SELECT a.id, a.native_id, a.ext
             FROM accounts a LEFT JOIN account_runtime_state r ON r.account_id = a.id
             WHERE a.channel = ? AND a.enabled = 1
                 AND COALESCE(a.status_override, a.status) IN (
                     'ready', 'busy', 'cooldown', 'limited'
                 )
+                {credential_filter}
                 AND (r.cooldown_until IS NULL OR r.cooldown_until <= ?)
                 AND (r.breaker_until IS NULL OR r.breaker_until <= ?)
             ORDER BY COALESCE(r.updated_at, 0), a.priority DESC, a.name, a.id""",

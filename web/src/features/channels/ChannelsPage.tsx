@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { fetchChannelRuntime, resetChannelOverride, setChannelEnabled, testChannel, type ChannelRuntime, type ChannelTestResult } from "./channelsApi";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
@@ -147,15 +148,15 @@ export function ChannelsPage() {
           <h1>渠道</h1>
           <p>配置完整度与网关冷却、熔断记录</p>
         </div>
-        <button className="secondary-action-button" type="button" onClick={() => setRetry((value) => value + 1)} disabled={loading || runtimeLoading}>
+        <Button variant="secondary" onClick={() => setRetry((value) => value + 1)} disabled={loading || runtimeLoading}>
           刷新状态
-        </button>
+        </Button>
       </div>
 
       {error && (
         <div className="notice notice-error" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
+          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
         </div>
       )}
 
@@ -175,9 +176,9 @@ export function ChannelsPage() {
                 const accountAccess = accountAccessLabel(channel);
                 return (
                   <tr key={channel.slug} className={isSelected ? "selected-row" : ""}>
-                    <td><button type="button" className="channel-select-button" aria-pressed={isSelected} onClick={() => setSelected(channel.slug)}>
+                    <td><Button variant="unstyled" className="channel-select-button" aria-pressed={isSelected} onClick={() => setSelected(channel.slug)}>
                       <span className="channel-name">{channel.name}</span><span className="secondary-text">{channel.slug}</span>
-                    </button></td>
+                    </Button></td>
                     <td><span className={`state-label state-${state.tone}`}><span className="status-mark" aria-hidden="true" />{state.label}</span></td>
                     <td>{channel.adapter}</td>
                     <td><span className={`status-label ${channel.management_enabled === false ? "status-danger" : channel.data_plane_configured ? "status-success" : "status-warning"}`}>{channel.management_enabled === false ? "已停用" : channel.data_plane_configured ? "已配置" : "待配置"}</span><span className="secondary-text">{channel.management_enabled === false ? "本地管理开关" : "adapter / 账号状态"}</span></td>
@@ -197,18 +198,17 @@ export function ChannelsPage() {
             <div><h2 id="channel-runtime-title">{selectedChannel.name} 运行态</h2><p>数据面状态控制请求是否进入该渠道；账号接入负责本地账号新增、导入和凭据生命周期。</p></div>
             <div className="channel-runtime-actions">
               <span className={`state-label state-${currentState.tone}`}><span className="status-mark" aria-hidden="true" />{currentState.label}</span>
-              <button
-                className="secondary-action-button"
-                type="button"
+              <Button
+                variant="secondary"
                 onClick={runChannelTest}
                 disabled={!selectedChannel.enabled || testLoading || runtimeLoading}
               >
                 {testLoading ? "测试中…" : "测试连接"}
-              </button>
-              {canManage && <button className="secondary-action-button" type="button" onClick={() => void toggleSelectedChannel()}>
+              </Button>
+              {canManage && <Button variant="secondary" onClick={() => void toggleSelectedChannel()}>
                 {selectedChannel.enabled ? "停用渠道" : "启用渠道"}
-              </button>}
-              {canManage && <button className="danger-action compact-action" type="button" onClick={() => void resetSelectedChannel()}>重置覆盖</button>}
+              </Button>}
+              {canManage && <Button variant="danger" size="sm" className="compact-action" onClick={() => void resetSelectedChannel()}>重置覆盖</Button>}
             </div>
           </div>
           {runtimeError && <div className="notice notice-error" role="alert">{runtimeError}</div>}

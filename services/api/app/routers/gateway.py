@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
 from app.adapters.native_runtime import CAPABILITY_PATHS, normalize_capability
-from app.adapters.registry import AdapterSpec, get_registry
+from app.adapters.registry import AdapterSpec, data_plane_configured, get_registry
 from app.config import get_settings
 from app.domain.scope import decode_key_scope, model_allowed, scope_decision
 from app.infrastructure.db import database
@@ -38,7 +38,6 @@ from app.scheduler.pool import (
     AccountCandidate,
     account_candidates,
     acquire_account_lease,
-    workbuddy_candidates,
 )
 from app.scheduler.runtime import (
     block_until,
@@ -83,25 +82,6 @@ def _model_disabled(channel: str, upstream_model: str) -> bool:
             (f"{channel}/{upstream_model}",),
         ).fetchone()
     return row is not None and not bool(row["enabled"])
-
-
-def _local_account_snapshot_exists(channel: str) -> bool:
-    """Return whether a native channel has a locally provisioned account.
-
-    A native account credential can authenticate a request without a public
-    channel key. Keep this separate from ``models_configured`` so a channel
-    without catalogue credentials is not advertised as publicly configured,
-    while an explicitly provisioned account can still serve direct model IDs.
-    """
-
-    with database(get_settings().db_path) as conn:
-        return conn.execute(
-            """SELECT 1 FROM accounts
-            WHERE channel = ? AND enabled = 1
-                AND COALESCE(status_override, status) NOT IN ('disabled', 'expired')
-            LIMIT 1""",
-            (str(channel),),
-        ).fetchone() is not None
 
 
 def _channel_management_enabled(channel: str) -> bool:
@@ -149,10 +129,21 @@ def _log_request(
              completion_tokens, usage_reported, latency_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                ts, request_id, channel, key_id, account_id, model,
+                ts,
+                request_id,
+                channel,
+                key_id,
+                account_id,
+                model,
                 upstream_model if upstream_model is not None else model.partition("/")[2],
-                route_alias, fallback_depth, status, error_kind, error, int(stream),
-                prompt_tokens, completion_tokens,
+                route_alias,
+                fallback_depth,
+                status,
+                error_kind,
+                error,
+                int(stream),
+                prompt_tokens,
+                completion_tokens,
                 int(usage_reported),
                 int((time.monotonic() - started) * 1000),
             ),
@@ -262,10 +253,7 @@ def _resolve_targets(
             raise HTTPException(status_code=403, detail=decision)
         if not _channel_management_enabled(channel):
             raise HTTPException(status_code=503, detail="channel_disabled")
-        if not adapter.models_configured and not (
-            getattr(adapter, "runtime", None) is not None
-            and _local_account_snapshot_exists(channel)
-        ):
+        if not data_plane_configured(adapter, get_settings().db_path):
             raise HTTPException(status_code=503, detail="channel_disabled")
         if _model_disabled(channel, upstream_model):
             raise HTTPException(status_code=404, detail="model_not_found")
@@ -305,7 +293,7 @@ def _resolve_targets(
         adapter = adapters.get(target_channel)
         target_model = str(row["model"])
         if target_model.startswith(f"{target_channel}/"):
-            target_model = target_model[len(target_channel) + 1:]
+            target_model = target_model[len(target_channel) + 1 :]
         channel_allowed = not channels or target_channel in channels
         target_allowed = model_allowed(allowed_models, target_channel, target_model)
         # Alias names never grant access by themselves.  Every expanded target
@@ -316,20 +304,13 @@ def _resolve_targets(
         if not _channel_management_enabled(target_channel):
             disabled_channels.add(target_channel)
             continue
-        if adapter and not adapter.models_configured and not (
-            getattr(adapter, "runtime", None) is not None
-            and _local_account_snapshot_exists(target_channel)
-        ):
+        if adapter and not data_plane_configured(adapter, get_settings().db_path):
             disabled_channels.add(target_channel)
             continue
         if adapter and target_model:
             if _model_disabled(target_channel, target_model):
                 continue
-            blocked_until = (
-                block_until(target_channel, target_model)
-                if respect_runtime
-                else None
-            )
+            blocked_until = block_until(target_channel, target_model) if respect_runtime else None
             if blocked_until:
                 blocked_deadlines.append(blocked_until)
                 continue
@@ -541,12 +522,7 @@ def _token_usage(usage: Any) -> tuple[int, int] | None:
         return None
     prompt = usage.get("prompt_tokens")
     completion = usage.get("completion_tokens")
-    if (
-        type(prompt) is not int
-        or prompt < 0
-        or type(completion) is not int
-        or completion < 0
-    ):
+    if type(prompt) is not int or prompt < 0 or type(completion) is not int or completion < 0:
         return None
     return prompt, completion
 
@@ -562,7 +538,7 @@ def _extract_sse_usage(buffer: bytes) -> tuple[bytes, tuple[int, int] | None]:
         if not boundaries:
             return buffer, latest_usage
         index, separator = min(boundaries, key=lambda item: item[0])
-        frame, buffer = buffer[:index], buffer[index + len(separator):]
+        frame, buffer = buffer[:index], buffer[index + len(separator) :]
         data_lines = []
         for line in frame.replace(b"\r\n", b"\n").split(b"\n"):
             if line.startswith(b"data:"):
@@ -592,11 +568,7 @@ def _sse_to_chat_response(body: bytes, model: str) -> dict[str, Any]:
     saw_chunk = False
     normalized = body.replace(b"\r\n", b"\n")
     for frame in normalized.split(b"\n\n"):
-        data_lines = [
-            line[5:].lstrip()
-            for line in frame.split(b"\n")
-            if line.startswith(b"data:")
-        ]
+        data_lines = [line[5:].lstrip() for line in frame.split(b"\n") if line.startswith(b"data:")]
         if not data_lines:
             continue
         raw = b"\n".join(data_lines)
@@ -665,9 +637,7 @@ async def list_models(key: KeyContext) -> dict:
     adapters = get_registry()
     db_path = get_settings().db_path
     configured = [
-        adapter
-        for adapter in adapters.values()
-        if adapter_catalogue_enabled(adapter, db_path)
+        adapter for adapter in adapters.values() if adapter_catalogue_enabled(adapter, db_path)
     ]
     results = await asyncio.gather(
         *(
@@ -1064,9 +1034,7 @@ async def _dispatch_chat(
     if capability == "chat":
         route_alias, targets = _resolve_targets(model_id, key, adapters)
     else:
-        route_alias, targets = _resolve_capability_targets(
-            model_id, key, adapters, capability
-        )
+        route_alias, targets = _resolve_capability_targets(model_id, key, adapters, capability)
 
     def log_request(**values: Any) -> None:
         values["model"] = model_id
@@ -1077,16 +1045,25 @@ async def _dispatch_chat(
     request_id = request.state.request_id
     started = time.monotonic()
     trace_secret = get_settings().wb_trace_secret.get_secret_value()
-    if any(target["channel"] == "wb" for target in targets) and trace_secret and len(
-        trace_secret.encode("utf-8")
-    ) < 32:
+    trace_adapters = [
+        adapters[target["channel"]]
+        for target in targets
+        if target["channel"] in adapters
+        and callable(getattr(adapters[target["channel"]], "request_headers_resolver", None))
+    ]
+    if (
+        trace_adapters
+        and trace_secret
+        and len(trace_secret.encode("utf-8")) < 32
+    ):
+        trace_adapter = trace_adapters[0]
         log_request(
             request_id=request_id,
             key_id=key["id"],
-            channel="wb",
+            channel=trace_adapter.slug,
             status=503,
             started=started,
-            error="invalid WorkBuddy trace secret configuration",
+            error=f"invalid {trace_adapter.name} trace secret configuration",
             stream=payload.get("stream") is True,
         )
         raise HTTPException(
@@ -1107,12 +1084,17 @@ async def _dispatch_chat(
         if adapter is None:
             expanded_targets.append(base_target)
             continue
-        if target_channel == "wb":
-            has_snapshot, candidates = workbuddy_candidates(target["upstream_model"])
+        candidate_reader = getattr(adapter, "candidate_reader", None)
+        if callable(candidate_reader):
+            has_snapshot, candidates = candidate_reader(
+                target["upstream_model"], get_settings().db_path
+            )
         elif getattr(adapter, "runtime", None) is not None:
             has_snapshot, candidates = account_candidates(
                 target_channel,
                 target["upstream_model"],
+                db_path=get_settings().db_path,
+                require_credentials=True,
             )
         else:
             has_snapshot, candidates = False, []
@@ -1173,11 +1155,9 @@ async def _dispatch_chat(
         headers = {"Content-Type": "application/json"}
         if adapter.model_key:
             headers["Authorization"] = f"Bearer {adapter.model_key}"
-        if adapter.slug == "wb" and trace_secret:
-            headers["X-A2A-Trace-Secret"] = trace_secret
-            headers["X-A2A-Request-ID"] = request_id
-            if target.get("account_id"):
-                headers["X-A2A-Account-ID"] = target["account_id"]
+        header_resolver = getattr(adapter, "request_headers_resolver", None)
+        if callable(header_resolver):
+            headers.update(header_resolver(target, trace_secret, request_id))
         if request.headers.get("accept"):
             headers["Accept"] = request.headers["accept"]
         path = CAPABILITY_PATHS[capability]
@@ -1185,9 +1165,9 @@ async def _dispatch_chat(
         return adapter, body, headers, url
 
     if payload.get("stream") is True:
-        selected: tuple[
-            int, httpx.AsyncClient, httpx.Response, AdapterSpec, dict[str, str], Any
-        ] | None = None
+        selected: (
+            tuple[int, httpx.AsyncClient, httpx.Response, AdapterSpec, dict[str, str], Any] | None
+        ) = None
         last_status = 502
         for attempt_index, target in enumerate(targets):
             depth = int(target["route_depth"])
@@ -1208,9 +1188,7 @@ async def _dispatch_chat(
             try:
                 if runtime_adapter is not None:
                     if capability != "chat":
-                        raise ValueError(
-                            f"streaming is not supported for capability {capability}"
-                        )
+                        raise ValueError(f"streaming is not supported for capability {capability}")
                     upstream_handle = await runtime_adapter.open_stream(
                         {
                             "model": target["upstream_model"],
@@ -1249,9 +1227,26 @@ async def _dispatch_chat(
                 await client.aclose()
                 if account_lease is not None:
                     account_lease.release()
-                last_status = 502
+                mapped: Mapping[str, Any] = {}
+                mapper = getattr(runtime_adapter, "map_error", None)
+                if callable(mapper):
+                    try:
+                        value = mapper(exc)
+                        if isinstance(value, Mapping):
+                            mapped = value
+                    except Exception:
+                        mapped = {}
+                try:
+                    mapped_status = int(mapped.get("status_code") or 502)
+                except (TypeError, ValueError):
+                    mapped_status = 502
+                if mapped_status < 400 or mapped_status > 599:
+                    mapped_status = 502
+                mapped_message = str(mapped.get("message") or "upstream request failed")
+                mapped_code = str(mapped.get("code") or "upstream_error")
+                last_status = mapped_status
                 if isinstance(exc, httpx.HTTPError):
-                    record_transient_failure(adapter.slug, 502, "transport_error")
+                    record_transient_failure(adapter.slug, mapped_status, "transport_error")
                 if attempt_index + 1 < len(targets):
                     continue
                 _upstream_slots.release()
@@ -1260,16 +1255,16 @@ async def _dispatch_chat(
                     key_id=key["id"],
                     channel=adapter.slug,
                     upstream_model=target["upstream_model"],
-                    status=last_status,
+                    status=mapped_status,
                     started=started,
-                    error="upstream unavailable",
-                    error_kind=("transport_error" if isinstance(exc, httpx.HTTPError) else None),
+                    error=mapped_message,
+                    error_kind=mapped_code,
                     stream=True,
                     fallback_depth=depth,
                 )
                 raise HTTPException(
-                    status_code=502,
-                    detail=f"{adapter.name} is unavailable",
+                    status_code=mapped_status,
+                    detail=mapped_message,
                 ) from exc
             if _account_selection_mismatch(request_id, upstream, target):
                 await upstream.aclose()
@@ -1464,9 +1459,7 @@ async def _dispatch_chat(
                 stream_error_kind = "stream_interrupted"
                 record_transient_failure(adapter.slug, status, "stream_interrupted")
                 if account_id is not None:
-                    record_account_transient_failure(
-                        account_id, status, "stream_interrupted"
-                    )
+                    record_account_transient_failure(account_id, status, "stream_interrupted")
                 yield _stream_error_frame(stream_error)
             except Exception:
                 status = 502
@@ -1474,9 +1467,7 @@ async def _dispatch_chat(
                 stream_error_kind = "stream_interrupted"
                 record_transient_failure(adapter.slug, status, "stream_interrupted")
                 if account_id is not None:
-                    record_account_transient_failure(
-                        account_id, status, "stream_interrupted"
-                    )
+                    record_account_transient_failure(account_id, status, "stream_interrupted")
                 yield _stream_error_frame("upstream stream interrupted")
             finally:
                 try:
@@ -1510,11 +1501,10 @@ async def _dispatch_chat(
                         )
 
         return StreamingResponse(
-            chunks(), status_code=upstream.status_code,
+            chunks(),
+            status_code=upstream.status_code,
             background=(
-                BackgroundTask(account_lease.release)
-                if account_lease is not None
-                else None
+                BackgroundTask(account_lease.release) if account_lease is not None else None
             ),
             headers={
                 "X-Request-ID": request_id,
@@ -1548,9 +1538,7 @@ async def _dispatch_chat(
             if runtime_adapter is not None:
                 invoke_capability = getattr(runtime_adapter, "invoke_capability", None)
                 if capability != "chat" and not callable(invoke_capability):
-                    raise ValueError(
-                        f"native adapter does not implement capability {capability}"
-                    )
+                    raise ValueError(f"native adapter does not implement capability {capability}")
                 if capability == "chat":
                     upstream = await runtime_adapter.invoke(
                         {
@@ -1592,7 +1580,24 @@ async def _dispatch_chat(
             if account_lease is not None:
                 account_lease.release()
             last_error = exc
-            last_status = 502
+            mapped: Mapping[str, Any] = {}
+            mapper = getattr(runtime_adapter, "map_error", None)
+            if callable(mapper):
+                try:
+                    value = mapper(exc)
+                    if isinstance(value, Mapping):
+                        mapped = value
+                except Exception:
+                    mapped = {}
+            try:
+                mapped_status = int(mapped.get("status_code") or 502)
+            except (TypeError, ValueError):
+                mapped_status = 502
+            if mapped_status < 400 or mapped_status > 599:
+                mapped_status = 502
+            mapped_message = str(mapped.get("message") or "upstream request failed")
+            mapped_code = str(mapped.get("code") or "upstream_error")
+            last_status = mapped_status
             if isinstance(exc, httpx.HTTPError):
                 record_transient_failure(adapter.slug, 502, "transport_error")
             if attempt_index + 1 < len(targets):
@@ -1604,13 +1609,13 @@ async def _dispatch_chat(
                 key_id=key["id"],
                 channel=adapter.slug,
                 upstream_model=target["upstream_model"],
-                status=502,
+                status=mapped_status,
                 started=started,
-                error="upstream unavailable",
-                error_kind=("transport_error" if isinstance(exc, httpx.HTTPError) else None),
+                error=mapped_message,
+                error_kind=mapped_code,
                 fallback_depth=depth,
             )
-            raise HTTPException(status_code=502, detail=f"{adapter.name} is unavailable") from exc
+            raise HTTPException(status_code=mapped_status, detail=mapped_message) from exc
         if _account_selection_mismatch(request_id, upstream, target):
             await upstream.aclose()
             if account_lease is not None:
@@ -1735,15 +1740,19 @@ async def _dispatch_chat(
         upstream_model=selected_target["upstream_model"],
         model=model_id,
         status=upstream.status_code,
-        started=started, error="upstream request failed" if upstream.status_code >= 400 else None,
+        started=started,
+        error="upstream request failed" if upstream.status_code >= 400 else None,
         error_kind=_error_kind_for_status(upstream.status_code),
-        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
         usage_reported=usage_reported,
         account_id=account_id,
         fallback_depth=fallback_depth,
     )
     await upstream.aclose()
     return Response(
-        content=response_body, status_code=upstream.status_code, media_type=content_type,
+        content=response_body,
+        status_code=upstream.status_code,
+        media_type=content_type,
         headers=_client_response_headers(request_id, upstream),
     )

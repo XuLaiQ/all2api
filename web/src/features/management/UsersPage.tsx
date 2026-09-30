@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -72,7 +73,7 @@ export function UsersPage() {
   }
 
   return <main className="page-content data-page management-page">
-    <div className="page-heading"><div><span className="page-eyebrow">ACCESS CONTROL</span><h1>用户管理</h1><p>管理控制台用户目录；认证凭据仍由环境配置维护</p></div><button className="secondary-action-button" type="button" onClick={() => setReload((value) => value + 1)}>刷新</button></div>
+    <div className="page-heading"><div><span className="page-eyebrow">ACCESS CONTROL</span><h1>用户管理</h1><p>管理控制台用户目录；认证凭据仍由环境配置维护</p></div><Button variant="secondary" onClick={() => setReload((value) => value + 1)}>刷新</Button></div>
     {error && <div className="notice notice-error" role="alert">{error}</div>}
     {notice && <div className="notice notice-info" role="status">{notice}</div>}
     {canManage && <form className="log-filter-form management-form" onSubmit={(event) => void submit(event)}>
@@ -85,10 +86,10 @@ export function UsersPage() {
           { value: "admin", label: "Admin" },
         ]}
       /></label>
-      <button type="submit" disabled={saving || !draft.username.trim()}>{saving ? "创建中…" : "创建用户"}</button>
+      <Button type="submit" variant="primary" disabled={saving || !draft.username.trim()}>{saving ? "创建中…" : "创建用户"}</Button>
     </form>}
     {loading ? <div className="table-state">正在读取用户…</div> : <DataTable className={canManage ? "has-row-actions" : ""} ariaLabel="用户列表"><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>更新时间</th>{canManage && <th>操作</th>}</tr></thead><tbody>
-      {users.map((user) => <tr key={user.username}><td className="channel-name">{user.username}</td><td>{user.role}</td><td>{user.enabled ? "启用" : "停用"}</td><td>{new Date(user.updated_at * 1000).toLocaleString("zh-CN")}</td>{canManage && <td className="account-actions"><button type="button" className="secondary-action compact-action" onClick={() => void toggle(user)}>{user.enabled ? "停用" : "启用"}</button><button type="button" className="danger-action compact-action" onClick={() => void remove(user)}>删除</button></td>}</tr>)}
+      {users.map((user) => <tr key={user.username}><td className="channel-name">{user.username}</td><td>{user.role}</td><td>{user.enabled ? "启用" : "停用"}</td><td>{new Date(user.updated_at * 1000).toLocaleString("zh-CN")}</td>{canManage && <td className="account-actions"><Button variant="secondary" size="sm" className="compact-action" onClick={() => void toggle(user)}>{user.enabled ? "停用" : "启用"}</Button><Button variant="danger" size="sm" className="compact-action" onClick={() => void remove(user)}>删除</Button></td>}</tr>)}
     </tbody></DataTable>}
     <Pagination
       currentPage={page}

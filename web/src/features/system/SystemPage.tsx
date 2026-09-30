@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
@@ -120,11 +121,11 @@ export function SystemPage() {
             { value: "7", label: "最近 7 天" },
             { value: "30", label: "最近 30 天" },
           ]} /></label>
-          <button className="secondary-action-button" type="button" onClick={() => setRetry((value) => value + 1)} disabled={loading}>刷新</button>
+          <Button variant="secondary" onClick={() => setRetry((value) => value + 1)} disabled={loading}>刷新</Button>
         </div>
       </div>
 
-      {error && <div className="notice notice-error" role="alert"><span>{error}</span><button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button></div>}
+      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button></div>}
       {loading ? (
         <div className="table-state" aria-live="polite">正在读取系统状态…</div>
       ) : (
@@ -163,9 +164,9 @@ export function SystemPage() {
           </div>
 
           <section className="data-section surface-panel" aria-labelledby="channel-config-title">
-            <div className="section-heading"><div><h2 id="channel-config-title">渠道配置</h2><p>配置状态来自本地环境，不代表上游在线</p></div></div>
-            <DataTable className="system-channel-table" ariaLabel="渠道配置列表"><thead><tr><th>渠道</th><th>模型接口</th><th>账号接口</th></tr></thead><tbody>
-              {(info?.channels ?? []).map((channel) => <tr key={channel.slug}><td className="channel-name">{channel.slug}</td><td>{channel.models_configured ? "已配置" : "未配置"}</td><td>{channel.accounts_configured ? "已配置" : "未配置"}</td></tr>)}
+            <div className="section-heading"><div><h2 id="channel-config-title">渠道能力</h2><p>状态来自本地适配器和账号接入能力，不代表上游在线</p></div></div>
+            <DataTable className="system-channel-table" ariaLabel="渠道能力列表"><thead><tr><th>渠道</th><th>模型能力</th><th>账号接入</th></tr></thead><tbody>
+              {(info?.channels ?? []).map((channel) => <tr key={channel.slug}><td className="channel-name">{channel.slug}</td><td>{channel.models_configured ? "已配置" : "未配置"}</td><td>{channel.provision_configured || channel.accounts_configured ? "已配置" : "未配置"}</td></tr>)}
             </tbody></DataTable>
           </section>
 
@@ -199,9 +200,9 @@ export function SystemPage() {
                 <small>必须不短于日志保留期 · 当前来源：{settings?.sources.usage_retention_days === "database" ? "数据库" : "环境配置"}</small>
               </label>
               <div className="system-settings-actions">
-                <button className="key-primary-action" type="submit" disabled={role !== "admin" || settingsSaving}>
+                <Button variant="primary" type="submit" disabled={role !== "admin" || settingsSaving}>
                   {settingsSaving ? "保存中…" : "保存设置"}
-                </button>
+                </Button>
                 {role !== "admin" && <span className="secondary-text">当前角色仅可查看</span>}
               </div>
             </form>

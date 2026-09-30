@@ -14,8 +14,8 @@ from app.adapters.chatgpt.provisioner import ChatGPTProvisioner
 from app.adapters.doubao.browser import FakeBrowserWorker
 from app.adapters.doubao.provisioner import DoubaoProvisioner
 from app.adapters.workbuddy.provisioner import WorkBuddyProvisioner
-from app.ports.credentials import InMemoryCredentialStore
 from app.infrastructure.provision_state import ProvisionStateStore
+from app.ports.credentials import InMemoryCredentialStore
 
 
 class _OAuthFake:

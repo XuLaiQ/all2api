@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react";
+import { Button } from "../controls/Button";
 import { Select } from "../controls/Select";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "./pagination.constants";
 
@@ -152,7 +153,8 @@ export function Pagination({
         );
       case "prev":
         return (
-          <button
+          <Button
+            variant="unstyled"
             key={item}
             type="button"
             className="common-pagination-button"
@@ -162,7 +164,7 @@ export function Pagination({
             onClick={() => changePage(page - 1)}
           >
             <ChevronLeft size={16} aria-hidden="true" />
-          </button>
+          </Button>
         );
       case "pager":
         return (
@@ -171,7 +173,8 @@ export function Pagination({
               if (typeof pageItem === "number") {
                 const active = pageItem === page;
                 return (
-                  <button
+                  <Button
+                    variant="unstyled"
                     key={pageItem}
                     type="button"
                     className={`common-pagination-page${active ? " is-active" : ""}`}
@@ -182,13 +185,14 @@ export function Pagination({
                     onClick={() => changePage(pageItem)}
                   >
                     {pageItem}
-                  </button>
+                  </Button>
                 );
               }
               const forward = pageItem === "next-more";
               const target = forward ? page + normalizedPagerCount : page - normalizedPagerCount;
               return (
-                <button
+                <Button
+                  variant="unstyled"
                   key={`${pageItem}-${pageIndex}`}
                   type="button"
                   className="common-pagination-more"
@@ -198,14 +202,15 @@ export function Pagination({
                   onClick={() => changePage(target)}
                 >
                   <MoreHorizontal size={16} aria-hidden="true" />
-                </button>
+                </Button>
               );
             })}
           </div>
         );
       case "next":
         return (
-          <button
+          <Button
+            variant="unstyled"
             key={item}
             type="button"
             className="common-pagination-button"
@@ -215,7 +220,7 @@ export function Pagination({
             onClick={() => changePage(page + 1)}
           >
             <ChevronRight size={16} aria-hidden="true" />
-          </button>
+          </Button>
         );
       case "jumper":
         return (
@@ -232,7 +237,7 @@ export function Pagination({
               onKeyDown={(event) => { if (event.key === "Enter") submitJump(); }}
             />
             <span>页</span>
-            <button type="button" className="common-pagination-jump-button" disabled={disabled} onClick={submitJump}>确定</button>
+            <Button variant="unstyled" className="common-pagination-jump-button" disabled={disabled} onClick={submitJump}>确定</Button>
           </label>
         );
     }

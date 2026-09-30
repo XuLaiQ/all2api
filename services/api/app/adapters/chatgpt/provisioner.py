@@ -18,6 +18,7 @@ from app.infrastructure.credentials import record_account
 from app.infrastructure.provision_state import ProvisionStateStore
 from app.ports.credentials import CredentialStore, InMemoryCredentialStore
 
+from .codex_client import credential_client_id
 from .errors import OAuthExpiredError, OAuthStateError, public_error
 from .mapper import canonical_account, token_record
 from .oauth_client import OAuthClient
@@ -194,18 +195,41 @@ class ChatGPTProvisioner:
 
     @staticmethod
     def _result(
-        *, added: int, skipped: int, errors: list[str], accounts: list[dict[str, Any]]
+        *,
+        added: int,
+        skipped: int,
+        errors: list[str],
+        accounts: list[dict[str, Any]],
+        refreshed: int = 0,
     ) -> dict[str, Any]:
         # Deliberately construct a whitelist response.  A future mapper field
         # cannot accidentally make credentials part of the public DTO.
         return {
-            "status": "success" if not errors else ("partial" if added else "error"),
+            "status": (
+                "success"
+                if not errors
+                else ("partial" if added or refreshed else "error")
+            ),
             "added": int(added),
             "skipped": int(skipped),
-            "refreshed": 0,
+            "refreshed": int(refreshed),
             "errors": list(errors),
             "accounts": accounts,
         }
+
+    async def _credentials_exist(self, account_id: str) -> bool:
+        """Return whether the store already holds credentials for this account."""
+
+        reader = getattr(self.credential_store, "read", None)
+        if not callable(reader):
+            return False
+        try:
+            value = reader("chatgpt", account_id)
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception:
+            return False
+        return isinstance(value, Mapping)
 
     async def token_import(
         self,
@@ -228,23 +252,27 @@ class ChatGPTProvisioner:
                 values.extend(tokens)
             if isinstance(accounts, list):
                 values.extend(accounts)
-        added = skipped = 0
+        added = skipped = refreshed = 0
         errors: list[str] = []
         result_accounts: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for item in values:
+        for index, item in enumerate(values, start=1):
             try:
                 record = token_record(item)
             except ValueError:
-                errors.append("token item is invalid")
+                errors.append(f"第 {index} 条账号数据无效（缺少 access_token）")
                 continue
             fingerprint = str(record["fingerprint"])
             if fingerprint in seen:
                 skipped += 1
                 continue
             seen.add(fingerprint)
+            account_id = f"token:{fingerprint}"
+            # A re-import of an already known token rotates its credentials
+            # instead of resetting the operator-managed account state (enabled
+            # flag, status, counters) back to a fresh "ready" row.
+            existing = await self._credentials_exist(account_id)
             try:
-                account_id = f"token:{fingerprint}"
                 stored_ref = await self._call_store(
                     record["credential_ref"],
                     record["credentials"],
@@ -253,13 +281,33 @@ class ChatGPTProvisioner:
             except Exception:
                 # Store implementation details may contain paths or secret
                 # values, so expose only a stable action message.
-                errors.append("credential could not be stored")
+                errors.append(f"第 {index} 条账号凭据保存失败")
                 continue
             account = canonical_account(record)
-            await record_account(self.credential_store, "chatgpt", account, stored_ref)
+            if existing:
+                refreshed += 1
+            else:
+                try:
+                    await record_account(self.credential_store, "chatgpt", account, stored_ref)
+                except Exception:
+                    # A catalog write failure must not leave an orphaned token
+                    # that can later be mistaken for a provisioned account.
+                    delete = getattr(self.credential_store, "delete", None)
+                    if callable(delete):
+                        cleanup = delete(stored_ref)
+                        if inspect.isawaitable(cleanup):
+                            await cleanup
+                    errors.append(f"第 {index} 条账号目录保存失败")
+                    continue
+                added += 1
             result_accounts.append(account)
-            added += 1
-        result = self._result(added=added, skipped=skipped, errors=errors, accounts=result_accounts)
+        result = self._result(
+            added=added,
+            skipped=skipped,
+            refreshed=refreshed,
+            errors=errors,
+            accounts=result_accounts,
+        )
         return self._remember("token-import", idem, result)
 
     async def import_accounts(
@@ -504,8 +552,12 @@ class ChatGPTProvisioner:
         refresher = getattr(self.oauth_client, "refresh_token", None)
         if not callable(refresher):
             raise OAuthStateError("ChatGPT OAuth refresh is unavailable")
+        client_id = credential_client_id(credentials)
         try:
-            refreshed = refresher(refresh)
+            if client_id:
+                refreshed = refresher(refresh, client_id=client_id)
+            else:
+                refreshed = refresher(refresh)
             if inspect.isawaitable(refreshed):
                 refreshed = await refreshed
         except Exception as exc:
@@ -517,6 +569,12 @@ class ChatGPTProvisioner:
         updated = dict(credentials)
         updated.update(dict(refreshed))
         updated.setdefault("refresh_token", refresh)
+        try:
+            expires_in = float(refreshed.get("expires_in"))
+        except (TypeError, ValueError):
+            expires_in = 0.0
+        if expires_in > 0:
+            updated["expires_at"] = int(self._clock() + expires_in)
         stored_ref = await self._call_store("", updated, account_id=native_id)
         account = await self._account_view(native_id, updated, stored_ref)
         await record_account(self.credential_store, "chatgpt", account, stored_ref)

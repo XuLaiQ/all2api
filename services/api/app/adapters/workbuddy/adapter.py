@@ -63,25 +63,12 @@ class WorkBuddyAdapter:
 
 
 def create_adapter(settings: Any, *, credential_store: Any | None = None) -> WorkBuddyAdapter:
-    platform_key = getattr(settings, "wb_platform_data_key", None)
-    data_key = (
-        platform_key.get_secret_value()
-        if hasattr(platform_key, "get_secret_value")
-        else str(platform_key or "")
-    )
-    if not data_key:
-        legacy_key = getattr(settings, "wb_data_key", "")
-        data_key = (
-            legacy_key.get_secret_value()
-            if hasattr(legacy_key, "get_secret_value")
-            else str(legacy_key or "")
-        )
     # Keep the native client independent from the legacy HTTP bridge.  The
     # latter's management URL is only used by compatibility readers.
     platform_base = str(
         getattr(settings, "wb_platform_base", "https://copilot.tencent.com")
         or "https://copilot.tencent.com"
     )
-    client = WorkBuddyClient(platform_base, data_key=data_key)
+    client = WorkBuddyClient(platform_base)
     provisioner = WorkBuddyProvisioner(client, credential_store=credential_store)
     return WorkBuddyAdapter(client, provisioner=provisioner)

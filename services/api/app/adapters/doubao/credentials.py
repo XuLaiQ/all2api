@@ -24,12 +24,26 @@ class MemoryCredentialStore:
         self.records[ref] = (account_id, dict(materials))
         return ref
 
+    async def read(self, channel: str, account_id: str) -> dict[str, Any] | None:
+        """Look up materials by account id so re-imports can be detected."""
+
+        for _ref, (stored_id, materials) in self.records.items():
+            if stored_id == str(account_id):
+                return dict(materials)
+        return None
+
     async def atomic_write(
         self,
         channel: str,
         account_id: str,
         materials: Mapping[str, Any],
     ) -> str:
+        # Match the durable store contract: one record per account, rewritten
+        # in place on conflict so ``read`` always returns the latest materials.
+        for ref, (stored_id, _materials) in self.records.items():
+            if stored_id == str(account_id):
+                self.records[ref] = (str(account_id), dict(materials))
+                return ref
         return await self.put(account_id, materials)
 
     async def delete(self, credential_ref: str) -> None:

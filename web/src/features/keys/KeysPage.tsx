@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { Check, Copy } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -262,13 +263,13 @@ export function KeysPage() {
           <h1>网关密钥</h1>
           <p>{total} 个密钥 · 明文只在创建或轮换时展示</p>
         </div>
-        {canManage && <button className="key-primary-action" type="button" onClick={() => startEdit()}>创建密钥</button>}
+        {canManage && <Button variant="primary" onClick={() => startEdit()}>创建密钥</Button>}
       </div>
 
       {error && (
         <div className="notice notice-error" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
+          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
         </div>
       )}
       {pendingAction && (
@@ -280,8 +281,8 @@ export function KeysPage() {
             确认继续？
           </span>
           <div className="log-filter-actions">
-            <button type="button" onClick={confirmPendingAction}>确认</button>
-            <button type="button" className="secondary-action" onClick={() => setPendingAction(null)}>取消</button>
+            <Button variant="primary" onClick={confirmPendingAction}>确认</Button>
+            <Button variant="secondary" onClick={() => setPendingAction(null)}>取消</Button>
           </div>
         </div>
       )}
@@ -293,8 +294,8 @@ export function KeysPage() {
             <code>{oneTimeKey}</code>
           </div>
           <div className="log-filter-actions">
-            <button type="button" onClick={copyOneTimeKey}>复制密钥</button>
-            <button type="button" className="secondary-action" onClick={() => setOneTimeKey("")}>隐藏</button>
+            <Button variant="primary" onClick={copyOneTimeKey}>复制密钥</Button>
+            <Button variant="secondary" onClick={() => setOneTimeKey("")}>隐藏</Button>
           </div>
         </section>
       )}
@@ -321,8 +322,8 @@ export function KeysPage() {
           />
         </label>
         <div className="log-filter-actions">
-          <button type="submit">筛选</button>
-          <button type="button" className="secondary-action" onClick={clearFilters}>清除</button>
+          <Button type="submit" variant="primary">筛选</Button>
+          <Button variant="secondary" onClick={clearFilters}>清除</Button>
         </div>
       </form>
 
@@ -346,8 +347,8 @@ export function KeysPage() {
                         <code title={row.key ?? "仅保留前缀，请先轮换密钥"}>
                           {row.key ? maskKey(row.key) : `${row.prefix}…`}
                         </code>
-                        <button
-                          type="button"
+                        <Button
+                          variant="unstyled"
                           className="key-copy-button"
                           aria-label={copiedKeyId === row.id ? "已复制密钥" : "复制密钥"}
                           title={row.key ? (copiedKeyId === row.id ? "已复制" : "复制密钥") : "仅保留前缀，请先轮换密钥"}
@@ -355,7 +356,7 @@ export function KeysPage() {
                           onClick={() => void copyRowKey(row)}
                         >
                           {copiedKeyId === row.id ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
-                        </button>
+                        </Button>
                       </div>
                     </td>
                     <td><span className={`status-label ${state.className}`}>{state.label}</span></td>
@@ -367,12 +368,12 @@ export function KeysPage() {
                     <td>
                       <div className="key-row-actions">
                         {canManage && <>
-                          <button type="button" onClick={() => startEdit(row)} disabled={row.name === "bootstrap"}>编辑</button>
-                          <button type="button" onClick={() => void toggleEnabled(row)} disabled={row.name === "bootstrap"}>
+                          <Button variant="secondary" size="sm" onClick={() => startEdit(row)} disabled={row.name === "bootstrap"}>编辑</Button>
+                          <Button variant="secondary" size="sm" onClick={() => void toggleEnabled(row)} disabled={row.name === "bootstrap"}>
                             {row.enabled ? "停用" : "启用"}
-                          </button>
-                          <button type="button" onClick={() => setPendingAction({ id: row.id, kind: "rotate" })} disabled={row.name === "bootstrap"}>轮换</button>
-                          <button type="button" className="danger-action" onClick={() => setPendingAction({ id: row.id, kind: "revoke" })} disabled={row.name === "bootstrap"}>撤销</button>
+                          </Button>
+                          <Button variant="secondary" size="sm" onClick={() => setPendingAction({ id: row.id, kind: "rotate" })} disabled={row.name === "bootstrap"}>轮换</Button>
+                          <Button variant="danger" size="sm" onClick={() => setPendingAction({ id: row.id, kind: "revoke" })} disabled={row.name === "bootstrap"}>撤销</Button>
                         </>}
                       </div>
                     </td>
@@ -400,7 +401,7 @@ export function KeysPage() {
           <section className="key-editor" role="dialog" aria-modal="true" aria-labelledby="key-editor-title">
             <div className="section-heading">
               <div><h2 id="key-editor-title">{editor.id === undefined ? "创建网关密钥" : "编辑网关密钥"}</h2><p>密钥只存储哈希值</p></div>
-              <button type="button" className="icon-close" aria-label="关闭" onClick={() => setEditor(null)}>×</button>
+              <Button variant="unstyled" className="icon-close" aria-label="关闭" onClick={() => setEditor(null)}>×</Button>
             </div>
             <form className="key-editor-form" onSubmit={saveEditor}>
               <label><span>名称</span><input required maxLength={128} value={editor.name} onChange={(event) => setEditor({ ...editor, name: event.target.value })} /></label>
@@ -420,8 +421,8 @@ export function KeysPage() {
                 <label><span>到期日 (UTC)</span><DateInput value={editor.expires} onChange={(expires) => setEditor({ ...editor, expires })} /><small>留空表示永不过期</small></label>
               </div>
               <div className="log-filter-actions">
-                <button type="submit" disabled={saving}>{saving ? "保存中…" : "保存"}</button>
-                <button type="button" className="secondary-action" onClick={() => setEditor(null)} disabled={saving}>取消</button>
+                <Button type="submit" variant="primary" disabled={saving}>{saving ? "保存中…" : "保存"}</Button>
+                <Button variant="secondary" onClick={() => setEditor(null)} disabled={saving}>取消</Button>
               </div>
             </form>
           </section>

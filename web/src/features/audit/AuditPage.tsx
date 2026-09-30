@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -94,12 +95,12 @@ export function AuditPage() {
         <label><span>从日期</span><DateInput value={draft.from} onChange={(from) => setDraft({ ...draft, from })} /></label>
         <label><span>到日期</span><DateInput value={draft.to} onChange={(to) => setDraft({ ...draft, to })} /></label>
         <div className="log-filter-actions">
-          <button type="submit">筛选</button>
-          <button type="button" className="secondary-action" onClick={clearFilters}>清除</button>
+          <Button type="submit" variant="primary">筛选</Button>
+          <Button variant="secondary" onClick={clearFilters}>清除</Button>
         </div>
       </form>
 
-      {error && <div className="notice notice-error" role="alert"><span>{error}</span><button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button></div>}
+      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button></div>}
 
       {loading ? (
         <TableState live>正在读取审计日志…</TableState>

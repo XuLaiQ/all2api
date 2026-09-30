@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.adapters.registry import get_registry
+from app.adapters.registry import data_plane_configured, get_registry
 from app.config import get_settings
 from app.infrastructure.db import database, migrate
 from app.infrastructure.provision_state import ProvisionStateStore
@@ -249,7 +249,7 @@ def healthz(detail: bool = False) -> dict[str, object]:
 
     channels: dict[str, dict[str, object]] = {}
     for adapter in get_registry(settings).values():
-        data_configured = bool(getattr(adapter, "models_configured", False))
+        data_configured = data_plane_configured(adapter, settings.db_path)
         provision_configured = bool(getattr(adapter, "provision_configured", False))
         channels[adapter.slug] = {
             "status": "ready" if data_configured else "not_configured",

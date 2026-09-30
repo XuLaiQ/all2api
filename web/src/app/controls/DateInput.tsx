@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnchoredPopover } from "./AnchoredPopover";
+import { Button } from "./Button";
 
 interface DateInputProps {
   /** YYYY-MM-DD, or "" when empty. */
@@ -136,7 +137,8 @@ export function DateInput({
 
   return (
     <div ref={wrapperRef} className={`ctrl-date ${className}`.trim()}>
-      <button
+      <Button
+        variant="unstyled"
         type="button"
         id={id}
         className="ctrl-date-trigger"
@@ -149,9 +151,10 @@ export function DateInput({
         <span className={selected ? "ctrl-date-value" : "ctrl-date-value ctrl-placeholder"}>
           {selected ? value : placeholder}
         </span>
-      </button>
+      </Button>
       {selected && !disabled && (
-        <button
+        <Button
+          variant="unstyled"
           type="button"
           className="ctrl-date-clear"
           aria-label="清除日期"
@@ -165,7 +168,7 @@ export function DateInput({
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18" />
           </svg>
-        </button>
+        </Button>
       )}
       <span className="ctrl-date-icon" aria-hidden="true">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -184,7 +187,8 @@ export function DateInput({
           onKeyDown={handlePanelKeyDown}
         >
           <div className="ctrl-calendar-head">
-            <button
+            <Button
+              variant="unstyled"
               type="button"
               className="ctrl-calendar-title"
               onClick={() => setView(view === "days" ? "months" : "days")}
@@ -192,22 +196,24 @@ export function DateInput({
               {view === "days"
                 ? `${panelYear}年 ${String(panelMonth + 1).padStart(2, "0")}月`
                 : `${panelYear}年`}
-            </button>
+            </Button>
             <div className="ctrl-calendar-nav">
-              <button
+              <Button
+                variant="unstyled"
                 type="button"
                 aria-label={view === "days" ? "上一个月" : "上一年"}
                 onClick={() => (view === "days" ? shiftMonth(-1) : setPanelYear(panelYear - 1))}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m14.5 6-6 6 6 6" /></svg>
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="unstyled"
                 type="button"
                 aria-label={view === "days" ? "下一个月" : "下一年"}
                 onClick={() => (view === "days" ? shiftMonth(1) : setPanelYear(panelYear + 1))}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9.5 6 6 6-6 6" /></svg>
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -230,7 +236,8 @@ export function DateInput({
                     isSelectedDay ? "is-selected" : "",
                   ].filter(Boolean).join(" ");
                   return (
-                    <button
+                    <Button
+                      variant="unstyled"
                       key={toISO(date)}
                       type="button"
                       className={classes}
@@ -240,7 +247,7 @@ export function DateInput({
                       }}
                     >
                       {date.getDate()}
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
@@ -258,7 +265,8 @@ export function DateInput({
                   isSelectedMonth ? "is-selected" : "",
                 ].filter(Boolean).join(" ");
                 return (
-                  <button
+                  <Button
+                    variant="unstyled"
                     key={label}
                     type="button"
                     className={classes}
@@ -268,14 +276,15 @@ export function DateInput({
                     }}
                   >
                     {label}
-                  </button>
+                  </Button>
                 );
               })}
             </div>
           )}
 
           <div className="ctrl-calendar-foot">
-            <button
+            <Button
+              variant="unstyled"
               type="button"
               onClick={() => {
                 onChange("");
@@ -283,8 +292,9 @@ export function DateInput({
               }}
             >
               清除
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="unstyled"
               type="button"
               onClick={() => {
                 const now = new Date();
@@ -295,7 +305,7 @@ export function DateInput({
               }}
             >
               今天
-            </button>
+            </Button>
           </div>
         </div>
       </AnchoredPopover>

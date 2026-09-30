@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -156,14 +157,13 @@ export function LogsPage() {
           <p>共 {new Intl.NumberFormat("zh-CN").format(total)} 条 · 时间为 UTC</p>
         </div>
         {canClear && (
-          <button
-            className="secondary-action-button danger-action"
-            type="button"
+          <Button
+            variant="danger"
             onClick={() => setConfirmClear(true)}
             disabled={clearing}
           >
             清理过期日志
-          </button>
+          </Button>
         )}
       </div>
 
@@ -171,15 +171,14 @@ export function LogsPage() {
         <div className="notice notice-confirm" role="alertdialog" aria-label="确认清理过期日志">
           <span>将按服务端配置删除保留期外的请求明细和日用量记录。此操作不可撤销，继续？</span>
           <div className="log-filter-actions">
-            <button type="button" disabled={clearing} onClick={() => void confirmLogClear()}>
+            <Button variant="primary" disabled={clearing} onClick={() => void confirmLogClear()}>
               {clearing ? "清理中…" : "确认清理"}
-            </button>
-            <button
-              type="button"
-              className="secondary-action"
+            </Button>
+            <Button
+              variant="secondary"
               disabled={clearing}
               onClick={() => setConfirmClear(false)}
-            >取消</button>
+            >取消</Button>
           </div>
         </div>
       )}
@@ -254,15 +253,15 @@ export function LogsPage() {
           <DateInput value={draft.to} onChange={(to) => setDraft({ ...draft, to })} />
         </label>
         <div className="log-filter-actions">
-          <button type="submit">筛选</button>
-          <button type="button" className="secondary-action" onClick={clearFilters}>清除</button>
+          <Button type="submit" variant="primary">筛选</Button>
+          <Button variant="secondary" onClick={clearFilters}>清除</Button>
         </div>
       </form>
 
       {error && (
         <div className="notice notice-error" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
+          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
         </div>
       )}
 

@@ -80,6 +80,10 @@ class NativeHttpAdapter:
         channel: str = "",
         base_url_resolver: Callable[[Mapping[str, Any]], str] | None = None,
         credential_headers_resolver: Callable[[Mapping[str, Any]], Mapping[str, str]] | None = None,
+        request_preparer: Callable[
+            [Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]
+        ]
+        | None = None,
     ) -> None:
         self.manifest = manifest
         self.base_url = str(base_url or "").rstrip("/")
@@ -93,6 +97,7 @@ class NativeHttpAdapter:
         self.channel = str(channel or manifest.slug)
         self.base_url_resolver = base_url_resolver
         self.credential_headers_resolver = credential_headers_resolver
+        self.request_preparer = request_preparer
 
     @staticmethod
     def _credential_headers(credentials: Mapping[str, Any]) -> dict[str, str]:
@@ -211,11 +216,8 @@ class NativeHttpAdapter:
     ) -> Mapping[str, Any]:
         """Apply channel-owned request normalization to every chat transport."""
 
-        if self.channel == "wb":
-            from app.adapters.workbuddy.mapper import prepare_chat_payload
-
-            realm = str(credentials.get("realm") or "cn")
-            return prepare_chat_payload(payload, realm=realm)
+        if self.request_preparer is not None:
+            return self.request_preparer(payload, credentials)
         return payload
 
     def _client(self) -> tuple[httpx.AsyncClient, bool]:
@@ -223,7 +225,8 @@ class NativeHttpAdapter:
             return self._http_client, False
         return (
             httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout, connect=self.connect_timeout)
+                timeout=httpx.Timeout(self.timeout, connect=self.connect_timeout),
+                trust_env=False,
             ),
             True,
         )

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
@@ -140,13 +141,13 @@ export function RoutesPage() {
           <h1>路由规则</h1>
           <p>按目标顺序尝试；仅在可重试失败时进入下一渠道</p>
         </div>
-        {canManage && <button className="key-primary-action" type="button" onClick={() => setEditor(targetEditor())}>创建路由</button>}
+        {canManage && <Button variant="primary" onClick={() => setEditor(targetEditor())}>创建路由</Button>}
       </div>
 
       {error && (
         <div className="notice notice-error" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
+          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
         </div>
       )}
       {channelsError && <div className="notice notice-error" role="alert">无法读取渠道目录，当前不能编辑路由。</div>}
@@ -154,8 +155,8 @@ export function RoutesPage() {
         <div className="notice notice-confirm" role="alertdialog" aria-label="确认删除路由">
           <span>删除路由「{pendingDelete}」后，使用该别名的请求将失败。确认删除？</span>
           <div className="log-filter-actions">
-            <button type="button" onClick={() => void confirmDelete()}>确认删除</button>
-            <button type="button" className="secondary-action" onClick={() => setPendingDelete(null)}>取消</button>
+            <Button variant="danger" onClick={() => void confirmDelete()}>确认删除</Button>
+            <Button variant="secondary" onClick={() => setPendingDelete(null)}>取消</Button>
           </div>
         </div>
       )}
@@ -184,8 +185,8 @@ export function RoutesPage() {
                   </td>
                   <td>{new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(route.created_at * 1000))}</td>
                   {canManage && <td><div className="route-row-actions">
-                    <button type="button" onClick={() => setEditor(targetEditor(route))}>编辑</button>
-                    <button type="button" className="danger-action" onClick={() => setPendingDelete(route.alias)}>删除</button>
+                    <Button variant="secondary" size="sm" onClick={() => setEditor(targetEditor(route))}>编辑</Button>
+                    <Button variant="danger" size="sm" onClick={() => setPendingDelete(route.alias)}>删除</Button>
                   </div></td>}
                 </tr>
               ))}
@@ -200,7 +201,7 @@ export function RoutesPage() {
           <section className="key-editor route-editor" role="dialog" aria-modal="true" aria-labelledby="route-editor-title">
             <div className="section-heading">
               <div><h2 id="route-editor-title">{editor.originalAlias ? "编辑路由" : "创建路由"}</h2><p>目标顺序决定回退顺序</p></div>
-              <button type="button" className="icon-close" aria-label="关闭" onClick={() => setEditor(null)}>×</button>
+              <Button variant="unstyled" className="icon-close" aria-label="关闭" onClick={() => setEditor(null)}>×</Button>
             </div>
             <form className="key-editor-form" onSubmit={submit}>
               <label>
@@ -222,9 +223,9 @@ export function RoutesPage() {
                 {editor.targets.map((target, index) => (
                   <div className="route-target-editor" key={index}>
                     <div className="route-target-title"><strong>目标 {index + 1}</strong><div>
-                      <button type="button" aria-label="上移目标" disabled={index === 0} onClick={() => moveTarget(index, -1)}>↑</button>
-                      <button type="button" aria-label="下移目标" disabled={index === editor.targets.length - 1} onClick={() => moveTarget(index, 1)}>↓</button>
-                      <button type="button" aria-label="移除目标" disabled={editor.targets.length <= 1} onClick={() => setEditor({ ...editor, targets: editor.targets.filter((_, item) => item !== index) })}>×</button>
+                      <Button variant="unstyled" type="button" aria-label="上移目标" disabled={index === 0} onClick={() => moveTarget(index, -1)}>↑</Button>
+                      <Button variant="unstyled" type="button" aria-label="下移目标" disabled={index === editor.targets.length - 1} onClick={() => moveTarget(index, 1)}>↓</Button>
+                      <Button variant="unstyled" type="button" aria-label="移除目标" disabled={editor.targets.length <= 1} onClick={() => setEditor({ ...editor, targets: editor.targets.filter((_, item) => item !== index) })}>×</Button>
                     </div></div>
                     <div className="key-form-grid">
                       <label><span>渠道</span><Select
@@ -243,16 +244,16 @@ export function RoutesPage() {
                     </div>
                   </div>
                 ))}
-                <button
-                  type="button"
+                <Button
+                  variant="unstyled"
                   className="add-route-target"
                   disabled={editor.targets.length >= Math.min(8, channels.length) || usedChannels.length >= channels.length}
                   onClick={() => setEditor({ ...editor, targets: [...editor.targets, newTarget(channels, usedChannels)] })}
-                >添加目标</button>
+                >添加目标</Button>
               </div>
               <div className="log-filter-actions">
-                <button type="submit" disabled={saving || channelsError || channels.length === 0}>{saving ? "保存中…" : "保存路由"}</button>
-                <button type="button" className="secondary-action" disabled={saving} onClick={() => setEditor(null)}>取消</button>
+                <Button type="submit" variant="primary" disabled={saving || channelsError || channels.length === 0}>{saving ? "保存中…" : "保存路由"}</Button>
+                <Button variant="secondary" disabled={saving} onClick={() => setEditor(null)}>取消</Button>
               </div>
             </form>
           </section>

@@ -68,6 +68,42 @@ export type PlaygroundStreamEvent =
   | { type: "error"; message: string; response_status?: number; error_code?: string }
   | (PlaygroundResult & { type: "done" });
 
+export type PlaygroundSearchResult = {
+  conversation_id?: string;
+  status?: string;
+  answer: string;
+  sources: Array<{ title?: string; url: string; snippet?: string }>;
+};
+
+export type PlaygroundFileResult = {
+  task_id: string;
+  kind: "ppt" | "psd";
+  status: "success" | "error";
+  primary_url?: string;
+  zip_url?: string;
+  error?: string;
+};
+
+export async function runPlaygroundSearch(body: {
+  channel?: string;
+  model?: string;
+  prompt: string;
+}): Promise<PlaygroundSearchResult> {
+  const response = await apiClient.post<DataResponse<PlaygroundSearchResult>>("/playground/search", body);
+  return response.data.data;
+}
+
+export async function runPlaygroundFileTask(body: {
+  channel?: string;
+  model?: string;
+  kind: "ppt" | "psd";
+  prompt: string;
+  base64_images?: string[];
+}): Promise<PlaygroundFileResult> {
+  const response = await apiClient.post<DataResponse<PlaygroundFileResult>>("/playground/editable-file", body);
+  return response.data.data;
+}
+
 export async function fetchPlaygroundConversations(
   page = 1,
   pageSize = DEFAULT_PAGE_SIZE,

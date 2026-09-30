@@ -1,6 +1,7 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AnchoredPopover } from "./AnchoredPopover";
+import { Button } from "./Button";
 
 export interface SelectOption {
   value: string;
@@ -134,7 +135,8 @@ export function Select({
     const index = flat.indexOf(option);
     const isSelected = option.value === value;
     return (
-      <button
+      <Button
+        variant="unstyled"
         key={`${option.value}-${index}`}
         type="button"
         role="option"
@@ -167,14 +169,15 @@ export function Select({
             <path d="m5 12.5 4.5 4.5L19 7.5" />
           </svg>
         )}
-      </button>
+      </Button>
     );
   }
 
   return (
     <>
-      <button
+      <Button
         ref={triggerRef}
+        variant="unstyled"
         type="button"
         id={id}
         className={`ctrl-select ${open ? "is-open" : ""} ${className}`.trim()}
@@ -204,7 +207,7 @@ export function Select({
         >
           <path d="m6 9 6 6 6-6" />
         </svg>
-      </button>
+      </Button>
       <AnchoredPopover open={open} anchorRef={triggerRef} onClose={closeAndFocus}>
         <div
           ref={listRef}

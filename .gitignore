@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !.env.*.example
+.mimosa
 
 # Dependencies and package-manager caches
 **/node_modules/

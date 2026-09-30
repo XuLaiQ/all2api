@@ -61,6 +61,44 @@ def build_manifest(adapter_version: str = "0.2.0") -> ChannelManifest:
                 supports={"start": True, "poll": True, "complete": True, "cancel": True},
                 timeout_seconds=300,
             ),
+            ProvisionFlowSpec(
+                id="cookie-import",
+                kind="token_import",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "cookie": {
+                            "type": "string",
+                            "format": "textarea",
+                            "secret": True,
+                            "title": "Cookie",
+                            "description": (
+                                "从 doubao.com 浏览器开发者工具复制的完整 Cookie "
+                                "请求头，必须包含 sessionid。"
+                            ),
+                        },
+                        "accounts": {
+                            "type": "array",
+                            "title": "批量账号",
+                            "description": (
+                                "批量导入：每项为 Cookie 字符串，或包含 "
+                                "cookie/cookies 的 JSON（兼容会话导出文件）。"
+                            ),
+                        },
+                        "name": {"type": "string", "maxLength": 128, "title": "账号名称"},
+                        "priority": {"type": "integer", "title": "优先级"},
+                        "enabled": {"type": "boolean", "default": True, "title": "启用"},
+                    },
+                    # A single import carries either ``cookie`` or ``accounts``;
+                    # the provisioner validates that at least one is present.
+                    "required": [],
+                    # Compatible session exports carry envelope fields such as
+                    # params/type/version; unknown fields are ignored.
+                    "additionalProperties": True,
+                },
+                supports={"import": True},
+                timeout_seconds=300,
+            ),
         ),
         config_schema_version=2,
         config_schema={
@@ -113,4 +151,3 @@ def build_manifest(adapter_version: str = "0.2.0") -> ChannelManifest:
 
 
 DOUBAO_MANIFEST = build_manifest()
-

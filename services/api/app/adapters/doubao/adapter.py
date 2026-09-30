@@ -41,6 +41,7 @@ class DoubaoAdapter:
         http_client: Any | None = None,
         provisioner: DoubaoProvisioner | None = None,
         runtime: NativeHttpAdapter | None = None,
+        transport: Any | None = None,
     ) -> None:
         self.manifest = manifest or DOUBAO_MANIFEST
         self.provisioner = provisioner or DoubaoProvisioner(
@@ -49,7 +50,7 @@ class DoubaoAdapter:
             credential_store=credential_store or MemoryCredentialStore(),
             manifest=self.manifest,
         )
-        self.runtime = runtime or (
+        self.runtime = runtime or transport or (
             NativeHttpAdapter(
                 self.manifest,
                 base_url,
@@ -67,14 +68,23 @@ class DoubaoAdapter:
 
     async def health(self, context: Any = None) -> Mapping[str, Any]:
         worker_health = await maybe_await(self.provisioner.worker_health())
+        runtime_health: Mapping[str, Any] = {}
+        if self.runtime is not None:
+            health = getattr(self.runtime, "health", None)
+            if callable(health):
+                value = await maybe_await(health(context))
+                if isinstance(value, Mapping):
+                    runtime_health = dict(value)
         return {
             "status": (
                 "ok"
                 if worker_health.get("status") in {"ready", "not_configured"}
+                and runtime_health.get("status") not in {"no_credentials", "error"}
                 else "degraded"
             ),
             "channel": self.manifest.slug,
             "worker": worker_health,
+            "transport": runtime_health,
         }
 
     async def startup(self) -> None:
@@ -176,13 +186,6 @@ def create_adapter(
     browser_worker: BrowserWorker | None = None,
     credential_store: CredentialStore | None = None,
 ) -> DoubaoAdapter:
-    platform_key = getattr(settings, "doubao_platform_data_key", None)
-    if hasattr(platform_key, "get_secret_value"):
-        platform_key = platform_key.get_secret_value()
-    if not platform_key:
-        platform_key = getattr(settings, "doubao_api_key", "")
-        if hasattr(platform_key, "get_secret_value"):
-            platform_key = platform_key.get_secret_value()
     configured_worker = (
         browser_worker_from_settings(settings)
         if bool(getattr(settings, "doubao_browser_enabled", False))
@@ -193,7 +196,6 @@ def create_adapter(
         browser_worker=browser_worker or configured_worker,
         credential_store=credential_store,
         base_url=str(getattr(settings, "doubao_platform_base", "") or ""),
-        auth_key=str(platform_key or ""),
     )
 
 

@@ -36,7 +36,6 @@ class Settings(BaseSettings):
     # contacted by in-process adapters and must never point at a source
     # project's management port.
     wb_platform_base: str = "https://copilot.tencent.com"
-    wb_platform_data_key: SecretStr = SecretStr("")
     doubao_platform_base: str = "https://www.doubao.com"
     chatgpt_platform_base: str = "https://auth.openai.com"
     chatgpt_proxy: str = ""
@@ -62,7 +61,6 @@ class Settings(BaseSettings):
     wb_trace_secret: SecretStr = SecretStr("")
     doubao_upstream_base: str = ""
     doubao_api_key: SecretStr = SecretStr("")
-    doubao_public_data_plane: bool = False
     # Profile root owned by this service; it must not point at a source
     # project's data directory.
     doubao_profile_root: str = "./data/doubao/profiles"

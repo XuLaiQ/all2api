@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { ApiClientError, apiClient, onUnauthorized } from "../api/client";
+import { Button } from "./controls/Button";
 import { LoginPage } from "../features/auth/LoginPage";
 
 type AuthState =
@@ -99,9 +100,9 @@ export function AppShell() {
       <main className="auth-loading" role="alert">
         <p>管理服务暂不可用</p>
         <p>{auth.error}</p>
-        <button type="button" onClick={() => setAuth({ status: "checking" })}>
+        <Button variant="secondary" onClick={() => setAuth({ status: "checking" })}>
           重试
-        </button>
+        </Button>
       </main>
     );
   }
@@ -146,20 +147,20 @@ export function AppShell() {
             onChange={(event) => setSearch(event.target.value)}
           />
         </form>
-        <button
+        <Button
+          variant="icon"
           className="header-icon-button theme-toggle"
-          type="button"
           aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
           title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
           onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")}
         >
           {theme === "dark" ? "☀" : "☼"}
-        </button>
-        <button className="header-icon-button" type="button" aria-label="通知" title="通知">⌁</button>
+        </Button>
+        <Button variant="icon" className="header-icon-button" aria-label="通知" title="通知">⌁</Button>
         <div className="app-account">
           <span className="app-user-mark" aria-hidden="true">{auth.username.slice(0, 1).toUpperCase()}</span>
           <span>{auth.username}</span>
-          <button type="button" onClick={logout}>退出</button>
+          <Button variant="secondary" size="sm" onClick={logout}>退出</Button>
         </div>
       </header>
       <div className="app-layout">

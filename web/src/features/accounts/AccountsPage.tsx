@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { Check, Minus } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
+  batchDeleteAccounts,
   deleteAccount,
   fetchAccounts,
   refreshAccount,
@@ -30,6 +33,7 @@ const statusLabels: Record<string, string> = {
   disabled: "已停用",
   expired: "已过期",
   error: "异常",
+  no_entitlement: "无模型权益",
   unknown: "未知",
 };
 
@@ -43,7 +47,7 @@ function statusTone(status: string): string {
   if (status === "ready") return "status-success";
   if (status === "busy") return "status-info";
   if (status === "cooldown" || status === "limited" || status === "captcha") return "status-warning";
-  if (status === "needLogin" || status === "disabled" || status === "expired" || status === "error") return "status-danger";
+  if (status === "needLogin" || status === "disabled" || status === "expired" || status === "error" || status === "no_entitlement") return "status-danger";
   return "status-neutral";
 }
 
@@ -100,6 +104,8 @@ export function AccountsPage() {
   const [noticeMessage, setNoticeMessage] = useState("");
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [accountActionId, setAccountActionId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchBusy, setBatchBusy] = useState(false);
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -124,6 +130,7 @@ export function AccountsPage() {
     const controller = new AbortController();
     setLoading(true);
     setError("");
+    setSelectedIds([]);
     fetchAccounts(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
@@ -212,6 +219,44 @@ export function AccountsPage() {
     }
   }
 
+  function toggleSelected(accountId: string, selected: boolean) {
+    setSelectedIds((current) =>
+      selected
+        ? Array.from(new Set([...current, accountId]))
+        : current.filter((id) => id !== accountId),
+    );
+  }
+
+  const selectableIds = canManageAccounts ? rows.map((row) => row.id) : [];
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.includes(id));
+  const someSelected = selectableIds.some((id) => selectedIds.includes(id));
+
+  function toggleSelectAll(next: boolean) {
+    setSelectedIds(next ? selectableIds : []);
+  }
+
+  async function handleBatchDelete() {
+    if (selectedIds.length === 0 || batchBusy) return;
+    if (!window.confirm(`确定删除选中的 ${selectedIds.length} 个账号吗？加密凭据和本地 profile 会一并销毁。`)) return;
+    setBatchBusy(true);
+    setError("");
+    try {
+      const result = await batchDeleteAccounts(selectedIds);
+      const failedCount = result.failed.length;
+      setNoticeMessage(
+        failedCount
+          ? `已删除 ${result.deleted.length} 个账号，${failedCount} 个删除失败`
+          : `已删除 ${result.deleted.length} 个账号及其凭据`,
+      );
+      setSelectedIds([]);
+      setRetry((value) => value + 1);
+    } catch (cause: unknown) {
+      setError(cause instanceof ApiClientError ? cause.message : "批量删除账号失败");
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
   return (
     <main className="page-content data-page accounts-page">
       <div className="page-heading">
@@ -222,7 +267,7 @@ export function AccountsPage() {
         </div>
         {canManageAccounts && (
           <div className="page-actions">
-            <button className="secondary-action-button" type="button" onClick={() => setOnboardingOpen(true)}>新增账号</button>
+            <Button variant="secondary" onClick={() => setOnboardingOpen(true)}>新增账号</Button>
           </div>
         )}
       </div>
@@ -230,13 +275,13 @@ export function AccountsPage() {
       {error && (
         <div className="notice notice-error" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
+          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
         </div>
       )}
       {channelsError && (
         <div className="notice notice-error" role="alert">
           <span>{channelsError}。新增账号和渠道筛选暂时不可用。</span>
-          <button type="button" onClick={() => setChannelsRetry((value) => value + 1)}>重试</button>
+          <Button variant="secondary" size="sm" onClick={() => setChannelsRetry((value) => value + 1)}>重试</Button>
         </div>
       )}
       {noticeMessage && <div className="notice notice-info" role="status">{noticeMessage}</div>}
@@ -268,10 +313,32 @@ export function AccountsPage() {
         /></label>
         <label><span>名称</span><input value={draft.search} onChange={(event) => setDraft({ ...draft, search: event.target.value })} placeholder="搜索账号名称" /></label>
         <div className="log-filter-actions">
-          <button type="submit">筛选</button>
-          <button type="button" className="secondary-action" onClick={clearFilters}>清除</button>
+          <Button type="submit" variant="primary">筛选</Button>
+          <Button variant="secondary" onClick={clearFilters}>清除</Button>
         </div>
       </form>
+
+      {canManageAccounts && selectedIds.length > 0 && !loading && (
+        <div className="account-batch-bar" role="toolbar" aria-label="批量操作">
+          <span className="account-batch-count">已选择 {selectedIds.length} 个账号</span>
+          <div className="account-batch-actions">
+            <Button
+              variant="danger"
+              onClick={() => void handleBatchDelete()}
+              disabled={batchBusy}
+            >
+              {batchBusy ? "删除中…" : "批量删除"}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setSelectedIds([])}
+              disabled={batchBusy}
+            >
+              取消选择
+            </Button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <TableState live>正在读取本地账号快照…</TableState>
@@ -282,13 +349,28 @@ export function AccountsPage() {
         </TableState>
       ) : (
         <DataTable className={`account-table ${canManageAccounts ? "has-row-actions" : ""}`.trim()} ariaLabel="账号列表">
-            <thead><tr><th>账号</th><th>渠道</th><th>状态</th><th>额度说明</th><th>到期</th><th>快照时间</th>{canManageAccounts && <th>操作</th>}</tr></thead>
+            <thead><tr>
+              {canManageAccounts && (
+                <th className="account-select-col">
+                  <SelectCheckbox
+                    ariaLabel="全选本页账号"
+                    checked={allSelected}
+                    indeterminate={someSelected && !allSelected}
+                    disabled={batchBusy}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
+              )}
+              <th>账号</th><th>渠道</th><th>状态</th><th>额度说明</th><th>到期</th><th>快照时间</th>{canManageAccounts && <th>操作</th>}
+            </tr></thead>
             <tbody>{rows.map((account) => (
               <AccountRow
                 key={account.id}
                 account={account}
                 canManage={canManageAccounts}
-                busy={accountActionId === account.id}
+                busy={accountActionId === account.id || batchBusy}
+                selected={selectedIds.includes(account.id)}
+                onSelect={(next) => toggleSelected(account.id, next)}
                 onToggle={() => void handleAccountEnabled(account)}
                 onRefresh={() => void handleAccountRefresh(account)}
                 onDelete={() => void handleAccountDelete(account)}
@@ -319,10 +401,46 @@ export function AccountsPage() {
   );
 }
 
+function SelectCheckbox({
+  ariaLabel,
+  checked,
+  indeterminate = false,
+  disabled = false,
+  onChange,
+}: {
+  ariaLabel: string;
+  checked: boolean;
+  indeterminate?: boolean;
+  disabled?: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (inputRef.current) inputRef.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return (
+    <label className="control-checkbox is-bare">
+      <input
+        ref={inputRef}
+        type="checkbox"
+        aria-label={ariaLabel}
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+      />
+      <span className="control-checkbox-box" aria-hidden="true">
+        {indeterminate ? <Minus size={13} strokeWidth={3} /> : checked ? <Check size={13} strokeWidth={3} /> : null}
+      </span>
+    </label>
+  );
+}
+
 function AccountRow({
   account,
   canManage,
   busy,
+  selected,
+  onSelect,
   onToggle,
   onRefresh,
   onDelete,
@@ -330,6 +448,8 @@ function AccountRow({
   account: AccountRecord;
   canManage: boolean;
   busy: boolean;
+  selected: boolean;
+  onSelect: (checked: boolean) => void;
   onToggle: () => void;
   onRefresh: () => void;
   onDelete: () => void;
@@ -342,7 +462,17 @@ function AccountRow({
     ? runtime.breaker_until
     : runtime.state === "cooldown" ? runtime.cooldown_until : null;
   return (
-    <tr>
+    <tr className={selected ? "is-selected" : undefined}>
+      {canManage && (
+        <td className="account-select-col">
+          <SelectCheckbox
+            ariaLabel={`选择账号 ${displayName(account.name)}`}
+            checked={selected}
+            disabled={busy}
+            onChange={onSelect}
+          />
+        </td>
+      )}
       <td><span className="channel-name">{displayName(account.name)}</span><span className="secondary-text">{account.kind}{account.tier ? ` · ${account.tier}` : ""}</span></td>
       <td>{account.channel}</td>
       <td>
@@ -356,15 +486,15 @@ function AccountRow({
       <td>{formatTimestamp(account.expires_at)}</td>
       <td>{formatTimestamp(account.updated_at)}</td>
       {canManage && <td className="account-actions">
-        <button type="button" className="secondary-action compact-action" onClick={onToggle} disabled={busy}>
+        <Button variant="secondary" size="sm" className="compact-action" onClick={onToggle} disabled={busy}>
           {busy ? "处理中…" : account.enabled ? "停用" : "启用"}
-        </button>
-        <button type="button" className="secondary-action compact-action" onClick={onRefresh} disabled={busy || !account.enabled}>
+        </Button>
+        <Button variant="secondary" size="sm" className="compact-action" onClick={onRefresh} disabled={busy || !account.enabled}>
           刷新凭据
-        </button>
-        <button type="button" className="danger-action compact-action" onClick={onDelete} disabled={busy}>
+        </Button>
+        <Button variant="danger" size="sm" className="compact-action" onClick={onDelete} disabled={busy}>
           删除
-        </button>
+        </Button>
       </td>}
     </tr>
   );

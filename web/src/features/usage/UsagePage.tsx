@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiClientError } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
@@ -91,7 +92,7 @@ export function UsagePage() {
       {error && (
         <div className="notice notice-error" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button>
+          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
         </div>
       )}
 
@@ -126,7 +127,8 @@ export function UsagePage() {
           </div>
           <div className="segmented-tabs" role="tablist" aria-label="用量分组">
             {groups.map((item) => (
-              <button
+              <Button
+                variant="unstyled"
                 key={item.id}
                 type="button"
                 role="tab"
@@ -137,7 +139,7 @@ export function UsagePage() {
                 onClick={() => setGroup(item.id)}
               >
                 {item.label}
-              </button>
+              </Button>
             ))}
           </div>
         </div>

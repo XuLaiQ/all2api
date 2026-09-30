@@ -112,19 +112,6 @@ class WorkBuddyProvisioner:
         state_store: ProvisionStateStore | None = None,
         ttl_seconds: int | None = None,
     ) -> WorkBuddyProvisioner:
-        platform_key = getattr(settings, "wb_platform_data_key", None)
-        key = (
-            platform_key.get_secret_value()
-            if hasattr(platform_key, "get_secret_value")
-            else str(platform_key or "")
-        )
-        if not key:
-            legacy_key = getattr(settings, "wb_data_key", "")
-            key = (
-                legacy_key.get_secret_value()
-                if hasattr(legacy_key, "get_secret_value")
-                else str(legacy_key or "")
-            )
         # Native onboarding talks to WorkBuddy's public platform.  The
         # migration-era ``wb_upstream_base`` points at the old project's
         # management service and must never be used by this provisioner.
@@ -133,7 +120,7 @@ class WorkBuddyProvisioner:
             or "https://copilot.tencent.com"
         )
         return cls(
-            WorkBuddyClient(platform_base, data_key=key),
+            WorkBuddyClient(platform_base),
             credential_store=credential_store,
             state_store=state_store,
             ttl_seconds=(

@@ -73,6 +73,44 @@ class AccountLifecycleService:
         await self._provider_hook(metadata, "delete_account")
         return await self.store.destroy_account(account_id, actor=actor, ip=ip)
 
+    async def delete_many(
+        self,
+        account_ids: list[str],
+        *,
+        actor: str = "system",
+        ip: str = "",
+    ) -> dict[str, Any]:
+        """Delete several accounts best-effort and report per-id outcomes.
+
+        A missing or half-deleted account must never abort the remaining ids,
+        so every failure is captured in ``failed`` with a stable reason.
+        """
+
+        deleted: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        for account_id in account_ids:
+            try:
+                result = await self.delete(account_id, actor=actor, ip=ip)
+            except AccountNotFoundError:
+                failed.append({"id": str(account_id), "error": "not_found"})
+            except AccountLifecycleError as exc:
+                failed.append(
+                    {"id": str(account_id), "error": str(exc) or "provider_cleanup_failed"}
+                )
+            else:
+                deleted.append(
+                    {
+                        "id": str(result.get("id") or account_id),
+                        "channel": str(result.get("channel") or ""),
+                        "credentials_deleted": bool(result.get("credentials_deleted")),
+                    }
+                )
+        return {
+            "requested": len(account_ids),
+            "deleted": deleted,
+            "failed": failed,
+        }
+
     async def refresh(
         self,
         account_id: str,

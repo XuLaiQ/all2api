@@ -190,7 +190,7 @@ pnpm exec vite --host 127.0.0.1 --port 5173
 | 管理安全 | `A2A_SESSION_SECRET`、`A2A_ADMIN_USERNAME`、`A2A_ADMIN_PASSWORD`、`A2A_ADMIN_TOKEN` | 管理会话、初始管理员登录和自动化管理认证 |
 | 凭据安全 | `A2A_CREDENTIAL_MASTER_KEY` | 加密本地账号凭据；数据库恢复必须同时恢复此密钥 |
 | 网关引导 | `A2A_BOOTSTRAP_API_KEY`、`A2A_BOOTSTRAP_RPM` | 可选的配置注入型初始网关 Key 和速率限制 |
-| 原生渠道 | `A2A_WB_PLATFORM_BASE`、`A2A_WB_PLATFORM_DATA_KEY`、`A2A_DOUBAO_PLATFORM_BASE`、`A2A_CHATGPT_PLATFORM_BASE` | native adapter 使用的官方平台端点和非用户凭据配置 |
+| 原生渠道 | `A2A_WB_PLATFORM_BASE`、`A2A_DOUBAO_PLATFORM_BASE`、`A2A_CHATGPT_PLATFORM_BASE`、`A2A_CHATGPT_PROXY` | native adapter 使用的官方平台端点和网络代理；账号凭据来自本地账号池 |
 | 账号 session | `A2A_PROVISION_SESSION_TTL_SECONDS` | QR/OAuth provision session 的持久化 TTL |
 | Doubao worker | `A2A_DOUBAO_PROFILE_ROOT`、`A2A_DOUBAO_BROWSER_ENABLED` 及 `A2A_DOUBAO_BROWSER_*` | 本项目管理的 profile 和可选 Playwright worker |
 | 保留与跨域 | `A2A_LOG_RETENTION_DAYS`、`A2A_USAGE_RETENTION_DAYS`、`A2A_CORS_ORIGINS` | 日志/用量保留周期和浏览器来源 |

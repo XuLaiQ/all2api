@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
-from app.adapters.registry import AdapterSpec, get_registry
+from app.adapters.registry import AdapterSpec, data_plane_configured, get_registry
 from app.config import get_settings
 from app.infrastructure.db import database
 from app.infrastructure.security import require_admin_request
@@ -58,26 +58,12 @@ def _channel_enabled(channel: str, db_path: str) -> bool:
     return row is None or bool(row["enabled"])
 
 
-def _has_local_account(channel: str, db_path: str) -> bool:
-    with database(db_path) as conn:
-        return conn.execute(
-            """SELECT 1 FROM accounts
-            WHERE channel = ? AND enabled = 1
-                AND COALESCE(status_override, status) IN ('ready', 'busy', 'cooldown', 'limited')
-            LIMIT 1""",
-            (channel,),
-        ).fetchone() is not None
-
-
 def adapter_catalogue_enabled(adapter: AdapterSpec, db_path: str) -> bool:
-    """A public key or a stored native account can authenticate model reads."""
+    """A stored native account or compatibility adapter can read models."""
 
     if not _channel_enabled(adapter.slug, db_path):
         return False
-    return bool(adapter.models_configured) or bool(
-        getattr(adapter, "runtime", None) is not None
-        and _has_local_account(adapter.slug, db_path)
-    )
+    return data_plane_configured(adapter, db_path)
 
 
 def _as_int(value: Any) -> int | None:
@@ -144,6 +130,10 @@ def upsert_model_cache(
         for item in items
         if isinstance(item, Mapping) and item.get("id")
     ]
+    # An empty live response means "no entitlement" or an unavailable
+    # catalogue, not an authoritative instruction to erase known models.
+    if not rows:
+        return 0
     with database(path) as conn:
         if rows:
             conn.executemany(
@@ -172,8 +162,6 @@ def upsert_model_cache(
                 f"DELETE FROM models WHERE channel = ? AND id NOT IN ({placeholders})",
                 [channel, *current_ids],
             )
-        else:
-            conn.execute("DELETE FROM models WHERE channel = ?", (channel,))
     return len(rows)
 
 
@@ -207,6 +195,16 @@ async def refresh_models(user: AdminUser) -> dict:
             )
             continue
         items = [dict(item) for item in result if isinstance(item, Mapping) and item.get("id")]
+        if not items:
+            channels.append(
+                {
+                    "channel": adapter.slug,
+                    "status": "empty",
+                    "count": 0,
+                    "message": "上游没有返回可用模型，已保留现有模型目录",
+                }
+            )
+            continue
         count = upsert_model_cache(adapter.slug, items, db_path=db_path)
         total += count
         channels.append({"channel": adapter.slug, "status": "ok", "count": count})

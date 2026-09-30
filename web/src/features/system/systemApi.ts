@@ -9,7 +9,12 @@ export type SystemInfo = {
   schema_version: number;
   database: { present: boolean; bytes: number };
   runtime_state: { present: boolean; status: "ok" | "not_initialized" | "invalid" | "unreadable"; error?: string };
-  channels: Array<{ slug: string; models_configured: boolean; accounts_configured: boolean }>;
+  channels: Array<{
+    slug: string;
+    models_configured: boolean;
+    accounts_configured: boolean;
+    provision_configured: boolean;
+  }>;
 };
 
 export type StorageHealth = {

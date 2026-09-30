@@ -14,6 +14,7 @@ import type { Engine, ISourceOptions } from "@tsparticles/engine";
 import { loadSlim } from "@tsparticles/slim";
 import { ArrowUpRight, Eye, EyeOff, LockKeyhole, ShieldCheck, UserRound } from "lucide-react";
 import { ApiClientError, apiClient } from "../../api/client";
+import { Button } from "../../app/controls/Button";
 
 interface LoginPageProps {
   onAuthenticated: (username: string, role: "admin" | "viewer") => void;
@@ -306,7 +307,8 @@ export function LoginPage({ onAuthenticated, initialError }: LoginPageProps) {
                     onBlur={() => setCapsLock(false)}
                     onChange={(event) => setPassword(event.target.value)}
                   />
-                  <button
+                  <Button
+                    variant="unstyled"
                     className="auth-password-toggle"
                     type="button"
                     aria-label={showPassword ? "隐藏密码" : "显示密码"}
@@ -316,7 +318,7 @@ export function LoginPage({ onAuthenticated, initialError }: LoginPageProps) {
                     onClick={() => setShowPassword((value) => !value)}
                   >
                     <EyeToggle />
-                  </button>
+                  </Button>
                   {capsLock && (
                     <span className="auth-caps-hint" role="status">
                       大写锁定已开启
@@ -330,7 +332,8 @@ export function LoginPage({ onAuthenticated, initialError }: LoginPageProps) {
                   {error}
                 </p>
               )}
-              <button
+              <Button
+                variant="unstyled"
                 className="auth-submit"
                 disabled={submitting}
                 type="submit"
@@ -348,7 +351,7 @@ export function LoginPage({ onAuthenticated, initialError }: LoginPageProps) {
                   <ArrowIcon />
                 </span>
                 <span className="auth-submit-progress" aria-hidden="true" />
-              </button>
+              </Button>
             </form>
             <div className="auth-panel-foot">
               <span className="auth-foot-icon" aria-hidden="true">

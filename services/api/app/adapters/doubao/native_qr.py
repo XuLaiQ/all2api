@@ -19,6 +19,8 @@ from urllib.parse import urljoin
 
 import httpx
 
+from app.infrastructure.http import build_client
+
 from .browser import BrowserChallenge, BrowserEvent
 from .errors import BrowserWorkerError, ProvisionSessionExpiredError
 
@@ -139,8 +141,9 @@ class NativeDoubaoQrWorker:
         client = self._http_client
         owned = client is None
         if owned:
-            client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout, connect=min(10.0, self.timeout)),
+            client = build_client(
+                timeout=self.timeout,
+                connect_timeout=min(10.0, self.timeout),
             )
         try:
             current_url = url
