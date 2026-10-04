@@ -93,6 +93,9 @@ class NativeDoubaoQrWorker:
     def is_alive(self) -> bool:
         return True
 
+    def has_qr_session(self, session_id: str) -> bool:
+        return session_id in self._sessions
+
     async def health(self) -> Mapping[str, Any]:
         return {
             "status": "ready",

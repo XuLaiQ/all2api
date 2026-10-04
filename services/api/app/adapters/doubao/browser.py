@@ -60,6 +60,8 @@ class BrowserWorker(Protocol):
 
     def is_alive(self) -> bool: ...
 
+    def has_qr_session(self, session_id: str) -> bool: ...
+
     async def start_qr_login(self, account_id: str, profile_path: str) -> BrowserChallenge: ...
 
     async def restore_qr_login(
@@ -99,6 +101,10 @@ class NullBrowserWorker:
         }
 
     def is_alive(self) -> bool:
+        return False
+
+    def has_qr_session(self, session_id: str) -> bool:
+        del session_id
         return False
 
     async def start_qr_login(self, account_id: str, profile_path: str) -> BrowserChallenge:
@@ -163,6 +169,9 @@ class FakeBrowserWorker:
 
     def is_alive(self) -> bool:
         return True
+
+    def has_qr_session(self, session_id: str) -> bool:
+        return session_id in self.sessions
 
     async def start_qr_login(self, account_id: str, profile_path: str) -> BrowserChallenge:
         session_id = f"fake-{uuid.uuid4().hex}"
@@ -489,6 +498,9 @@ class PlaywrightBrowserWorker:
         """Synchronous watchdog hook matching common process supervisors."""
 
         return bool(self._started and self._is_connected())
+
+    def has_qr_session(self, session_id: str) -> bool:
+        return session_id in self._sessions
 
     async def stats(self) -> Mapping[str, Any]:
         """Alias for health used by operational metrics collectors."""

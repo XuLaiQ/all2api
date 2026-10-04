@@ -109,6 +109,10 @@ class _QrSession:
     credential_ref: str | None = None
     last_result: dict[str, Any] | None = None
     created_profile: bool = False
+    # The worker/browser context is intentionally not persisted.  A freshly
+    # loaded session must be restored once, while a live session must never be
+    # restored during ordinary polling because restoration may issue a new QR.
+    worker_session_ready: bool = False
 
 
 class DoubaoProfileStore:
@@ -551,8 +555,23 @@ class DoubaoProvisioner:
     async def _restore_worker_session(self, session: _QrSession) -> None:
         """Recreate the non-durable browser context after a process restart."""
 
+        has_session = getattr(self.browser_worker, "has_qr_session", None)
+        if callable(has_session):
+            try:
+                if bool(await maybe_await(has_session(session.session_id))):
+                    session.worker_session_ready = True
+                    return
+            except Exception:
+                # Let the restore call below produce the worker-specific
+                # error, rather than treating an unreliable probe as proof
+                # that the existing session is still usable.
+                pass
+        elif session.worker_session_ready:
+            return
+
         restore = getattr(self.browser_worker, "restore_qr_login", None)
         if not callable(restore):
+            session.worker_session_ready = True
             return
         profile = self.profile_store.get(session.account_id)
         challenge = await maybe_await(
@@ -564,6 +583,7 @@ class DoubaoProvisioner:
             )
         )
         if challenge is None:
+            session.worker_session_ready = True
             return
         qr_code = _value(challenge, "qr_code")
         if qr_code:
@@ -574,6 +594,7 @@ class DoubaoProvisioner:
         status = str(_value(challenge, "status", "waiting_scan") or "waiting_scan")
         if session.status not in {"succeeded", "cancelled", "expired", "failed", "captcha"}:
             session.status = status
+        session.worker_session_ready = True
         self._session_result(session)
         self._persist(session)
 
@@ -664,6 +685,7 @@ class DoubaoProvisioner:
         session.qr_code = str(_value(challenge, "qr_code", "") or "")
         session.qr_image_base64 = _qr_image_value(challenge)
         session.status = str(_value(challenge, "status", "waiting_scan") or "waiting_scan")
+        session.worker_session_ready = True
         if challenge_id != session.session_id:
             old_session_id = session.session_id
             self._sessions[challenge_id] = session

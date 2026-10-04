@@ -11,7 +11,7 @@ import pytest
 
 from app.adapters.chatgpt.oauth_client import PKCERequest
 from app.adapters.chatgpt.provisioner import ChatGPTProvisioner
-from app.adapters.doubao.browser import FakeBrowserWorker
+from app.adapters.doubao.browser import BrowserChallenge, FakeBrowserWorker
 from app.adapters.doubao.provisioner import DoubaoProvisioner
 from app.adapters.workbuddy.provisioner import WorkBuddyProvisioner
 from app.infrastructure.provision_state import ProvisionStateStore
@@ -57,6 +57,34 @@ class _WorkBuddyClient:
             "nickname": "Restart User",
             "access_token": "secret-access",
         }
+
+
+class _RegeneratingRestoreWorker(FakeBrowserWorker):
+    """Model a worker whose restore operation issues a fresh QR challenge."""
+
+    def __init__(self) -> None:
+        super().__init__(events=("waiting_scan", "scanned", "confirmed"))
+        self.restore_calls = 0
+
+    async def restore_qr_login(
+        self,
+        session_id: str,
+        account_id: str,
+        profile_path: str,
+        created_at: float,
+    ) -> BrowserChallenge:
+        self.restore_calls += 1
+        self.sessions[session_id] = {
+            "account_id": account_id,
+            "profile_path": profile_path,
+            "index": 0,
+            "created_at": created_at,
+        }
+        return BrowserChallenge(
+            session_id=session_id,
+            account_id=account_id,
+            qr_code=f"fake://doubao/qr/restored-{self.restore_calls}",
+        )
 
 
 @pytest.mark.asyncio
@@ -163,3 +191,20 @@ async def test_doubao_qr_session_state_survives_provisioner_restart(tmp_path: Pa
     assert await restarted.start("qr-login", {"account_id": "restart"}, "doubao-start") == started
     assert (await restarted.poll(started["session_id"]))["status"] == "waiting_scan"
     assert (await restarted.poll(started["session_id"]))["status"] == "scanned"
+
+
+@pytest.mark.asyncio
+async def test_doubao_poll_does_not_restore_a_live_qr_session(tmp_path: Path):
+    worker = _RegeneratingRestoreWorker()
+    provisioner = DoubaoProvisioner(
+        profile_root=tmp_path / "profiles",
+        browser_worker=worker,
+    )
+
+    started = await provisioner.start("qr-login", {"account_id": "stable-qr"}, "qr-start")
+    session_id = started["session_id"]
+
+    assert (await provisioner.poll(session_id))["status"] == "waiting_scan"
+    assert (await provisioner.poll(session_id))["status"] == "scanned"
+    assert (await provisioner.poll(session_id))["status"] == "succeeded"
+    assert worker.restore_calls == 0

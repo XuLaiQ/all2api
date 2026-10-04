@@ -1,14 +1,17 @@
 """Native Doubao chat transport.
 
-Doubao does not expose an OpenAI-compatible ``/v1`` data endpoint.  The web
-client's ``/chat/completion`` endpoint accepts the same authenticated cookie
-session used by QR login and returns SSE events.  This module owns that private
-protocol and converts it to the gateway's OpenAI response contract.
+Doubao does not expose an OpenAI-compatible ``/v1`` data endpoint. The stable
+web client path used by the reference implementation is
+``/alice/message/stream_call_bot`` with a base64-encoded event payload. This
+module owns that private protocol and converts it to the gateway contract.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -21,13 +24,16 @@ from app.infrastructure.http import build_client
 
 from .manifest import DOUBAO_MANIFEST
 
-DOUBAO_COMPLETION_PATH = "/chat/completion"
-DOUBAO_MODEL_ID = "doubao"
+DOUBAO_ALICE_COMPLETION_PATH = "/alice/message/stream_call_bot"
+DOUBAO_MODEL_CATALOGUE_PATH = "/alice/slot/action_bar_v3/brief_list"
+DOUBAO_CHAT_PAGE_PATH = "/chat/"
 DOUBAO_DEFAULT_BOT_ID = "7338286299411103781"
 DOUBAO_AID = "582478"
 DEFAULT_DEVICE_ID = "714003710229497"
 DEFAULT_WEB_ID = "7604137868021548590"
 DEFAULT_FP = "verify_mlcfw5f7_TPq0YmFD_NrsC_4RuQ_BJPg_M5W7i58I7wV0"
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.IGNORECASE | re.DOTALL)
+_THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 
 
 class DoubaoUpstreamError(RuntimeError):
@@ -50,6 +56,23 @@ class DoubaoUpstreamError(RuntimeError):
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _model_item_id(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _credential_scope(credentials: Mapping[str, Any]) -> str:
+    cookie = _cookie_header(credentials)
+    return hashlib.sha256(cookie.encode("utf-8")).hexdigest()[:24] if cookie else ""
+
+
+def _strip_think_markup(value: str) -> str:
+    """Remove provider reasoning markup from the user-visible answer."""
+
+    return _THINK_TAG_RE.sub("", _THINK_BLOCK_RE.sub("", value))
 
 
 def _credential_value(credentials: Mapping[str, Any], *names: str) -> str:
@@ -89,6 +112,152 @@ def _json_mapping(value: Any) -> Mapping[str, Any] | None:
             return None
         return parsed if isinstance(parsed, Mapping) else None
     return None
+
+
+def _router_data_from_html(value: str) -> Mapping[str, Any]:
+    """Decode the JSON state embedded in Doubao's server-rendered chat page."""
+
+    marker = "window._ROUTER_DATA ="
+    marker_index = value.find(marker)
+    if marker_index < 0:
+        raise DoubaoUpstreamError("豆包模型接口未返回路由配置", code="catalogue_invalid")
+    start = value.find("{", marker_index + len(marker))
+    if start < 0:
+        raise DoubaoUpstreamError("豆包模型接口返回格式不正确", code="catalogue_invalid")
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(value[start:])
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DoubaoUpstreamError("豆包模型接口返回了无效目录", code="catalogue_invalid") from exc
+    if not isinstance(parsed, Mapping):
+        raise DoubaoUpstreamError("豆包模型接口返回格式不正确", code="catalogue_invalid")
+    return parsed
+
+
+def _catalogue_root(value: Any) -> Mapping[str, Any] | None:
+    current = _json_mapping(value)
+    for _ in range(4):
+        if current is None:
+            return None
+        if any(
+            key in current
+            for key in ("modeSelectData", "mode_select_data", "menuConfV2", "mode_list")
+        ):
+            return current
+        nested = next(
+            (
+                current.get(key)
+                for key in (
+                    "data",
+                    "loaderData",
+                    "chat_layout",
+                    "actionBarBriefList",
+                    "modeSelectData",
+                    "menuConfV2",
+                )
+                if isinstance(current.get(key), Mapping)
+            ),
+            None,
+        )
+        if nested is None:
+            return current
+        current = nested
+    return current
+
+
+def _iter_model_items(
+    value: Any,
+    *,
+    mode_id: str = "",
+) -> list[tuple[Mapping[str, Any], str]]:
+    """Collect model entries from the versioned mode-select response shape."""
+
+    if isinstance(value, list):
+        result: list[tuple[Mapping[str, Any], str]] = []
+        for item in value:
+            result.extend(_iter_model_items(item, mode_id=mode_id))
+        return result
+    if not isinstance(value, Mapping):
+        return []
+
+    result = []
+    for key in ("mode_list", "modeList"):
+        mode_list = value.get(key)
+        if not isinstance(mode_list, Mapping):
+            continue
+        for mode in mode_list.get("item_list", []):
+            if not isinstance(mode, Mapping):
+                continue
+            next_mode_id = _model_item_id(mode.get("mode_id") or mode.get("modeId")) or mode_id
+            result.extend(_iter_model_items(mode, mode_id=next_mode_id))
+    for key in ("model_list", "modelList"):
+        model_list = value.get(key)
+        if not isinstance(model_list, Mapping):
+            continue
+        for item in model_list.get("item_list", []):
+            if isinstance(item, Mapping):
+                result.append((item, mode_id))
+
+    for key, child in value.items():
+        if key in {"mode_list", "modeList", "model_list", "modelList"}:
+            continue
+        result.extend(_iter_model_items(child, mode_id=mode_id))
+    return result
+
+
+def _catalogue_models(value: Any) -> list[dict[str, Any]]:
+    root = _catalogue_root(value)
+    if root is None:
+        return []
+    candidates: list[Any] = [root]
+    for key in ("modeSelectData", "mode_select_data", "menuConfV2", "menu_conf_v2"):
+        nested = root.get(key)
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+
+    models: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        for item, mode_id in _iter_model_items(candidate):
+            model_id = next(
+                (
+                    _model_item_id(item.get(key))
+                    for key in ("model_item_key", "modelItemKey", "model_id", "id", "item_id")
+                    if _model_item_id(item.get(key))
+                ),
+                "",
+            )
+            if not model_id or model_id in seen:
+                continue
+            subscription = item.get("subscribe_config")
+            if item.get("need_login") is True or (
+                isinstance(subscription, Mapping) and subscription.get("need_upgrade") is True
+            ):
+                continue
+            seen.add(model_id)
+            extra = item.get("model_extra_params")
+            model = {
+                "id": model_id,
+                "name": _text(item.get("name") or item.get("display_name") or model_id),
+                "object": "model",
+                "created": 0,
+                "owned_by": "doubao",
+                "kind": "chat",
+                "caps": ["chat"],
+                "model_item_key": model_id,
+                "mode_id": mode_id,
+            }
+            if isinstance(extra, Mapping):
+                model["model_extra_params"] = dict(extra)
+                window = extra.get("total_window_size") or extra.get("context_window")
+                try:
+                    if window is not None:
+                        model["context_window"] = int(window)
+                except (TypeError, ValueError):
+                    pass
+            if item.get("agent_mode") is not None:
+                model["agent_mode"] = item["agent_mode"]
+            models.append(model)
+    return models
 
 
 def _message_text(value: Any) -> str:
@@ -261,6 +430,7 @@ class DoubaoHttpTransport(NativeHttpAdapter):
             channel="doubao",
         )
         self.bot_id = _text(bot_id) or DOUBAO_DEFAULT_BOT_ID
+        self._model_specs: dict[str, dict[str, dict[str, Any]]] = {}
 
     def _client(self) -> tuple[httpx.AsyncClient, bool]:
         if self._http_client is not None:
@@ -333,12 +503,22 @@ class DoubaoHttpTransport(NativeHttpAdapter):
             headers["x-tt-passport-csrf-token"] = csrf
         return headers
 
-    @staticmethod
     def _completion_payload(
+        self,
         prompt: str,
         credentials: Mapping[str, Any],
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
+        model = _model_item_id(payload.get("model"))
+        if "/" in model:
+            model = model.rsplit("/", 1)[-1]
+        scope = _credential_scope(credentials)
+        model_spec = self._model_specs.get(scope, {}).get(model, {})
+        raw_deep_think = model_spec.get("need_deep_think")
+        try:
+            deep_think = int(raw_deep_think) if raw_deep_think is not None else 0
+        except (TypeError, ValueError):
+            deep_think = 0
         conversation_id = _text(payload.get("conversation_id"))
         need_create = not conversation_id
         now_ms = int(time.time() * 1000)
@@ -382,7 +562,7 @@ class DoubaoHttpTransport(NativeHttpAdapter):
                 "is_audio": False,
                 "answer_with_suggest": False,
                 "tts_switch": False,
-                "need_deep_think": 0,
+                "need_deep_think": deep_think,
                 "click_clear_context": False,
                 "from_suggest": False,
                 "is_regen": False,
@@ -411,7 +591,7 @@ class DoubaoHttpTransport(NativeHttpAdapter):
                 "message_storage_type": 0,
             },
             "ext": {
-                "use_deep_think": "0",
+                "use_deep_think": str(deep_think),
                 "fp": _credential_value(credentials, "fp") or DEFAULT_FP,
                 "collection_id": "",
                 "commerce_credit_config_enable": "0",
@@ -421,16 +601,39 @@ class DoubaoHttpTransport(NativeHttpAdapter):
 
     async def _upstream(self, payload: Mapping[str, Any], credentials: Mapping[str, Any]) -> bytes:
         prompt = _prompt_from_messages(payload.get("messages"))
-        body = self._completion_payload(prompt, credentials, payload)
+        message = {
+            "conversation_id": _text(payload.get("conversation_id")) or "0",
+            "section_id": _text(payload.get("section_id")) or "0",
+            "local_message_id": str(uuid.uuid4()),
+            "content_type": 1,
+            "content": json.dumps({"text": prompt}, ensure_ascii=False),
+            "reply_id": "",
+            "ext": {
+                "origin": self.base_url.rstrip("/"),
+                "stream": "1",
+                "answer_with_suggest": "1",
+                "browser_language": "zh-CN",
+            },
+            "local_conversation_id": "0",
+            "bot_id": _credential_value(credentials, "bot_id") or self.bot_id,
+            "meta_infos": [],
+        }
+        alice_payload = {
+            "event_type": 1,
+            "message": message,
+        }
+        encoded_payload = base64.b64encode(
+            json.dumps(alice_payload, ensure_ascii=False).encode("utf-8")
+        ).decode("ascii")
         client, owned = self._client()
-        url = f"{self.base_url.rstrip('/')}{DOUBAO_COMPLETION_PATH}"
+        url = f"{self.base_url.rstrip('/')}{DOUBAO_ALICE_COMPLETION_PATH}"
         try:
             try:
                 response = await client.post(
                     url,
                     params=self._query(credentials),
                     headers=self._headers(credentials),
-                    json=body,
+                    json={"payload": encoded_payload},
                 )
             except httpx.TimeoutException as exc:
                 raise DoubaoUpstreamError(
@@ -553,13 +756,83 @@ class DoubaoHttpTransport(NativeHttpAdapter):
         return chunks, conversation_id
 
     @staticmethod
+    def _parse_alice(raw: bytes) -> tuple[list[str], str]:
+        chunks: list[str] = []
+        conversation_id = ""
+        normalized = raw.decode("utf-8", "replace").replace("\r\n", "\n")
+        for frame in normalized.split("\n\n"):
+            if not frame.strip():
+                continue
+            event_name = ""
+            data_lines: list[str] = []
+            for line in frame.split("\n"):
+                if line.startswith("event:"):
+                    event_name = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip(" "))
+            data = "\n".join(data_lines).strip()
+            if not data or data == "[DONE]" or event_name == "done":
+                continue
+            try:
+                value = json.loads(data)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(value, Mapping):
+                continue
+            error = _error_from_event(value, event_name)
+            if error is not None:
+                code, message = error
+                status, mapped_code, retryable = _status_for_error(code)
+                raise DoubaoUpstreamError(
+                    message[:500], status_code=status, code=mapped_code, retryable=retryable
+                )
+            message = value.get("message")
+            if isinstance(message, str):
+                try:
+                    message = json.loads(message)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    message = None
+            if not isinstance(message, Mapping):
+                continue
+            conversation_id = conversation_id or _text(
+                message.get("conversation_id") or value.get("conversation_id")
+            )
+            if _text(message.get("reply_id")) == "0":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    content = {}
+            if not isinstance(content, Mapping):
+                continue
+            content_type = message.get("content_type")
+            if content_type in {1, 2001, 2003, 10000, 2008}:
+                text = _text(content.get("text"))
+                if text:
+                    chunks.append(text)
+        if not chunks:
+            raise DoubaoUpstreamError(
+                "豆包上游返回了空内容，可能是登录失效、风控拦截或平台协议已变化",
+                code="empty_response",
+            )
+        text = _strip_think_markup("".join(chunks))
+        if not text:
+            raise DoubaoUpstreamError(
+                "豆包上游只返回了推理标记，没有可显示的回答",
+                code="empty_response",
+            )
+        return [text], conversation_id
+
+    @staticmethod
     def _openai_response(model: str, chunks: list[str], conversation_id: str) -> dict[str, Any]:
         content = "".join(chunks)
         response: dict[str, Any] = {
             "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": model or DOUBAO_MODEL_ID,
+            "model": model,
             "choices": [
                 {
                     "index": 0,
@@ -586,7 +859,7 @@ class DoubaoHttpTransport(NativeHttpAdapter):
                 "id": response_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": model or DOUBAO_MODEL_ID,
+                "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
         ]
@@ -595,7 +868,7 @@ class DoubaoHttpTransport(NativeHttpAdapter):
                 "id": response_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": model or DOUBAO_MODEL_ID,
+                "model": model,
                 "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
             }
             for chunk in chunks
@@ -605,7 +878,7 @@ class DoubaoHttpTransport(NativeHttpAdapter):
             "id": response_id,
             "object": "chat.completion.chunk",
             "created": created,
-            "model": model or DOUBAO_MODEL_ID,
+            "model": model,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
         }
         if conversation_id:
@@ -620,15 +893,62 @@ class DoubaoHttpTransport(NativeHttpAdapter):
         credentials = await self._account_credentials(context)
         if not _cookie_header(credentials):
             return []
-        return [
-            {
-                "id": DOUBAO_MODEL_ID,
-                "object": "model",
-                "created": 0,
-                "owned_by": "doubao",
-                "caps": ["chat"],
-            }
-        ]
+        client, owned = self._client()
+        try:
+            headers = self._headers(credentials)
+            headers["Accept"] = "application/json"
+            response = await client.post(
+                self._url(DOUBAO_MODEL_CATALOGUE_PATH, credentials),
+                headers=headers,
+                json={
+                    "bot_id": _credential_value(credentials, "bot_id") or self.bot_id,
+                    "language_code": "zh",
+                },
+            )
+            raw = bytes(response.content)
+            if response.status_code >= 400:
+                self._raise_upstream_error(response.status_code, raw)
+            try:
+                payload = response.json()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = _router_data_from_html(raw.decode("utf-8", "replace"))
+        except httpx.TimeoutException as exc:
+            raise DoubaoUpstreamError(
+                "豆包模型目录请求超时，请稍后重试",
+                status_code=504,
+                code="upstream_timeout",
+                retryable=True,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise DoubaoUpstreamError(
+                "豆包模型目录连接失败，请检查网络或稍后重试",
+                status_code=502,
+                code="upstream_unavailable",
+                retryable=True,
+            ) from exc
+        finally:
+            if owned:
+                await client.aclose()
+
+        models = _catalogue_models(payload)
+        if not models:
+            client, owned = self._client()
+            try:
+                page_headers = self._headers(credentials)
+                page_headers["Accept"] = "text/html,application/xhtml+xml"
+                page = await client.get(
+                    self._url(DOUBAO_CHAT_PAGE_PATH, credentials),
+                    headers=page_headers,
+                )
+                if page.status_code >= 400:
+                    self._raise_upstream_error(page.status_code, bytes(page.content))
+                models = _catalogue_models(_router_data_from_html(page.text))
+            finally:
+                if owned:
+                    await client.aclose()
+        scope = _credential_scope(credentials)
+        self._model_specs[scope] = {str(item["id"]): dict(item) for item in models}
+        return models
 
     async def health(self, context: Any = None) -> Mapping[str, Any]:
         credentials = await self._account_credentials(context)
@@ -644,28 +964,28 @@ class DoubaoHttpTransport(NativeHttpAdapter):
         credentials = await self._account_credentials(account)
         try:
             raw = await self._upstream(payload, credentials)
-            chunks, conversation_id = self._parse(raw)
-            model = _text(payload.get("model")) or DOUBAO_MODEL_ID
+            chunks, conversation_id = self._parse_alice(raw)
+            model = _text(payload.get("model"))
             if bool(payload.get("stream")):
                 body = self._openai_stream(model, chunks, conversation_id)
                 return httpx.Response(
                     200,
                     headers={"content-type": "text/event-stream"},
                     content=body,
-                    request=httpx.Request("POST", f"{self.base_url}{DOUBAO_COMPLETION_PATH}"),
+                    request=httpx.Request("POST", f"{self.base_url}{DOUBAO_ALICE_COMPLETION_PATH}"),
                 )
             return httpx.Response(
                 200,
                 headers={"content-type": "application/json"},
                 json=self._openai_response(model, chunks, conversation_id),
-                request=httpx.Request("POST", f"{self.base_url}{DOUBAO_COMPLETION_PATH}"),
+                request=httpx.Request("POST", f"{self.base_url}{DOUBAO_ALICE_COMPLETION_PATH}"),
             )
         except DoubaoUpstreamError as exc:
             return httpx.Response(
                 exc.status_code,
                 headers={"content-type": "application/json"},
                 json={"error": {"message": exc.message, "code": exc.code}},
-                request=httpx.Request("POST", f"{self.base_url}{DOUBAO_COMPLETION_PATH}"),
+                request=httpx.Request("POST", f"{self.base_url}{DOUBAO_ALICE_COMPLETION_PATH}"),
             )
 
     async def open_stream(self, request: Any, account: Any = None) -> NativeStream:
@@ -713,9 +1033,10 @@ class DoubaoHttpTransport(NativeHttpAdapter):
 
 
 __all__ = [
-    "DOUBAO_COMPLETION_PATH",
+    "DOUBAO_CHAT_PAGE_PATH",
+    "DOUBAO_ALICE_COMPLETION_PATH",
     "DOUBAO_DEFAULT_BOT_ID",
-    "DOUBAO_MODEL_ID",
+    "DOUBAO_MODEL_CATALOGUE_PATH",
     "DoubaoHttpTransport",
     "DoubaoUpstreamError",
 ]

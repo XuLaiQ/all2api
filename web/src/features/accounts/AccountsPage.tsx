@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { Check, Minus } from "lucide-react";
+import { Check, Minus, Trash2 } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
@@ -22,6 +22,10 @@ import { AccountOnboardingDialog } from "./AccountOnboardingDialog";
 
 type FilterDraft = { channel: string; status: string; search: string };
 const emptyFilters: FilterDraft = { channel: "", status: "", search: "" };
+
+type PendingDelete =
+  | { kind: "single"; accountId: string; accountName: string }
+  | { kind: "batch"; accountIds: string[] };
 
 const statusLabels: Record<string, string> = {
   ready: "就绪",
@@ -106,6 +110,7 @@ export function AccountsPage() {
   const [accountActionId, setAccountActionId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchBusy, setBatchBusy] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -190,19 +195,13 @@ export function AccountsPage() {
     }
   }
 
-  async function handleAccountDelete(account: AccountRecord) {
-    if (!window.confirm(`确定删除账号“${displayName(account.name)}”吗？加密凭据和本地 profile 会一并销毁。`)) return;
-    setAccountActionId(account.id);
-    setError("");
-    try {
-      await deleteAccount(account.id);
-      setNoticeMessage("账号及其凭据已删除");
-      setRetry((value) => value + 1);
-    } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : "删除账号失败");
-    } finally {
-      setAccountActionId(null);
-    }
+  function requestAccountDelete(account: AccountRecord) {
+    if (accountActionId || batchBusy) return;
+    setPendingDelete({
+      kind: "single",
+      accountId: account.id,
+      accountName: displayName(account.name),
+    });
   }
 
   async function handleAccountRefresh(account: AccountRecord) {
@@ -235,25 +234,46 @@ export function AccountsPage() {
     setSelectedIds(next ? selectableIds : []);
   }
 
-  async function handleBatchDelete() {
+  function requestBatchDelete() {
     if (selectedIds.length === 0 || batchBusy) return;
-    if (!window.confirm(`确定删除选中的 ${selectedIds.length} 个账号吗？加密凭据和本地 profile 会一并销毁。`)) return;
-    setBatchBusy(true);
+    setPendingDelete({ kind: "batch", accountIds: [...selectedIds] });
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    const action = pendingDelete;
+    setPendingDelete(null);
     setError("");
+
+    if (action.kind === "batch") {
+      setBatchBusy(true);
+      try {
+        const result = await batchDeleteAccounts(action.accountIds);
+        const failedCount = result.failed.length;
+        setNoticeMessage(
+          failedCount
+            ? `已删除 ${result.deleted.length} 个账号，${failedCount} 个删除失败`
+            : `已删除 ${result.deleted.length} 个账号及其凭据`,
+        );
+        setSelectedIds([]);
+        setRetry((value) => value + 1);
+      } catch (cause: unknown) {
+        setError(cause instanceof ApiClientError ? cause.message : "批量删除账号失败");
+      } finally {
+        setBatchBusy(false);
+      }
+      return;
+    }
+
+    setAccountActionId(action.accountId);
     try {
-      const result = await batchDeleteAccounts(selectedIds);
-      const failedCount = result.failed.length;
-      setNoticeMessage(
-        failedCount
-          ? `已删除 ${result.deleted.length} 个账号，${failedCount} 个删除失败`
-          : `已删除 ${result.deleted.length} 个账号及其凭据`,
-      );
-      setSelectedIds([]);
+      await deleteAccount(action.accountId);
+      setNoticeMessage("账号及其凭据已删除");
       setRetry((value) => value + 1);
     } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : "批量删除账号失败");
+      setError(cause instanceof ApiClientError ? cause.message : "删除账号失败");
     } finally {
-      setBatchBusy(false);
+      setAccountActionId(null);
     }
   }
 
@@ -268,6 +288,15 @@ export function AccountsPage() {
         {canManageAccounts && (
           <div className="page-actions">
             <Button variant="secondary" onClick={() => setOnboardingOpen(true)}>新增账号</Button>
+            <Button
+              variant="danger"
+              onClick={requestBatchDelete}
+              disabled={batchBusy || selectedIds.length === 0}
+              title={selectedIds.length === 0 ? "请先选择账号" : `删除已选择的 ${selectedIds.length} 个账号`}
+            >
+              <Trash2 size={15} aria-hidden="true" />
+              {batchBusy ? "删除中…" : "批量删除"}
+            </Button>
           </div>
         )}
       </div>
@@ -318,28 +347,6 @@ export function AccountsPage() {
         </div>
       </form>
 
-      {canManageAccounts && selectedIds.length > 0 && !loading && (
-        <div className="account-batch-bar" role="toolbar" aria-label="批量操作">
-          <span className="account-batch-count">已选择 {selectedIds.length} 个账号</span>
-          <div className="account-batch-actions">
-            <Button
-              variant="danger"
-              onClick={() => void handleBatchDelete()}
-              disabled={batchBusy}
-            >
-              {batchBusy ? "删除中…" : "批量删除"}
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => setSelectedIds([])}
-              disabled={batchBusy}
-            >
-              取消选择
-            </Button>
-          </div>
-        </div>
-      )}
-
       {loading ? (
         <TableState live>正在读取本地账号快照…</TableState>
       ) : rows.length === 0 ? (
@@ -373,7 +380,7 @@ export function AccountsPage() {
                 onSelect={(next) => toggleSelected(account.id, next)}
                 onToggle={() => void handleAccountEnabled(account)}
                 onRefresh={() => void handleAccountRefresh(account)}
-                onDelete={() => void handleAccountDelete(account)}
+                onDelete={() => requestAccountDelete(account)}
               />
             ))}</tbody>
         </DataTable>
@@ -388,6 +395,36 @@ export function AccountsPage() {
         onCurrentChange={setPage}
         onSizeChange={(nextPageSize) => { setPage(1); setPageSize(nextPageSize); }}
       />
+      {pendingDelete && (
+        <div
+          className="account-delete-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !batchBusy && !accountActionId) setPendingDelete(null);
+          }}
+        >
+          <section className="account-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="account-delete-title">
+            <div className="account-delete-heading">
+              <div>
+                <span className="page-eyebrow">危险操作</span>
+                <h2 id="account-delete-title">确认删除账号</h2>
+              </div>
+            </div>
+            <p>
+              {pendingDelete.kind === "single"
+                ? `确定删除账号“${pendingDelete.accountName}”吗？`
+                : `确定删除已选择的 ${pendingDelete.accountIds.length} 个账号吗？`}
+            </p>
+            <p className="secondary-text">加密凭据和本地 profile 会一并销毁，此操作不可撤销。</p>
+            <div className="account-delete-actions">
+              <Button variant="secondary" onClick={() => setPendingDelete(null)} disabled={batchBusy || Boolean(accountActionId)}>取消</Button>
+              <Button variant="danger" onClick={() => void confirmDelete()} disabled={batchBusy || Boolean(accountActionId)}>
+                <Trash2 size={15} aria-hidden="true" />确认删除
+              </Button>
+            </div>
+          </section>
+        </div>
+      )}
       <AccountOnboardingDialog
         open={onboardingOpen}
         channels={channels}
@@ -414,24 +451,20 @@ function SelectCheckbox({
   disabled?: boolean;
   onChange: (checked: boolean) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (inputRef.current) inputRef.current.indeterminate = indeterminate;
-  }, [indeterminate]);
   return (
-    <label className="control-checkbox is-bare">
-      <input
-        ref={inputRef}
-        type="checkbox"
-        aria-label={ariaLabel}
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.currentTarget.checked)}
-      />
+    <button
+      type="button"
+      className="control-checkbox is-bare account-select-control"
+      role="checkbox"
+      aria-checked={indeterminate ? "mixed" : checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={() => onChange(indeterminate ? true : !checked)}
+    >
       <span className="control-checkbox-box" aria-hidden="true">
         {indeterminate ? <Minus size={13} strokeWidth={3} /> : checked ? <Check size={13} strokeWidth={3} /> : null}
       </span>
-    </label>
+    </button>
   );
 }
 

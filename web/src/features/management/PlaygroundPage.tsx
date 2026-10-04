@@ -35,9 +35,15 @@ type ChatMessage = {
 
 type PlaygroundTab = "skills" | "search" | "ppt" | "psd" | "chat";
 
+function stripThinkMarkup(value: string): string {
+  return value
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, "")
+    .replace(/<\/?think\b[^>]*>/gi, "");
+}
+
 function responseContent(value: unknown): string {
   if (typeof value === "string") {
-    const trimmed = value.trim();
+    const trimmed = stripThinkMarkup(value).trim();
     if (!trimmed) return "（空响应）";
     const isSse = trimmed.split(/\r?\n/).some((line) => line.trim().startsWith("data:"));
     if (isSse) {
@@ -93,7 +99,7 @@ function responseContent(value: unknown): string {
     }
   }
   for (const key of ["output", "data"]) {
-    if (typeof payload[key] === "string") return payload[key] as string;
+    if (typeof payload[key] === "string") return stripThinkMarkup(payload[key] as string);
     if (payload[key] !== undefined && (typeof payload[key] === "object" || Array.isArray(payload[key]))) {
       const text = responseContent(payload[key]);
       if (text !== "（空响应）") return text;
@@ -366,7 +372,7 @@ export function PlaygroundPage() {
       }, (event) => {
         if (event.type === "delta") {
           setMessages((current) => current.map((item) => item.id === assistantId
-            ? { ...item, content: item.content + event.content }
+            ? { ...item, content: item.content + stripThinkMarkup(event.content) }
             : item));
         } else if (event.type === "error") {
           streamError = event.message;
