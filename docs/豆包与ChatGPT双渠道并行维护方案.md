@@ -172,10 +172,10 @@ doubao_runtime = DoubaoTransportRouter(policy=..., browser=..., http=...)
 
 | # | 位置 | 现状 | 处置 |
 |---|---|---|---|
-| 1 | [native_runtime.py:214](services/api/app/adapters/native_runtime.py#L214) | `if self.channel == "wb"` 决定请求体加工 | **P1**：改为 `request_preparer` 注入（本节方案） |
-| 2 | [gateway.py:1081](services/api/app/routers/gateway.py#L1081) | wb 走 realm/模型过滤的候选选择，其他渠道走通用 `account_candidates` | **P1**：抽成 `channel_candidate_policy` port，由 wb 包提供实现；gateway 不再认识 wb |
-| 3 | [gateway.py:1151](services/api/app/routers/gateway.py#L1151) | wb 专用 `X-A2A-Trace-Secret` / `X-A2A-Account-ID` 请求头 | **P1**：抽成 `channel_request_headers` 钩子 |
-| 4–8 | [admin.py:1487](services/api/app/routers/admin.py#L1487)、[:1495](services/api/app/routers/admin.py#L1495)、[:1516](services/api/app/routers/admin.py#L1516)、[:1543](services/api/app/routers/admin.py#L1543)、[:1554](services/api/app/routers/admin.py#L1554) | legacy bridge 的 `/accounts/{channel}/onboarding/*` 分发 | **不属本方案**：归 P0-2 legacy 清理，随 bridge 退役整段删除；**明确不得作为新适配器模板**（规范 §3/§9 已有此要求） |
+| 1 | [native_runtime.py:214](../services/api/app/adapters/native_runtime.py#L214) | `if self.channel == "wb"` 决定请求体加工 | **P1**：改为 `request_preparer` 注入（本节方案） |
+| 2 | [gateway.py:1081](../services/api/app/routers/gateway.py#L1081) | wb 走 realm/模型过滤的候选选择，其他渠道走通用 `account_candidates` | **P1**：抽成 `channel_candidate_policy` port，由 wb 包提供实现；gateway 不再认识 wb |
+| 3 | [gateway.py:1151](../services/api/app/routers/gateway.py#L1151) | wb 专用 `X-A2A-Trace-Secret` / `X-A2A-Account-ID` 请求头 | **P1**：抽成 `channel_request_headers` 钩子 |
+| 4–8 | [admin.py:1487](../services/api/app/routers/admin.py#L1487)、[:1495](../services/api/app/routers/admin.py#L1495)、[:1516](../services/api/app/routers/admin.py#L1516)、[:1543](../services/api/app/routers/admin.py#L1543)、[:1554](../services/api/app/routers/admin.py#L1554) | legacy bridge 的 `/accounts/{channel}/onboarding/*` 分发 | **不属本方案**：归 P0-2 legacy 清理，随 bridge 退役整段删除；**明确不得作为新适配器模板**（规范 §3/§9 已有此要求） |
 
 即 P1 需要真正消除的是第 1–3 处（3 类共享层分支），第 4–8 处等 P0-2 收尾。若 P1 结束时第 4–8 处仍在，验收口径按"`app/routers`、`app/application`、`app/scheduler` 中除 `compat/legacy_bridge` 调用点外零命中"执行，并在[迁移矩阵](./三渠道代码迁移矩阵.md)登记剩余豁免与删除期限。
 
@@ -222,7 +222,7 @@ app/adapters/doubao/transport/
 
 **原理**：在账号已登录的持久化 profile 里执行页面内 fetch，让页面自己计算 `sign`/`a_bogus` 等签名，直接消费豆包返回的 SSE。
 
-**需要扩展的 port**（[doubao/browser.py:52](services/api/app/adapters/doubao/browser.py#L52) 的 `BrowserWorker` 目前只有 QR 相关方法）：
+**需要扩展的 port**（[doubao/browser.py:52](../services/api/app/adapters/doubao/browser.py#L52) 的 `BrowserWorker` 目前只有 QR 相关方法）：
 
 ```python
 class BrowserWorker(Protocol):
@@ -253,7 +253,7 @@ class BrowserWorker(Protocol):
 
 | 项 | 设计 |
 |---|---|
-| 依赖凭据 | 加密凭据里的 `Cookie` + `device_id` / `web_id` / `fp` / `msToken`（`native_qr.py` 已收集，见 [doubao/provisioner.py:837](services/api/app/adapters/doubao/provisioner.py#L837)） |
+| 依赖凭据 | 加密凭据里的 `Cookie` + `device_id` / `web_id` / `fp` / `msToken`（`native_qr.py` 已收集，见 [doubao/provisioner.py:837](../services/api/app/adapters/doubao/provisioner.py#L837)） |
 | 失效特征 | 豆包前端发版 → 签名算法漂移 → 上游返回 `protocol_error` / 空响应。**这是本通道的核心维护成本** |
 | 漂移检测 | 每小时（可配）用池里最健康的账号做一次最小 chat 探针，失败即写审计 + 降权告警 |
 | 并发上限 | `limits.concurrency` 配置（建议默认 4–8，受账号池规模约束） |
@@ -346,7 +346,7 @@ limits={
 
 ### 4.1 模型目录以账号权益为准（ADR-3）
 
-**现状缺陷**：[codex_client.py:34](services/api/app/adapters/chatgpt/codex_client.py#L34) 在 `/backend-api/models` 返回 403 时**静默**退回 `_FALLBACK_MODELS = ("gpt-5.5", "gpt-5.5-codex")`，而实测 E6/E7 证明这两个 ID 上游全部拒绝。结果是"账号就绪、请求必败"。
+**现状缺陷**：[codex_client.py:34](../services/api/app/adapters/chatgpt/codex_client.py#L34) 在 `/backend-api/models` 返回 403 时**静默**退回 `_FALLBACK_MODELS = ("gpt-5.5", "gpt-5.5-codex")`，而实测 E6/E7 证明这两个 ID 上游全部拒绝。结果是"账号就绪、请求必败"。
 
 **新增 `adapters/chatgpt/models.py`**：
 
@@ -364,23 +364,23 @@ async def entitlement(client, credentials) -> Entitlement:
 
 **两条硬规则**（写进契约测试）：
 
-1. **空目录不得写 `models` 表**。注意 [models.py:154](services/api/app/routers/models.py#L154) 的 `upsert_model_cache()` 在 `rows` 为空时会执行 `DELETE FROM models WHERE channel = ?` —— 如果"空目录"直接走刷新，反而会把已有目录清空。刷新接口需区分 `status: "ok" | "empty" | "failed"`，`empty` 不写库。
+1. **空目录不得写 `models` 表**。注意 [models.py:154](../services/api/app/routers/models.py#L154) 的 `upsert_model_cache()` 在 `rows` 为空时会执行 `DELETE FROM models WHERE channel = ?` —— 如果"空目录"直接走刷新，反而会把已有目录清空。刷新接口需区分 `status: "ok" | "empty" | "failed"`，`empty` 不写库。
 2. **兜底常量必须删除**。目录为空时正确做法是给账号打 `no_entitlement` 标记并展示，而不是编造模型 ID 让每次请求都吃 502。
 
 **账号状态**：`free` 号在池中显示"无 Codex 权益"；`account_candidates()` 选号时跳过，避免无效重试与账号冷却污染。
 
 ### 4.2 凭据类型显式化（ADR-4）
 
-`is_codex_credentials()`（[codex_client.py:69](services/api/app/adapters/chatgpt/codex_client.py#L69)）靠 `client_id / organization_id / id_token` 是否存在来猜。实测：文件导入（sub2api 导出）带这些标记 → 判对了；但 UI 的**「导入访问令牌」和「导入会话 JSON」只提取 `accessToken`** → 判定为 Web 令牌 → 走需要 sentinel/Turnstile 的网页通道 → 必然失败。
+`is_codex_credentials()`（[codex_client.py:69](../services/api/app/adapters/chatgpt/codex_client.py#L69)）靠 `client_id / organization_id / id_token` 是否存在来猜。实测：文件导入（sub2api 导出）带这些标记 → 判对了；但 UI 的**「导入访问令牌」和「导入会话 JSON」只提取 `accessToken`** → 判定为 Web 令牌 → 走需要 sentinel/Turnstile 的网页通道 → 必然失败。
 
 **改法**：
 
 1. 导入时**显式确定类型**（让用户选，或按 JWT 的 `iss` / `client_id` / `chatgpt_account_id` 自动判定），写入凭据 `auth_mode ∈ {codex, web}`；`is_codex_credentials()` 已优先读该字段，只需补导入侧。
-2. [chatgpt/mapper.py:117](services/api/app/adapters/chatgpt/mapper.py#L117) 不再把缺失的 `refresh_token` / `id_token` 写成 `""`（空字符串会被当成"已设置"，导致 [provisioner.py:536](services/api/app/adapters/chatgpt/provisioner.py#L536) 的刷新永远报 `no refresh token`）。
+2. [chatgpt/mapper.py:117](../services/api/app/adapters/chatgpt/mapper.py#L117) 不再把缺失的 `refresh_token` / `id_token` 写成 `""`（空字符串会被当成"已设置"，导致 [provisioner.py:536](../services/api/app/adapters/chatgpt/provisioner.py#L536) 的刷新永远报 `no refresh token`）。
 
 ### 4.3 健康探针分流
 
-实测 E10：`GET /backend-api/me` 对这些账号返回 **403 HTML**，而 `/backend-api/codex/*` 鉴权是通过的。当前 [chatgpt/manifest.py:15](services/api/app/adapters/chatgpt/manifest.py#L15) 的 `health_checks` 用的正是 `backend-api/me` → 健康检查恒失败，把"无该接口权限"误判成"渠道不可用"。
+实测 E10：`GET /backend-api/me` 对这些账号返回 **403 HTML**，而 `/backend-api/codex/*` 鉴权是通过的。当前 [chatgpt/manifest.py:15](../services/api/app/adapters/chatgpt/manifest.py#L15) 的 `health_checks` 用的正是 `backend-api/me` → 健康检查恒失败，把"无该接口权限"误判成"渠道不可用"。
 
 **改法**：按 `credential_kind` 分流探针（codex → Codex 路径；web → `backend-api/me`），并把 403 归类为 `no_entitlement`（展示层语义）而非 `upstream_unavailable`（调度层语义）。
 
@@ -390,18 +390,18 @@ async def entitlement(client, credentials) -> Entitlement:
 
 ### 5.1 状态回写
 
-[doubao/mapper.py:59](services/api/app/adapters/doubao/mapper.py#L59) 的状态单一来源是 `meta.json`，而该字段被 [doubao/provisioner.py:176](services/api/app/adapters/doubao/provisioner.py#L176) 写死 `needLogin` 之后**全项目无一处更新**。因此任何一次 re-upsert 都会把账号打回 `needLogin`，只有 `_apply_event()` / `import_accounts()` 里两处硬覆盖（`account["status"] = "ready"`）能救回来 —— 这是"两个来源打架"的结构性问题。
+[doubao/mapper.py:59](../services/api/app/adapters/doubao/mapper.py#L59) 的状态单一来源是 `meta.json`，而该字段被 [doubao/provisioner.py:176](../services/api/app/adapters/doubao/provisioner.py#L176) 写死 `needLogin` 之后**全项目无一处更新**。因此任何一次 re-upsert 都会把账号打回 `needLogin`，只有 `_apply_event()` / `import_accounts()` 里两处硬覆盖（`account["status"] = "ready"`）能救回来 —— 这是"两个来源打架"的结构性问题。
 
 **改法**：`DoubaoProfileStore` 增加 `set_status(account_id, status)`，在扫码成功、Cookie 导入成功时落盘 `ready`，让 `meta.json` 成为唯一事实源，删除那两处硬覆盖。
 
 ### 5.2 失败不留僵尸账号
 
-现状：[doubao/provisioner.py:549](services/api/app/adapters/doubao/provisioner.py#L549) 的 `qr-login` 先 `profile_store.create()` + `record_account(..., credential_ref="")`，**然后**才去请求二维码。二维码请求一失败就抛异常，但账号行已落库 → 永久僵尸行（实测 E11/E12：2 个 `needLogin` 行 + 0 条凭据）。
+现状：[doubao/provisioner.py:549](../services/api/app/adapters/doubao/provisioner.py#L549) 的 `qr-login` 先 `profile_store.create()` + `record_account(..., credential_ref="")`，**然后**才去请求二维码。二维码请求一失败就抛异常，但账号行已落库 → 永久僵尸行（实测 E11/E12：2 个 `needLogin` 行 + 0 条凭据）。
 
 **改法（二选一，推荐前者）**：
 
 - **先成功再落库**：拿到二维码 challenge 之后再 `record_account`；
-- **失败即回滚**：在 [provisioner.py:563](services/api/app/adapters/doubao/provisioner.py#L563) 已有的异常清理分支里，补上 profile 目录 + `accounts` 行的回滚（现有代码只清了 session）。
+- **失败即回滚**：在 [provisioner.py:563](../services/api/app/adapters/doubao/provisioner.py#L563) 已有的异常清理分支里，补上 profile 目录 + `accounts` 行的回滚（现有代码只清了 session）。
 
 **治理存量**：提供一次性清理入口（或手工删除那 2 行），并在账号池为 `needLogin` 行提供「继续授权 / 删除」动作，而不是让它无声占位。
 
@@ -409,7 +409,7 @@ async def entitlement(client, credentials) -> Entitlement:
 
 `app/domain/account.py` 目前不存在（只有 `domain/channel.py`、`domain/scope.py`），账号状态是散落的字符串（前端 `statusLabels` 里已有 `ready/busy/cooldown/limited/needLogin/captcha/disabled/expired/error/unknown`）。建议 P1 阶段补 `domain/account.py` 把状态收成枚举，避免"两个渠道各写各的字符串"导致调度器筛选条件漂移。
 
-> 参考：这次还发现**调试台与网关的选号条件不一致**（[admin.py:2086](services/api/app/routers/admin.py#L2086) 只排除 `disabled/expired`，而 [pool.py:138](services/api/app/scheduler/pool.py#L138) 只接受 `ready/busy/cooldown/limited`），导致调试台会选中没有任何凭据的 `needLogin` 号。收拢枚举时应把筛选条件抽成一个共用函数。
+> 参考：这次还发现**调试台与网关的选号条件不一致**（[admin.py:2086](../services/api/app/routers/admin.py#L2086) 只排除 `disabled/expired`，而 [pool.py:138](../services/api/app/scheduler/pool.py#L138) 只接受 `ready/busy/cooldown/limited`），导致调试台会选中没有任何凭据的 `needLogin` 号。收拢枚举时应把筛选条件抽成一个共用函数。
 
 ---
 
@@ -417,11 +417,11 @@ async def entitlement(client, credentials) -> Entitlement:
 
 | # | 问题 | 位置 | 改法 |
 |---|---|---|---|
-| F1 | 新增账号失败时**不显示原因**：只看 `status===success`，`result.errors` 从未渲染 | [AccountOnboardingDialog.tsx:520](web/src/features/accounts/AccountOnboardingDialog.tsx#L520) | 渲染 `added/skipped/refreshed/errors`；`status` 非成功时用红色告警逐条列出 |
-| F2 | 调试台模型下拉为空时输入框被静默禁用，用户以为"坏了" | [PlaygroundPage.tsx:267](web/src/features/management/PlaygroundPage.tsx#L267)、[:513](web/src/features/management/PlaygroundPage.tsx#L513) | 下拉为空时给出明确文案（"该渠道暂无可用模型，请先刷新模型目录"）+ 一键跳转 |
+| F1 | 新增账号失败时**不显示原因**：只看 `status===success`，`result.errors` 从未渲染 | [AccountOnboardingDialog.tsx:520](../web/src/features/accounts/AccountOnboardingDialog.tsx#L520) | 渲染 `added/skipped/refreshed/errors`；`status` 非成功时用红色告警逐条列出 |
+| F2 | 调试台模型下拉为空时输入框被静默禁用，用户以为"坏了" | [PlaygroundPage.tsx:267](../web/src/features/management/PlaygroundPage.tsx#L267)、[:513](../web/src/features/management/PlaygroundPage.tsx#L513) | 下拉为空时给出明确文案（"该渠道暂无可用模型，请先刷新模型目录"）+ 一键跳转 |
 | F3 | 渠道/账号页看不到"当前生效通道"与"账号可用通道" | AccountsPage / ChannelsPage | 展示 `ext.transports` 与 `transport_runtime_state` 摘要 |
 | F4 | 前端产物可能比源码旧（`provision_idempotency` 里有 3 条 `doubao/create-profile` 的前端幂等键，但当前源码已隐藏该 flow） | `web/dist` | 发布流程固定"改前端必重新构建"，并在部署文档写明校验方式 |
-| F5 | `create-profile` 已从 UI 隐藏，但串接 `qr-login` 的代码仍在 | [AccountOnboardingDialog.tsx:496](web/src/features/accounts/AccountOnboardingDialog.tsx#L496) | 明确取舍：删除死代码，或把 `create-profile` 作为高级入口重新暴露 |
+| F5 | `create-profile` 已从 UI 隐藏，但串接 `qr-login` 的代码仍在 | [AccountOnboardingDialog.tsx:496](../web/src/features/accounts/AccountOnboardingDialog.tsx#L496) | 明确取舍：删除死代码，或把 `create-profile` 作为高级入口重新暴露 |
 
 ---
 
