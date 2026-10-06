@@ -11,7 +11,6 @@ import base64
 import json
 import random
 import time
-from collections.abc import Callable
 from typing import Any
 
 
@@ -162,24 +161,6 @@ def solve_turnstile_token(dx: str, p: str) -> str | None:
         if isinstance(left_value, str) and isinstance(right_value, str):
             process_map[target] = f"{left_value}.{right_value}"
 
-    functions: dict[int, Callable[..., None]] = {
-        1: binary_xor,
-        2: assign,
-        3: emit,
-        5: concat,
-        6: join_path,
-        7: call_reflect,
-        8: copy_value,
-        14: parse_json,
-        15: stringify_json,
-        17: invoke,
-        18: decode_base64,
-        19: encode_base64,
-        20: invoke_if_equal,
-        21: lambda *_args: None,
-        23: invoke_if_present,
-        24: join_strings,
-    }
     process_map.update(
         {
             1: binary_xor,
@@ -202,7 +183,7 @@ def solve_turnstile_token(dx: str, p: str) -> str | None:
 
     for token in token_list:
         try:
-            fn = functions.get(int(token[0])) or process_map.get(token[0])
+            fn = process_map.get(token[0])
             if callable(fn):
                 fn(*token[1:])
         except Exception:

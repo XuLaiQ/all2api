@@ -17,8 +17,7 @@ from app.adapters.native_runtime import NativeHttpAdapter, NativeStream
 from app.infrastructure.http import build_client
 
 from .client import ChatGPTWebClient
-from .codex_client import ChatGPTCodexClient, is_codex_credentials
-from .errors import ChatGPTAuthError, ChatGPTError, ChatGPTInvalidRequestError, map_error
+from .errors import ChatGPTAuthError, ChatGPTError, map_error
 from .manifest import CHATGPT_MANIFEST
 
 _TIMEOUT = httpx.Timeout(15, connect=3)
@@ -191,14 +190,12 @@ class ChatGPTAdapter:
                 return dict(value)
         return {}
 
-    def _make_client(self, credentials: Mapping[str, Any]) -> ChatGPTWebClient | ChatGPTCodexClient:
+    def _make_client(self, credentials: Mapping[str, Any]) -> ChatGPTWebClient:
         if self.proxy_url and "proxy" not in credentials:
             credentials = {**credentials, "proxy": self.proxy_url}
-        if is_codex_credentials(credentials):
-            return ChatGPTCodexClient(credentials, base_url=self.web_base_url)
         return ChatGPTWebClient(credentials, base_url=self.web_base_url)
 
-    async def _client(self, account: Any) -> ChatGPTWebClient | ChatGPTCodexClient:
+    async def _client(self, account: Any) -> ChatGPTWebClient:
         credentials = await self._credentials(account)
         if not credentials:
             raise ChatGPTError("ChatGPT local account credentials are unavailable", status_code=401)
@@ -208,21 +205,7 @@ class ChatGPTAdapter:
         if isinstance(context, Mapping) and context.get("credentials"):
             try:
                 client = self._make_client(context["credentials"])
-                status_reader = getattr(client, "catalogue_status", None)
-                if isinstance(client, ChatGPTCodexClient) and callable(status_reader):
-                    catalogue = await status_reader()
-                    if str(catalogue.get("status")) == "empty":
-                        return {
-                            "status": "no_entitlement",
-                            "message": "该 ChatGPT 账号没有可用的 Codex 模型权益",
-                        }
-                    if str(catalogue.get("status")) != "ok":
-                        return {
-                            "status": "degraded",
-                            "message": str(catalogue.get("message") or "ChatGPT 模型目录读取失败"),
-                        }
-                else:
-                    await client.account_info()
+                await client.account_info()
             except Exception as exc:
                 return map_error(exc)
             return {"status": "ok"}
@@ -288,10 +271,6 @@ class ChatGPTAdapter:
         if capability == "search":
             payload = self._payload(request)
             client = await self._client(account)
-            if isinstance(client, ChatGPTCodexClient):
-                raise ChatGPTInvalidRequestError(
-                    "ChatGPT OAuth 账号暂不支持联网搜索调试，请改用 Web 会话账号"
-                )
             result = await client.search(
                 str(payload.get("prompt") or payload.get("query") or ""),
                 str(payload.get("model") or "auto"),
@@ -307,10 +286,6 @@ class ChatGPTAdapter:
         """Run the native Web search flow for the management playground."""
 
         client = await self._client(account)
-        if isinstance(client, ChatGPTCodexClient):
-            raise ChatGPTInvalidRequestError(
-                "ChatGPT OAuth 账号暂不支持联网搜索调试，请改用 Web 会话账号"
-            )
         return await client.search(prompt, model)
 
     async def generate_editable(
@@ -322,10 +297,6 @@ class ChatGPTAdapter:
         account: Any = None,
     ) -> Mapping[str, Any]:
         client = await self._client(account)
-        if isinstance(client, ChatGPTCodexClient):
-            raise ChatGPTInvalidRequestError(
-                "ChatGPT OAuth 账号暂不支持该生成能力，请改用 Web 会话账号"
-            )
         return await client.generate_editable(kind, prompt, images, model)
 
     async def invoke_stream(self, request: Any, account: Any = None):

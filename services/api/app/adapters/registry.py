@@ -367,6 +367,7 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
                 str(getattr(settings, "chatgpt_platform_base", "https://auth.openai.com") or "https://auth.openai.com").rstrip("/")
                 + "/oauth/token"
             ),
+            proxy=str(getattr(settings, "chatgpt_proxy", "") or ""),
         )
     )
     chatgpt_provisioner = ChatGPTProvisioner(

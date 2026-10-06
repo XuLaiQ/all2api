@@ -25,6 +25,7 @@ export type RecentUsagePoint = {
   completion_tokens: number;
   tokens: number;
   usage_reported_requests: number;
+  usage_estimated_requests: number;
   usage_unknown_requests: number;
   requests: number;
 };
@@ -36,6 +37,7 @@ export type RecentUsageSeries = {
   completion_tokens: number;
   tokens: number;
   usage_reported_requests: number;
+  usage_estimated_requests: number;
   usage_unknown_requests: number;
   requests: number;
   points: RecentUsagePoint[];
@@ -43,7 +45,7 @@ export type RecentUsageSeries = {
 
 export type RecentUsage = {
   metric: "tokens";
-  usage_semantics: "reported_tokens";
+  usage_semantics: "reported_or_estimated_tokens";
   bucket: "hour";
   from: string;
   to: string;

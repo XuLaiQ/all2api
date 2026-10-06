@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -40,6 +40,7 @@ from app.config import get_settings
 from app.infrastructure.credentials import AccountNotFoundError
 from app.infrastructure.db import SCHEMA_VERSION, database, resolve_db_path
 from app.infrastructure.security import require_admin_request, require_same_origin
+from app.infrastructure.token_usage import estimate_usage
 from app.scheduler.runtime import account_runtime_snapshot, channel_state, runtime_states
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(require_admin_request)])
@@ -638,7 +639,8 @@ def list_request_logs(
             f"""SELECT l.id, l.ts, l.request_id, l.channel, l.key_id,
             l.model, l.upstream_model,
             l.route_alias, l.fallback_depth, l.status, l.error_kind, l.stream,
-            l.prompt_tokens, l.completion_tokens, l.usage_reported, l.ttft_ms, l.latency_ms
+            l.prompt_tokens, l.completion_tokens, l.usage_reported, l.usage_kind,
+            l.ttft_ms, l.latency_ms
             FROM request_logs l {where}
             ORDER BY l.ts DESC, l.id DESC LIMIT ? OFFSET ?""",
             [*values, page_size, offset],
@@ -890,6 +892,7 @@ def get_storage_health() -> dict:
 
 @router.get("/metrics", tags=["system"])
 def get_metrics(days: int = Query(default=1, ge=1, le=366)) -> dict:
+    _backfill_playground_usage()
     start, end = _usage_period(days)
     now = int(time.time())
     start_ts = int(datetime.fromisoformat(f"{start}T00:00:00+00:00").timestamp())
@@ -975,6 +978,7 @@ def _usage_period(days: int) -> tuple[str, str]:
 
 
 def _usage_grouped(days: int, dimension: str) -> dict:
+    _backfill_playground_usage()
     start, end = _usage_period(days)
     groupings = {
         "daily": ("day", "day"),
@@ -985,7 +989,10 @@ def _usage_grouped(days: int, dimension: str) -> dict:
     columns, group_by = groupings[dimension]
     key_join = ""
     if dimension == "key":
-        columns = "u.key_id, COALESCE(k.name, '') AS key_name"
+        columns = (
+            "u.key_id, CASE WHEN u.key_id = 0 THEN '调试台' "
+            "ELSE COALESCE(k.name, '') END AS key_name"
+        )
         group_by = "u.key_id, k.name"
         key_join = "LEFT JOIN api_keys k ON k.id = u.key_id"
     with database(get_settings().db_path) as conn:
@@ -995,7 +1002,9 @@ def _usage_grouped(days: int, dimension: str) -> dict:
             SUM(u.completion_tokens) AS completion_tokens,
             SUM(u.prompt_tokens + u.completion_tokens) AS tokens,
             SUM(u.usage_reported_requests) AS usage_reported_requests,
-            SUM(u.requests - u.usage_reported_requests) AS usage_unknown_requests
+            SUM(u.usage_estimated_requests) AS usage_estimated_requests,
+            SUM(u.requests - u.usage_reported_requests - u.usage_estimated_requests)
+                AS usage_unknown_requests
             FROM usage_daily u {key_join}
             WHERE u.day BETWEEN ? AND ?
             GROUP BY {group_by} ORDER BY requests DESC""",
@@ -1007,6 +1016,7 @@ def _usage_grouped(days: int, dimension: str) -> dict:
 
 @router.get("/stats/summary", tags=["stats"])
 def get_usage_summary(days: int = Query(default=30, ge=1, le=366)) -> dict:
+    _backfill_playground_usage()
     start, end = _usage_period(days)
     with database(get_settings().db_path) as conn:
         row = conn.execute(
@@ -1015,7 +1025,9 @@ def get_usage_summary(days: int = Query(default=30, ge=1, le=366)) -> dict:
             COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
             COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
             COALESCE(SUM(usage_reported_requests), 0) AS usage_reported_requests,
-            COALESCE(SUM(requests - usage_reported_requests), 0) AS usage_unknown_requests
+            COALESCE(SUM(usage_estimated_requests), 0) AS usage_estimated_requests,
+            COALESCE(SUM(requests - usage_reported_requests - usage_estimated_requests), 0)
+                AS usage_unknown_requests
             FROM usage_daily WHERE day BETWEEN ? AND ?""",
             (start, end),
         ).fetchone()
@@ -1058,6 +1070,7 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
     returned alongside it for tooltip/detail consumers and for deterministic
     ranking when a provider did not report token counts.
     """
+    _backfill_playground_usage()
     now_ts = int(time.time())
     start_ts = now_ts - hours * 3600
     start_dt = datetime.fromtimestamp(start_ts, UTC)
@@ -1067,16 +1080,26 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
         top_rows = conn.execute(
             """SELECT l.key_id,
             COALESCE(k.name,
-                CASE WHEN l.key_id IS NULL THEN '匿名请求' ELSE 'Key #' || l.key_id END
+                CASE
+                    WHEN l.key_id = 0 THEN '调试台'
+                    WHEN l.key_id IS NULL THEN '匿名请求'
+                    ELSE 'Key #' || l.key_id
+                END
             ) AS key_name,
-            SUM(CASE WHEN l.usage_reported = 1 THEN l.prompt_tokens ELSE 0 END)
+            SUM(CASE WHEN l.usage_reported = 1 OR l.usage_kind = 'estimated'
+                THEN l.prompt_tokens ELSE 0 END)
                 AS total_prompt_tokens,
-            SUM(CASE WHEN l.usage_reported = 1 THEN l.completion_tokens ELSE 0 END)
+            SUM(CASE WHEN l.usage_reported = 1 OR l.usage_kind = 'estimated'
+                THEN l.completion_tokens ELSE 0 END)
                 AS total_completion_tokens,
-            SUM(CASE WHEN l.usage_reported = 1
+            SUM(CASE WHEN l.usage_reported = 1 OR l.usage_kind = 'estimated'
                 THEN l.prompt_tokens + l.completion_tokens ELSE 0 END) AS total_tokens,
             SUM(l.usage_reported) AS usage_reported_requests,
-            COUNT(*) - SUM(l.usage_reported) AS usage_unknown_requests,
+            SUM(CASE WHEN l.usage_kind = 'estimated' THEN 1 ELSE 0 END)
+                AS usage_estimated_requests,
+            COUNT(*) - SUM(l.usage_reported)
+                - SUM(CASE WHEN l.usage_kind = 'estimated' THEN 1 ELSE 0 END)
+                AS usage_unknown_requests,
             COUNT(*) AS total_requests
             FROM request_logs l
             LEFT JOIN api_keys k ON k.id = l.key_id
@@ -1091,7 +1114,7 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
         if not top_rows:
             return {
                 "metric": "tokens",
-                "usage_semantics": "reported_tokens",
+                "usage_semantics": "reported_or_estimated_tokens",
                 "bucket": "hour",
                 "from": start_dt.isoformat().replace("+00:00", "Z"),
                 "to": end_dt.isoformat().replace("+00:00", "Z"),
@@ -1110,14 +1133,20 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
         point_rows = conn.execute(
             f"""SELECT CAST(l.ts / 3600 AS INTEGER) * 3600 AS bucket_ts,
             l.key_id,
-            SUM(CASE WHEN l.usage_reported = 1 THEN l.prompt_tokens ELSE 0 END)
+            SUM(CASE WHEN l.usage_reported = 1 OR l.usage_kind = 'estimated'
+                THEN l.prompt_tokens ELSE 0 END)
                 AS prompt_tokens,
-            SUM(CASE WHEN l.usage_reported = 1 THEN l.completion_tokens ELSE 0 END)
+            SUM(CASE WHEN l.usage_reported = 1 OR l.usage_kind = 'estimated'
+                THEN l.completion_tokens ELSE 0 END)
                 AS completion_tokens,
-            SUM(CASE WHEN l.usage_reported = 1
+            SUM(CASE WHEN l.usage_reported = 1 OR l.usage_kind = 'estimated'
                 THEN l.prompt_tokens + l.completion_tokens ELSE 0 END) AS tokens,
             SUM(l.usage_reported) AS usage_reported_requests,
-            COUNT(*) - SUM(l.usage_reported) AS usage_unknown_requests,
+            SUM(CASE WHEN l.usage_kind = 'estimated' THEN 1 ELSE 0 END)
+                AS usage_estimated_requests,
+            COUNT(*) - SUM(l.usage_reported)
+                - SUM(CASE WHEN l.usage_kind = 'estimated' THEN 1 ELSE 0 END)
+                AS usage_unknown_requests,
             COUNT(*) AS requests
             FROM request_logs l
             WHERE l.ts >= ? AND l.ts < ?
@@ -1127,20 +1156,21 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
             key_values,
         ).fetchall()
 
-    points_by_key: dict[int | None, dict[int, tuple[int, int, int, int, int, int]]] = {}
+    points_by_key: dict[int | None, dict[int, tuple[int, int, int, int, int, int, int]]] = {}
     for row in point_rows:
         points_by_key.setdefault(row["key_id"], {})[int(row["bucket_ts"])] = (
             int(row["prompt_tokens"] or 0),
             int(row["completion_tokens"] or 0),
             int(row["tokens"] or 0),
             int(row["usage_reported_requests"] or 0),
+            int(row["usage_estimated_requests"] or 0),
             int(row["usage_unknown_requests"] or 0),
             int(row["requests"] or 0),
         )
     first_bucket_ts = (start_ts // 3600) * 3600
     last_bucket_ts = (now_ts // 3600) * 3600
     series = []
-    zero_point = (0, 0, 0, 0, 0, 0)
+    zero_point = (0, 0, 0, 0, 0, 0, 0)
     for row in top_rows:
         key_points = points_by_key.get(row["key_id"], {})
         points = []
@@ -1153,8 +1183,9 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
                     "completion_tokens": point[1],
                     "tokens": point[2],
                     "usage_reported_requests": point[3],
-                    "usage_unknown_requests": point[4],
-                    "requests": point[5],
+                    "usage_estimated_requests": point[4],
+                    "usage_unknown_requests": point[5],
+                    "requests": point[6],
                 }
             )
         series.append(
@@ -1165,6 +1196,7 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
                 "completion_tokens": int(row["total_completion_tokens"] or 0),
                 "tokens": int(row["total_tokens"] or 0),
                 "usage_reported_requests": int(row["usage_reported_requests"] or 0),
+                "usage_estimated_requests": int(row["usage_estimated_requests"] or 0),
                 "usage_unknown_requests": int(row["usage_unknown_requests"] or 0),
                 "requests": int(row["total_requests"] or 0),
                 "points": points,
@@ -1173,7 +1205,7 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
 
     return {
         "metric": "tokens",
-        "usage_semantics": "reported_tokens",
+        "usage_semantics": "reported_or_estimated_tokens",
         "bucket": "hour",
         "from": start_dt.isoformat().replace("+00:00", "Z"),
         "to": end_dt.isoformat().replace("+00:00", "Z"),
@@ -1183,6 +1215,7 @@ def _recent_usage(hours: int = 48, top: int = 12) -> dict:
 
 @router.get("/overview", tags=["overview"])
 def get_overview(days: int = Query(default=30, ge=1, le=366)) -> dict:
+    _backfill_playground_usage()
     start, end = _usage_period(days)
     with database(get_settings().db_path) as conn:
         conn.execute("BEGIN")
@@ -1192,7 +1225,9 @@ def get_overview(days: int = Query(default=30, ge=1, le=366)) -> dict:
             COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
             COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
             COALESCE(SUM(usage_reported_requests), 0) AS usage_reported_requests,
-            COALESCE(SUM(requests - usage_reported_requests), 0) AS usage_unknown_requests
+            COALESCE(SUM(usage_estimated_requests), 0) AS usage_estimated_requests,
+            COALESCE(SUM(requests - usage_reported_requests - usage_estimated_requests), 0)
+                AS usage_unknown_requests
             FROM usage_daily WHERE day BETWEEN ? AND ?""",
             (start, end),
         ).fetchone()
@@ -1202,7 +1237,9 @@ def get_overview(days: int = Query(default=30, ge=1, le=366)) -> dict:
             SUM(completion_tokens) AS completion_tokens,
             SUM(prompt_tokens + completion_tokens) AS tokens,
             SUM(usage_reported_requests) AS usage_reported_requests,
-            SUM(requests - usage_reported_requests) AS usage_unknown_requests
+            SUM(usage_estimated_requests) AS usage_estimated_requests,
+            SUM(requests - usage_reported_requests - usage_estimated_requests)
+                AS usage_unknown_requests
             FROM usage_daily WHERE day BETWEEN ? AND ?
             GROUP BY day ORDER BY day""",
             (start, end),
@@ -2157,6 +2194,8 @@ def _playground_message_payload(row) -> dict[str, object]:
         "content": str(row["content"]),
         "created_at": int(row["created_at"]),
     }
+    if str(row["model"] or ""):
+        payload["model"] = str(row["model"])
     if raw is not None:
         payload["raw"] = raw
     return payload
@@ -2263,6 +2302,113 @@ def _playground_event(payload: Mapping[str, object]) -> bytes:
     return f"data: {serialized}\n\n".encode()
 
 
+def _record_playground_usage(
+    conn,
+    *,
+    run_id: str,
+    channel: str,
+    model: str,
+    status: int,
+    started: int,
+    messages: list[Mapping[str, Any]],
+    completion: str,
+    stream: bool,
+    error: str | None = None,
+    recorded_at: int | None = None,
+) -> None:
+    """Record debug-console traffic in the same live usage tables as gateway traffic."""
+
+    usage_kind = "unknown"
+    prompt_tokens = completion_tokens = 0
+    if status < 400:
+        prompt_tokens, completion_tokens = estimate_usage(messages, completion, model)
+        usage_kind = "estimated"
+    now = int(recorded_at or time.time())
+    day = datetime.fromtimestamp(now, UTC).date().isoformat()
+    conn.execute(
+        """INSERT INTO request_logs
+        (ts, request_id, channel, key_id, model, upstream_model, status, error,
+         stream, prompt_tokens, completion_tokens, usage_reported, usage_kind, latency_ms)
+        VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+        (
+            now,
+            run_id,
+            channel,
+            model,
+            model,
+            status,
+            error,
+            int(stream),
+            prompt_tokens,
+            completion_tokens,
+            usage_kind,
+            max(0, (now - started) * 1000),
+        ),
+    )
+    conn.execute(
+        """INSERT INTO usage_daily
+        (day, channel, key_id, model, requests, prompt_tokens, completion_tokens,
+         usage_reported_requests, usage_estimated_requests)
+        VALUES (?, ?, 0, ?, 1, ?, ?, 0, ?)
+        ON CONFLICT(day, channel, key_id, model) DO UPDATE SET
+            requests=usage_daily.requests + 1,
+            prompt_tokens=usage_daily.prompt_tokens + excluded.prompt_tokens,
+            completion_tokens=usage_daily.completion_tokens + excluded.completion_tokens,
+            usage_estimated_requests=usage_daily.usage_estimated_requests +
+                excluded.usage_estimated_requests""",
+        (
+            day,
+            channel,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            int(usage_kind == "estimated"),
+        ),
+    )
+
+
+def _backfill_playground_usage() -> None:
+    """Bring historical debug runs into the live usage tables once."""
+
+    with database(get_settings().db_path) as conn:
+        runs = conn.execute(
+            """SELECT p.id, p.conversation_id, p.channel, p.model, p.status,
+            p.created_at, p.completed_at
+            FROM playground_runs p
+            LEFT JOIN request_logs l ON l.request_id = p.id
+            WHERE p.completed_at IS NOT NULL AND l.id IS NULL
+            ORDER BY p.created_at ASC"""
+        ).fetchall()
+        for run in runs:
+            messages = conn.execute(
+                """SELECT role, content FROM playground_messages
+                WHERE conversation_id = ? ORDER BY created_at ASC, id ASC""",
+                (str(run["conversation_id"] or ""),),
+            ).fetchall()
+            completion = next(
+                (
+                    str(item["content"] or "")
+                    for item in reversed(messages)
+                    if item["role"] == "assistant"
+                ),
+                "",
+            )
+            _record_playground_usage(
+                conn,
+                run_id=str(run["id"]),
+                channel=str(run["channel"]),
+                model=str(run["model"]),
+                status=200 if str(run["status"]) == "ok" else 502,
+                started=int(run["created_at"]),
+                messages=[
+                    {"role": str(item["role"]), "content": str(item["content"] or "")}
+                    for item in messages
+                ],
+                completion=completion,
+                stream=False,
+                error=None if str(run["status"]) == "ok" else "调试请求失败",
+                recorded_at=int(run["created_at"]),
+            )
 @router.get("/playground/conversations", tags=["playground"])
 def list_playground_conversations(
     user: AdminContext,
@@ -2315,7 +2461,20 @@ def get_playground_conversation(
         if conversation is None:
             raise HTTPException(status_code=404, detail="conversation not found")
         messages = conn.execute(
-            """SELECT id, role, content, raw_response, created_at
+            """SELECT id, role, content,
+            COALESCE(
+                NULLIF(model, ''),
+                (
+                    SELECT r.model FROM playground_runs r
+                    WHERE r.conversation_id = playground_messages.conversation_id
+                    ORDER BY ABS(
+                        r.created_at - CAST(playground_messages.created_at / 1000000000 AS INTEGER)
+                    ), r.created_at DESC
+                    LIMIT 1
+                ),
+                ''
+            ) AS model,
+            raw_response, created_at
             FROM playground_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC""",
             (conversation_id,),
         ).fetchall()
@@ -2470,9 +2629,15 @@ async def playground_chat(
         if last_message.role == "user":
             conn.execute(
                 """INSERT INTO playground_messages
-                (id, conversation_id, role, content, created_at)
-                VALUES (?, ?, 'user', ?, ?)""",
-                (f"msg_{uuid.uuid4().hex}", conversation_id, last_message.content, time.time_ns()),
+                (id, conversation_id, role, content, model, created_at)
+                VALUES (?, ?, 'user', ?, ?, ?)""",
+                (
+                    f"msg_{uuid.uuid4().hex}",
+                    conversation_id,
+                    last_message.content,
+                    model,
+                    time.time_ns(),
+                ),
             )
         conn.execute(
             "UPDATE playground_conversations SET updated_at=? WHERE id=?",
@@ -2640,12 +2805,13 @@ async def playground_chat(
                 if status == "ok":
                     conn.execute(
                         """INSERT INTO playground_messages
-                        (id, conversation_id, role, content, raw_response, created_at)
-                        VALUES (?, ?, 'assistant', ?, ?, ?)""",
+                        (id, conversation_id, role, content, model, raw_response, created_at)
+                        VALUES (?, ?, 'assistant', ?, ?, ?, ?)""",
                         (
                             f"msg_{uuid.uuid4().hex}",
                             conversation_id,
                             assistant_content,
+                            model,
                             raw_response,
                             time.time_ns(),
                         ),
@@ -2653,15 +2819,28 @@ async def playground_chat(
                 else:
                     conn.execute(
                         """INSERT INTO playground_messages
-                        (id, conversation_id, role, content, created_at)
-                        VALUES (?, ?, 'error', ?, ?)""",
+                        (id, conversation_id, role, content, model, created_at)
+                        VALUES (?, ?, 'error', ?, ?, ?)""",
                         (
                             f"msg_{uuid.uuid4().hex}",
                             conversation_id,
                             error_detail or "调试请求失败",
+                            model,
                             time.time_ns(),
                         ),
                     )
+                _record_playground_usage(
+                    conn,
+                    run_id=run_id,
+                    channel=body.channel,
+                    model=model,
+                    status=status_code,
+                    started=now,
+                    messages=[item.model_dump() for item in body.messages],
+                    completion=assistant_content,
+                    stream=True,
+                    error=error_detail or None,
+                )
                 conn.execute(
                     "UPDATE playground_conversations SET updated_at=? WHERE id=?",
                     (finished, conversation_id),
@@ -2722,15 +2901,28 @@ async def playground_chat(
             )
             conn.execute(
                 """INSERT INTO playground_messages
-                (id, conversation_id, role, content, raw_response, created_at)
-                VALUES (?, ?, 'assistant', ?, ?, ?)""",
+                (id, conversation_id, role, content, model, raw_response, created_at)
+                VALUES (?, ?, 'assistant', ?, ?, ?, ?)""",
                 (
                     f"msg_{uuid.uuid4().hex}",
                     conversation_id,
                     assistant_content,
+                    model,
                     raw_response,
                     time.time_ns(),
                 ),
+            )
+            _record_playground_usage(
+                conn,
+                run_id=run_id,
+                channel=body.channel,
+                model=model,
+                status=status_code,
+                started=now,
+                messages=[item.model_dump() for item in body.messages],
+                completion=assistant_content,
+                stream=False,
+                error=error_detail or None,
             )
             conn.execute(
                 "UPDATE playground_conversations SET updated_at=? WHERE id=?",
@@ -2772,9 +2964,21 @@ async def playground_chat(
             )
             conn.execute(
                 """INSERT INTO playground_messages
-                (id, conversation_id, role, content, created_at)
-                VALUES (?, ?, 'error', ?, ?)""",
-                (f"msg_{uuid.uuid4().hex}", conversation_id, detail, time.time_ns()),
+                (id, conversation_id, role, content, model, created_at)
+                VALUES (?, ?, 'error', ?, ?, ?)""",
+                (f"msg_{uuid.uuid4().hex}", conversation_id, detail, model, time.time_ns()),
+            )
+            _record_playground_usage(
+                conn,
+                run_id=run_id,
+                channel=body.channel,
+                model=model,
+                status=int(getattr(exc, "status_code", 502)),
+                started=now,
+                messages=[item.model_dump() for item in body.messages],
+                completion="",
+                stream=False,
+                error=detail,
             )
             conn.execute(
                 "UPDATE playground_conversations SET updated_at=? WHERE id=?",
@@ -2810,9 +3014,21 @@ async def playground_chat(
             failed_at = int(time.time())
             conn.execute(
                 """INSERT INTO playground_messages
-                (id, conversation_id, role, content, created_at)
-                VALUES (?, ?, 'error', ?, ?)""",
-                (f"msg_{uuid.uuid4().hex}", conversation_id, "调试请求失败", time.time_ns()),
+                (id, conversation_id, role, content, model, created_at)
+                VALUES (?, ?, 'error', ?, ?, ?)""",
+                (f"msg_{uuid.uuid4().hex}", conversation_id, "调试请求失败", model, time.time_ns()),
+            )
+            _record_playground_usage(
+                conn,
+                run_id=run_id,
+                channel=body.channel,
+                model=model,
+                status=502,
+                started=now,
+                messages=[item.model_dump() for item in body.messages],
+                completion="",
+                stream=False,
+                error="调试请求失败",
             )
             conn.execute(
                 "UPDATE playground_conversations SET updated_at=? WHERE id=?",

@@ -537,14 +537,6 @@ select {
   font-size: 12px;
 }
 
-.channel-runtime-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
 .overview-sections {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
@@ -1567,28 +1559,8 @@ select {
   opacity: 0.5;
 }
 
-.channel-table,
-.runtime-table {
+.channel-table {
   min-width: 860px;
-}
-
-.channel-select-button {
-  display: block;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.channel-select-button:focus-visible {
-  outline: 2px solid #26877c;
-  outline-offset: 3px;
-}
-
-.selected-row td {
-  background: #f1f8f6;
 }
 
 .channel-tags {
@@ -4012,25 +3984,6 @@ html {
   flex: 1 1 auto;
 }
 
-.channels-page.has-runtime > .table-wrap {
-  min-height: 160px;
-  flex: 0 1 42%;
-}
-
-.channels-page.has-runtime > .data-section {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 58%;
-  flex-direction: column;
-}
-
-.channels-page.has-runtime > .data-section > .table-wrap,
-.channels-page.has-runtime > .data-section > .table-state {
-  min-height: 140px;
-  max-height: none;
-  flex: 1 1 auto;
-}
-
 @media (max-width: 820px) {
   .page-stage-data .data-page {
     display: block;
@@ -4043,11 +3996,7 @@ html {
   .usage-page .usage-breakdown > .table-state,
   .system-page > .data-section:last-child,
   .system-page > .data-section:last-child > .table-wrap,
-  .system-page > .data-section:last-child > .table-state,
-  .channels-page.has-runtime > .table-wrap,
-  .channels-page.has-runtime > .data-section,
-  .channels-page.has-runtime > .data-section > .table-wrap,
-  .channels-page.has-runtime > .data-section > .table-state {
+  .system-page > .data-section:last-child > .table-state {
     min-height: 0;
     max-height: none;
     height: auto;

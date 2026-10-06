@@ -2,12 +2,12 @@ services:
   api:
     build:
       context: ./services/api
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8888 --reload
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "${API_PORT:-8888}:8888"
     environment:
       A2A_HOST: 0.0.0.0
-      A2A_PORT: "8080"
+      A2A_PORT: "8888"
       A2A_DB_PATH: /app/data/all2api.db
       A2A_STATE_PATH: /app/data/gateway/state.json
       A2A_LOG_RETENTION_DAYS: ${A2A_LOG_RETENTION_DAYS:-30}
@@ -36,7 +36,7 @@ services:
       A2A_LEGACY_DOUBAO_API_KEY: ${A2A_LEGACY_DOUBAO_API_KEY:-}
       A2A_LEGACY_CHATGPT_UPSTREAM_BASE: ${A2A_LEGACY_CHATGPT_UPSTREAM_BASE:-}
       A2A_LEGACY_CHATGPT_AUTH_KEY: ${A2A_LEGACY_CHATGPT_AUTH_KEY:-}
-      A2A_CORS_ORIGINS: http://localhost:${WEB_PORT:-5173},http://127.0.0.1:${WEB_PORT:-5173}
+      A2A_CORS_ORIGINS: http://localhost:${WEB_PORT:-5555},http://127.0.0.1:${WEB_PORT:-5555}
     volumes:
       - ./services/api:/app
       - api_venv:/app/.venv
@@ -46,7 +46,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/admin/api/healthz')"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/admin/api/healthz')"
       interval: 10s
       timeout: 3s
       retries: 5
@@ -55,11 +55,11 @@ services:
     image: node:24-bookworm-slim
     working_dir: /workspace
     command: >-
-      sh -lc "corepack enable && pnpm install && pnpm dev:web"
+      sh -lc "corepack enable && cd web && pnpm install && pnpm dev --host 0.0.0.0 --port 5555"
     ports:
-      - "${WEB_PORT:-5173}:5173"
+      - "${WEB_PORT:-5555}:5555"
     environment:
-      VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://api:8080}
+      VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://api:8888}
     volumes:
       - .:/workspace
       - workspace_node_modules:/workspace/node_modules

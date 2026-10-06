@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.domain.scope import decode_key_scope, model_allowed, scope_decision
 from app.infrastructure.db import database
 from app.infrastructure.security import require_api_key
+from app.infrastructure.token_usage import estimate_usage
 from app.protocols.anthropic import (
     AnthropicRequestError,
     anthropic_error_payload,
@@ -113,6 +114,7 @@ def _log_request(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     usage_reported: bool = False,
+    usage_kind: str = "unknown",
     stream: bool = False,
     account_id: str | None = None,
     channel: str = "wb",
@@ -126,8 +128,8 @@ def _log_request(
             """INSERT INTO request_logs
             (ts, request_id, channel, key_id, account_id, model, upstream_model,
              route_alias, fallback_depth, status, error_kind, error, stream, prompt_tokens,
-             completion_tokens, usage_reported, latency_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             completion_tokens, usage_reported, usage_kind, latency_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 ts,
                 request_id,
@@ -145,20 +147,23 @@ def _log_request(
                 prompt_tokens,
                 completion_tokens,
                 int(usage_reported),
+                usage_kind,
                 int((time.monotonic() - started) * 1000),
             ),
         )
         conn.execute(
             """INSERT INTO usage_daily
-            (day, channel, key_id, model, requests, prompt_tokens, completion_tokens,
-             usage_reported_requests)
-            VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+             (day, channel, key_id, model, requests, prompt_tokens, completion_tokens,
+             usage_reported_requests, usage_estimated_requests)
+             VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
             ON CONFLICT(day, channel, key_id, model) DO UPDATE SET
                 requests=usage_daily.requests + excluded.requests,
                 prompt_tokens=usage_daily.prompt_tokens + excluded.prompt_tokens,
                 completion_tokens=usage_daily.completion_tokens + excluded.completion_tokens,
-                usage_reported_requests=usage_daily.usage_reported_requests +
-                    excluded.usage_reported_requests""",
+                 usage_reported_requests=usage_daily.usage_reported_requests +
+                     excluded.usage_reported_requests,
+                 usage_estimated_requests=usage_daily.usage_estimated_requests +
+                     excluded.usage_estimated_requests""",
             (
                 day,
                 channel,
@@ -167,6 +172,7 @@ def _log_request(
                 prompt_tokens,
                 completion_tokens,
                 int(usage_reported),
+                int(usage_kind == "estimated"),
             ),
         )
 
@@ -527,8 +533,31 @@ def _token_usage(usage: Any) -> tuple[int, int] | None:
     return prompt, completion
 
 
-def _extract_sse_usage(buffer: bytes) -> tuple[bytes, tuple[int, int] | None]:
+def _response_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_response_text(item) for item in value)
+    if not isinstance(value, Mapping):
+        return ""
+    choices = value.get("choices")
+    if isinstance(choices, list):
+        text = "".join(_response_text(item) for item in choices)
+        if text:
+            return text
+    for key in ("message", "delta", "content", "text", "output_text"):
+        if key in value:
+            text = _response_text(value[key])
+            if text:
+                return text
+    return ""
+
+
+def _extract_sse_usage(
+    buffer: bytes,
+) -> tuple[bytes, tuple[int, int] | None, str]:
     latest_usage = None
+    text_parts: list[str] = []
     while True:
         boundaries = [
             (index, separator)
@@ -536,7 +565,7 @@ def _extract_sse_usage(buffer: bytes) -> tuple[bytes, tuple[int, int] | None]:
             if (index := buffer.find(separator)) >= 0
         ]
         if not boundaries:
-            return buffer, latest_usage
+            return buffer, latest_usage, "".join(text_parts)
         index, separator = min(boundaries, key=lambda item: item[0])
         frame, buffer = buffer[:index], buffer[index + len(separator) :]
         data_lines = []
@@ -553,6 +582,8 @@ def _extract_sse_usage(buffer: bytes) -> tuple[bytes, tuple[int, int] | None]:
         usage = _token_usage(payload.get("usage")) if isinstance(payload, dict) else None
         if usage is not None:
             latest_usage = usage
+        if isinstance(payload, Mapping):
+            text_parts.append(_response_text(payload))
         if len(buffer) > 1_048_576:
             buffer = b""
 
@@ -1426,9 +1457,11 @@ async def _dispatch_chat(
         account_id = _selected_account_id(request_id, upstream.headers, target)
         prompt_tokens = completion_tokens = 0
         usage_reported = False
+        usage_kind = "unknown"
+        completion_text = ""
 
         async def chunks():
-            nonlocal prompt_tokens, completion_tokens, usage_reported
+            nonlocal prompt_tokens, completion_tokens, usage_reported, usage_kind, completion_text
             status = upstream.status_code
             stream_error = "upstream request failed" if status >= 400 else None
             stream_error_kind = None
@@ -1437,10 +1470,12 @@ async def _dispatch_chat(
             try:
                 async for chunk in upstream.aiter_bytes():
                     pending += chunk
-                    pending, usage = _extract_sse_usage(pending)
+                    pending, usage, text = _extract_sse_usage(pending)
+                    completion_text += text
                     if usage is not None:
                         prompt_tokens, completion_tokens = usage
                         usage_reported = True
+                        usage_kind = "reported"
                     if len(pending) > 1_048_576:
                         pending = b""
                     yield chunk
@@ -1483,6 +1518,13 @@ async def _dispatch_chat(
                             record_success(adapter.slug, target["upstream_model"])
                             if account_id is not None:
                                 record_account_success(account_id)
+                        if status < 400 and not usage_reported:
+                            prompt_tokens, completion_tokens = estimate_usage(
+                                payload.get("messages"),
+                                completion_text,
+                                target["upstream_model"],
+                            )
+                            usage_kind = "estimated"
                         log_request(
                             request_id=request_id,
                             key_id=key["id"],
@@ -1497,6 +1539,7 @@ async def _dispatch_chat(
                             prompt_tokens=prompt_tokens,
                             completion_tokens=completion_tokens,
                             usage_reported=usage_reported,
+                            usage_kind=usage_kind,
                             fallback_depth=fallback_depth,
                         )
 
@@ -1718,6 +1761,7 @@ async def _dispatch_chat(
     account_id = _selected_account_id(request_id, upstream.headers, selected_target)
     prompt_tokens = completion_tokens = 0
     usage_reported = False
+    usage_kind = "unknown"
     content_type = upstream.headers.get("content-type", "application/json")
     try:
         if "text/event-stream" in content_type.lower():
@@ -1730,6 +1774,14 @@ async def _dispatch_chat(
         if token_usage is not None:
             prompt_tokens, completion_tokens = token_usage
             usage_reported = True
+            usage_kind = "reported"
+        elif upstream.status_code < 400:
+            prompt_tokens, completion_tokens = estimate_usage(
+                payload.get("messages"),
+                _response_text(result),
+                selected_target["upstream_model"],
+            )
+            usage_kind = "estimated"
         response_body = json.dumps(result, ensure_ascii=False).encode()
     except (ValueError, TypeError):
         response_body = upstream.content
@@ -1746,6 +1798,7 @@ async def _dispatch_chat(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         usage_reported=usage_reported,
+        usage_kind=usage_kind,
         account_id=account_id,
         fallback_depth=fallback_depth,
     )

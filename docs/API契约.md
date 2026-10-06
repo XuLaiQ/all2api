@@ -19,7 +19,7 @@ POST https://gateway.example/v1/chat/completions
 Authorization: Bearer sk-a2a-<gateway-issued-key>
 ```
 
-默认本地地址为 `http://localhost:8080/v1`。模型 ID 使用：
+默认本地地址为 `http://localhost:8888/v1`。模型 ID 使用：
 
 - `<channel>/<upstream_model>`：直接指定渠道，例如 `wb/cn:glm-5.2`；
 - 管理面配置的 alias：展开为有序渠道/模型目标，并在每个目标上重新执行 Key scope 校验。

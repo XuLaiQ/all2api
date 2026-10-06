@@ -11,7 +11,7 @@ import { Select } from "../../app/controls/Select";
 import { fetchAccounts, type AccountRecord } from "../accounts/accountsApi";
 import { fetchRoutes, type ModelRoute } from "../routes/routesApi";
 import { fetchSystemMetrics, type SystemMetrics } from "../system/systemApi";
-import type { ChannelOverview, UsageRow } from "../usage/usageApi";
+import { fetchUsageRows, type ChannelOverview, type UsageRow } from "../usage/usageApi";
 import { fetchOverview, type OverviewPayload, type RecentUsageSeries } from "./overviewApi";
 
 echarts.use([LineChart, PieChart, GridComponent, TooltipComponent, CanvasRenderer]);
@@ -47,6 +47,19 @@ function formatLatency(value: number | null): string {
 function shortDay(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", timeZone: "UTC" })
     .format(new Date(`${value}T00:00:00Z`));
+}
+
+function usageDateRange(days: number): { from: string; to: string } {
+  const today = new Date();
+  const from = new Date(Date.UTC(
+    today.getUTCFullYear(),
+    today.getUTCMonth(),
+    today.getUTCDate() - days + 1,
+  ));
+  return {
+    from: from.toISOString().slice(0, 10),
+    to: today.toISOString().slice(0, 10),
+  };
 }
 
 type DailyPoint = { day: string; requests: number };
@@ -101,6 +114,14 @@ const chartPalette = {
   grid: "rgba(129, 146, 165, .20)",
 };
 
+const chartAnimation = {
+  animation: true,
+  animationDuration: 360,
+  animationDurationUpdate: 520,
+  animationEasing: "cubicOut" as const,
+  animationEasingUpdate: "cubicInOut" as const,
+};
+
 const trendRangeOptions = [
   { value: "7", label: "7d" },
   { value: "30", label: "30d" },
@@ -151,38 +172,78 @@ export function OverviewPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [trendDays, setTrendDays] = useState(30);
-  const [retry, setRetry] = useState(0);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [trendRefreshTick, setTrendRefreshTick] = useState(0);
+  const [dailyData, setDailyData] = useState<{ data: UsageRow[]; from: string; to: string } | null>(null);
+  const trendDaysRef = useRef(trendDays);
+  const initialLoadedRef = useRef(false);
+  trendDaysRef.current = trendDays;
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setError("");
+    const initialLoad = !initialLoadedRef.current;
+    const requestedTrendDays = trendDaysRef.current;
+    if (initialLoad) setLoading(true);
     Promise.allSettled([
-      fetchOverview(trendDays, controller.signal),
+      fetchOverview(requestedTrendDays, controller.signal),
       fetchSystemMetrics(1, controller.signal),
       fetchAccounts(1, {}, controller.signal),
       fetchRoutes(controller.signal),
     ]).then(([overviewResult, metricsResult, accountsResult, routesResult]) => {
-      if (overviewResult.status === "fulfilled") setOverview(overviewResult.value);
+      if (overviewResult.status === "fulfilled") {
+        setOverview(overviewResult.value);
+        if (requestedTrendDays === trendDaysRef.current) setDailyData(overviewResult.value.daily);
+      }
       if (metricsResult.status === "fulfilled") setMetrics(metricsResult.value);
       if (accountsResult.status === "fulfilled") setAccounts(accountsResult.value.data);
       if (routesResult.status === "fulfilled") setRoutes(routesResult.value.slice(0, 3));
       const failed = [overviewResult, metricsResult, accountsResult, routesResult]
         .find((result) => result.status === "rejected");
-      if (failed?.status === "rejected" && !controller.signal.aborted) {
+      if (failed?.status === "rejected" && !controller.signal.aborted && initialLoad) {
         setError(failed.reason instanceof ApiClientError ? failed.reason.message : "部分运行数据暂时无法读取");
       }
     }).finally(() => {
-      if (!controller.signal.aborted) setLoading(false);
+      if (!controller.signal.aborted && initialLoad) {
+        initialLoadedRef.current = true;
+        setLoading(false);
+        if (requestedTrendDays !== trendDaysRef.current) {
+          setTrendRefreshTick((value) => value + 1);
+        }
+      }
     });
     return () => controller.abort();
-  }, [retry, trendDays]);
+  }, [refreshTick]);
 
-  const summary = overview?.summary;
+  useEffect(() => {
+    if (!initialLoadedRef.current) return undefined;
+    const controller = new AbortController();
+    const requestedTrendDays = trendDays;
+    const range = usageDateRange(trendDays);
+    fetchUsageRows("daily", requestedTrendDays, controller.signal)
+      .then((result) => {
+        if (requestedTrendDays !== trendDaysRef.current) return;
+        setDailyData({ data: result, from: range.from, to: range.to });
+      })
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(cause instanceof ApiClientError ? cause.message : "读取请求趋势失败");
+        }
+      });
+    return () => controller.abort();
+  }, [trendDays, trendRefreshTick]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setRefreshTick((value) => value + 1), 10_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const channels = overview?.channels ?? [];
-  const dailySeries = useMemo(() => summary ? fillUtcDays(overview?.daily.data ?? [], summary.from, summary.to) : [], [overview, summary]);
+  const dailySeries = useMemo(
+    () => dailyData ? fillUtcDays(dailyData.data, dailyData.from, dailyData.to) : [],
+    [dailyData],
+  );
   const dailyChartOption = useMemo<EChartsCoreOption>(() => ({
-    animation: false,
+    ...chartAnimation,
     grid: { left: 8, right: 8, top: 14, bottom: 28, containLabel: false },
     tooltip: { trigger: "axis", valueFormatter: (value: string | number) => `${number(Number(value))} 次` },
     xAxis: {
@@ -219,7 +280,7 @@ export function OverviewPage() {
       ? [Date.parse(recentUsage.from), Date.parse(recentUsage.to)] as const
       : [Date.now() - 48 * 60 * 60 * 1000, Date.now()] as const;
     return {
-      animation: false,
+      ...chartAnimation,
       color: ["#3d82f6", "#6f9ff2", "#4f9b7a", "#b7863c", "#b86167", "#7b6fd2"],
       legend: {
         show: recentSeries.length > 0,
@@ -291,7 +352,7 @@ export function OverviewPage() {
     [accounts],
   );
   const accountChartOption = useMemo<EChartsCoreOption>(() => ({
-    animation: false,
+    ...chartAnimation,
     tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
     series: [{
       type: "pie",
@@ -324,7 +385,7 @@ export function OverviewPage() {
         </div>
       </div>
 
-      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button></div>}
+      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setRefreshTick((value) => value + 1)}>重试</Button></div>}
 
       <section className="overview-kpis" aria-label="运行指标">
         <Metric label="今日请求" value={loading ? "…" : number(metrics?.requests ?? 0)} icon="↗" meta={metrics ? "最近 24h" : "等待数据"} />
@@ -419,7 +480,7 @@ export function OverviewPage() {
           )}
         </div>
       </section>
-      <div className="footer-note">All2API · 统一入口 :8080 · Neumorphism × Data Ops UI</div>
+      <div className="footer-note">All2API · 统一入口 :8888 · Neumorphism × Data Ops UI</div>
     </main>
   );
 }

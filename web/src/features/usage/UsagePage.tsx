@@ -58,7 +58,11 @@ export function UsagePage() {
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
-    return () => controller.abort();
+    const timer = window.setInterval(() => setRetry((value) => value + 1), 10_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
   }, [days, group, retry]);
 
   const maxRequests = useMemo(
@@ -98,14 +102,17 @@ export function UsagePage() {
 
       <section className="metric-grid" aria-label="统计汇总">
         <Metric label="请求数" value={loading ? "…" : number(summary?.requests ?? 0)} />
-        <Metric label="已报告 Token" value={loading ? "…" : number(summary?.tokens ?? 0)} />
+        <Metric label="统计 Token" value={loading ? "…" : number(summary?.tokens ?? 0)} />
         <Metric label="Prompt Token" value={loading ? "…" : number(summary?.prompt_tokens ?? 0)} />
         <Metric label="Completion Token" value={loading ? "…" : number(summary?.completion_tokens ?? 0)} />
       </section>
 
       <div className="usage-status-row">
         <span className="status-label status-success">
-          用量已报告 {number(summary?.usage_reported_requests ?? 0)} 次
+          上游已报告 {number(summary?.usage_reported_requests ?? 0)} 次
+        </span>
+        <span className="status-label status-info">
+          本地估算 {number(summary?.usage_estimated_requests ?? 0)} 次
         </span>
         <span className="status-label status-warning">
           用量未知 {number(summary?.usage_unknown_requests ?? 0)} 次
@@ -186,7 +193,7 @@ function UsageHeader({ group }: { group: UsageGroup }) {
       <th>Prompt</th>
       <th>Completion</th>
       <th>Tokens</th>
-      <th>已报告 / 未知</th>
+      <th>已报告 / 估算 / 未知</th>
     </tr>
   );
 }
@@ -230,7 +237,7 @@ function UsageTableRow({
       <td>{number(row.prompt_tokens)}</td>
       <td>{number(row.completion_tokens)}</td>
       <td>{number(row.tokens)}</td>
-      <td>{number(row.usage_reported_requests)} / {number(row.usage_unknown_requests)}</td>
+      <td>{number(row.usage_reported_requests)} / {number(row.usage_estimated_requests)} / {number(row.usage_unknown_requests)}</td>
     </tr>
   );
 }

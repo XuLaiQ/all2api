@@ -45,6 +45,7 @@ export type PlaygroundConversationMessage = {
   id: string;
   role: "user" | "assistant" | "error";
   content: string;
+  model?: string;
   raw?: unknown;
   created_at: number;
 };

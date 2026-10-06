@@ -40,6 +40,7 @@ _IMPORT_CREDENTIAL_FIELDS = {
     "oai_device_id",
     "oai_session_id",
     "impersonate",
+    "auth_mode",
     "sec-ch-ua",
     "sec-ch-ua-mobile",
     "sec-ch-ua-platform",
@@ -124,14 +125,7 @@ def token_record(item: Any) -> dict[str, Any]:
         credentials["refresh_token"] = refresh
     if identity:
         credentials["id_token"] = identity
-    credentials["auth_mode"] = (
-        "codex"
-        if any(
-            credentials.get(key)
-            for key in ("client_id", "organization_id", "id_token", "chatgpt_account_id")
-        )
-        else "web"
-    )
+    credentials["auth_mode"] = "web"
     return {
         "fingerprint": token_fingerprint(access),
         "credential_ref": credential_reference(access),

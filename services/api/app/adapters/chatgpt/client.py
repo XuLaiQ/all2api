@@ -45,6 +45,7 @@ class ChatGPTWebClient:
         self.credentials = dict(credentials or {})
         self.base_url = str(base_url or CHATGPT_WEB_BASE_URL).rstrip("/")
         self._http_client = http_client
+        self._owned_http_client: Any | None = None
         self.timeout = float(timeout)
         self.connect_timeout = float(connect_timeout)
         self._fingerprint = (
@@ -79,25 +80,30 @@ class ChatGPTWebClient:
         self,
         path: str,
         *,
-        accept: str = "application/json",
+        accept: str | None = None,
         extra: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         headers = {
-            "Accept": accept,
-            "Content-Type": "application/json",
             "Authorization": f"Bearer {self.access_token}",
             "Origin": self.base_url,
             "Referer": f"{self.base_url}/",
             "User-Agent": self.user_agent,
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
             "Priority": "u=1, i",
             "Sec-Ch-Ua": '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Ch-Ua-Arch": '"x86"',
             "Sec-Ch-Ua-Bitness": '"64"',
+            "Sec-Ch-Ua-Full-Version": '"143.0.3650.96"',
+            "Sec-Ch-Ua-Full-Version-List": (
+                '"Microsoft Edge";v="143.0.3650.96", "Chromium";v="143.0.7499.147", '
+                '"Not A(Brand";v="24.0.0.0"'
+            ),
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Model": '""',
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Ch-Ua-Platform-Version": '"19.0.0"',
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -109,6 +115,8 @@ class ChatGPTWebClient:
             "X-OpenAI-Target-Path": path,
             "X-OpenAI-Target-Route": path.split("?", 1)[0],
         }
+        if accept:
+            headers["Accept"] = accept
         fingerprint_headers = {
             "Sec-Ch-Ua": "sec-ch-ua",
             "Sec-Ch-Ua-Mobile": "sec-ch-ua-mobile",
@@ -140,7 +148,17 @@ class ChatGPTWebClient:
         proxy = str(self.credentials.get("proxy") or "").strip()
         if proxy:
             options["proxy"] = proxy
-        return curl_requests.AsyncSession(**options), True
+        if self._owned_http_client is None:
+            self._owned_http_client = curl_requests.AsyncSession(**options)
+        # Keep the same curl session through bootstrap, sentinel requirements,
+        # and conversation so cookies and challenge state survive the flow.
+        return self._owned_http_client, False
+
+    async def aclose(self) -> None:
+        if self._owned_http_client is not None:
+            client = self._owned_http_client
+            self._owned_http_client = None
+            await self._close_resource(client)
 
     @staticmethod
     async def _close_resource(resource: Any) -> None:
@@ -165,7 +183,14 @@ class ChatGPTWebClient:
                 response = await client.request(
                     method,
                     f"{self.base_url}{path}",
-                    headers=self._headers(path),
+                    headers=self._headers(
+                        path,
+                        extra=(
+                            {"Content-Type": "application/json"}
+                            if json_body is not None
+                            else None
+                        ),
+                    ),
                     json=dict(json_body) if json_body is not None else None,
                     timeout=timeout,
                 )
@@ -204,7 +229,10 @@ class ChatGPTWebClient:
             raise ChatGPTProtocolError()
 
     async def account_info(self) -> Mapping[str, Any]:
-        return await self._json_request("GET", "/backend-api/me")
+        try:
+            return await self._json_request("GET", "/backend-api/me")
+        finally:
+            await self.aclose()
 
     async def _bootstrap(self) -> None:
         client, owned = self._client()
@@ -380,38 +408,41 @@ class ChatGPTWebClient:
         raise ChatGPTProtocolError("ChatGPT proof-of-work could not be solved")
 
     async def list_models(self) -> list[dict[str, Any]]:
-        await self._bootstrap()
-        payload = await self._json_request(
-            "GET", "/backend-api/models?history_and_training_disabled=false"
-        )
-        values = payload.get("models")
-        if not isinstance(values, list):
-            values = payload.get("data")
-        if not isinstance(values, list):
-            raise ChatGPTProtocolError("ChatGPT model response has no model list")
-        result: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for value in values:
-            if not isinstance(value, Mapping):
-                continue
-            model_id = str(value.get("slug") or value.get("id") or "").strip()
-            if not model_id or model_id in seen:
-                continue
-            seen.add(model_id)
-            result.append(
-                {
-                    "id": model_id,
-                    "object": "model",
-                    "created": int(value.get("created") or 0),
-                    "owned_by": str(value.get("owned_by") or "chatgpt"),
-                    "permission": [],
-                    "root": model_id,
-                    "parent": None,
-                }
+        try:
+            await self._bootstrap()
+            payload = await self._json_request(
+                "GET", "/backend-api/models?history_and_training_disabled=false"
             )
-        if not result:
-            raise ChatGPTProtocolError("ChatGPT returned an empty model list")
-        return result
+            values = payload.get("models")
+            if not isinstance(values, list):
+                values = payload.get("data")
+            if not isinstance(values, list):
+                raise ChatGPTProtocolError("ChatGPT model response has no model list")
+            result: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for value in values:
+                if not isinstance(value, Mapping):
+                    continue
+                model_id = str(value.get("slug") or value.get("id") or "").strip()
+                if not model_id or model_id in seen:
+                    continue
+                seen.add(model_id)
+                result.append(
+                    {
+                        "id": model_id,
+                        "object": "model",
+                        "created": int(value.get("created") or 0),
+                        "owned_by": str(value.get("owned_by") or "chatgpt"),
+                        "permission": [],
+                        "root": model_id,
+                        "parent": None,
+                    }
+                )
+            if not result:
+                raise ChatGPTProtocolError("ChatGPT returned an empty model list")
+            return result
+        finally:
+            await self.aclose()
 
     @staticmethod
     def _conversation_messages(messages: Any) -> list[dict[str, Any]]:
@@ -450,9 +481,10 @@ class ChatGPTWebClient:
         turnstile = prepared.get("turnstile") or {}
         if turnstile.get("required"):
             dx = str(turnstile.get("dx") or "")
-            turnstile_token = solve_turnstile_token(dx, p_token) if dx else None
-            if not turnstile_token:
-                raise ChatGPTProtocolError("ChatGPT Turnstile challenge could not be solved")
+            # The Web client can still finalize a requirements challenge with an
+            # empty Turnstile token. Some upstream sessions accept that path;
+            # do not reject the request before finalize gets to decide.
+            turnstile_token = (solve_turnstile_token(dx, p_token) if dx else "") or ""
         proof = ""
         proof_info = prepared.get("proofofwork")
         if isinstance(proof_info, Mapping) and proof_info.get("required"):
@@ -507,7 +539,8 @@ class ChatGPTWebClient:
 
     @staticmethod
     def _sse_text(raw: bytes) -> tuple[str, str]:
-        text_parts: list[str] = []
+        delta_parts: list[str] = []
+        message_snapshots: list[str] = []
         conversation_id = ""
         for line in raw.decode("utf-8", "replace").splitlines():
             if not line.startswith("data:"):
@@ -529,13 +562,18 @@ class ChatGPTWebClient:
                 if isinstance(content, Mapping):
                     parts = content.get("parts")
                     if isinstance(parts, list):
-                        text_parts.append(
-                            "".join(str(part) for part in parts if isinstance(part, str))
-                        )
+                        snapshot = "".join(str(part) for part in parts if isinstance(part, str))
+                        if snapshot:
+                            message_snapshots.append(snapshot)
             delta = event.get("delta")
             if isinstance(delta, str):
-                text_parts.append(delta)
-        return "".join(text_parts), conversation_id
+                delta_parts.append(delta)
+        # Web SSE may contain both repeated full-message snapshots and true
+        # deltas. Prefer deltas; otherwise keep the longest snapshot once.
+        content = "".join(delta_parts)
+        if not content and message_snapshots:
+            content = max(message_snapshots, key=len)
+        return content, conversation_id
 
     @staticmethod
     def _openai_response(
@@ -558,7 +596,7 @@ class ChatGPTWebClient:
                 "total_tokens": int(usage.get("total_tokens") or prompt + completion),
             }
         if not stream:
-            return {
+            response: dict[str, Any] = {
                 "id": request_id,
                 "object": "chat.completion",
                 "created": created,
@@ -570,9 +608,11 @@ class ChatGPTWebClient:
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": usage_payload,
                 "_conversation_id": conversation_id,
             }
+            if isinstance(usage, Mapping):
+                response["usage"] = usage_payload
+            return response
         event = {
             "id": request_id,
             "object": "chat.completion.chunk",
@@ -1201,6 +1241,7 @@ class ChatGPTWebClient:
                 await self._close_resource(response)
             if owned:
                 await self._close_resource(client)
+            await self.aclose()
 
     async def invoke(self, request: Mapping[str, Any]) -> httpx.Response:
         return await self.chat(request)

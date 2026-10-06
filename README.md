@@ -27,7 +27,7 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 
 ### 统一数据面
 
-- 一个网关地址：默认 `http://localhost:8080/v1`。
+- 一个网关地址：默认 `http://localhost:8888/v1`。
 - 一个网关 API Key 可按渠道和模型授权，调用不同渠道的模型。
 - 支持 OpenAI Chat Completions、Anthropic Messages 和 OpenAI Responses 三种文本协议。
 - 支持非流式和流式文本对话；流式响应会转换为对应协议的 SSE 格式。
@@ -144,10 +144,10 @@ docker compose up --build
 
 服务地址：
 
-- 控制台：<http://localhost:5173>
-- API：<http://localhost:8080>
-- OpenAPI：<http://localhost:8080/docs>
-- 健康检查：<http://localhost:8080/admin/api/healthz>
+- 控制台：<http://localhost:5555>
+- API：<http://localhost:8888>
+- OpenAPI：<http://localhost:8888/docs>
+- 健康检查：<http://localhost:8888/admin/api/healthz>
 
 停止服务：
 
@@ -165,7 +165,7 @@ Compose 使用 `api_data` 等命名卷保存运行数据。不要使用 `docker 
 Copy-Item services/api/.env.example services/api/.env
 Set-Location services/api
 uv sync --extra dev
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8888 --reload
 ```
 
 另开终端启动前端：
@@ -173,10 +173,10 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
 ```powershell
 Set-Location web
 pnpm install --frozen-lockfile
-pnpm exec vite --host 127.0.0.1 --port 5173
+pnpm exec vite --host 127.0.0.1 --port 5555
 ```
 
-打开 <http://localhost:5173>。Vite 会将 `/admin/api` 和 `/v1` 代理到 `http://127.0.0.1:8080`；如需修改代理目标，复制 `web/.env.example` 为 `web/.env.local` 并调整 `VITE_PROXY_TARGET`。
+打开 <http://localhost:5555>。Vite 会将 `/admin/api` 和 `/v1` 代理到 `http://127.0.0.1:8888`；如需修改代理目标，复制 `web/.env.example` 为 `web/.env.local` 并调整 `VITE_PROXY_TARGET`。
 
 首次登录使用 `services/api/.env` 中的 `A2A_ADMIN_USERNAME` 和 `A2A_ADMIN_PASSWORD`。未配置强密码时，管理登录接口会返回未配置错误，不会创建默认可用密码。
 
@@ -211,7 +211,7 @@ pnpm exec vite --host 127.0.0.1 --port 5173
 ### 2. 查看模型
 
 ```bash
-export A2A_BASE_URL="http://localhost:8080/v1"
+export A2A_BASE_URL="http://localhost:8888/v1"
 export A2A_API_KEY="sk-a2a-your-key"
 
 curl "$A2A_BASE_URL/models" \

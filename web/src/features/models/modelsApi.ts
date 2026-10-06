@@ -56,7 +56,9 @@ export async function setModelEnabled(id: string, enabled: boolean): Promise<Mod
   return response.data.data;
 }
 
-export async function refreshModels(): Promise<ModelRefreshResult> {
-  const response = await apiClient.post<{ data: ModelRefreshResult }>("/models/refresh");
+export async function refreshModels(channel?: string): Promise<ModelRefreshResult> {
+  const response = await apiClient.post<{ data: ModelRefreshResult }>("/models/refresh", null, {
+    params: channel ? { channel } : undefined,
+  });
   return response.data.data;
 }

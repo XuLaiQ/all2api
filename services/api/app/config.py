@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 8888
     base_path: str = ""
     db_path: str = "./data/all2api.db"
     # Fernet key (or arbitrary secret from which a development key is derived)
@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     trust_proxy: bool = True
     trusted_proxies: str = "127.0.0.1,::1"
     login_max_fails: int = 5
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_origins: str = "http://localhost:5555,http://127.0.0.1:5555"
 
     @model_validator(mode="after")
     def validate_retention_windows(self) -> "Settings":

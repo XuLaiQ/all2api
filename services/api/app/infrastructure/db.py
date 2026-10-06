@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     prompt_tokens INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     usage_reported INTEGER NOT NULL DEFAULT 0,
+    usage_kind TEXT NOT NULL DEFAULT 'unknown',
     ttft_ms INTEGER,
     latency_ms INTEGER NOT NULL DEFAULT 0,
     credits REAL,
@@ -179,6 +180,7 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     prompt_tokens INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     usage_reported_requests INTEGER NOT NULL DEFAULT 0,
+    usage_estimated_requests INTEGER NOT NULL DEFAULT 0,
     credits REAL NOT NULL DEFAULT 0,
     PRIMARY KEY(day, channel, key_id, model)
 );
@@ -231,6 +233,7 @@ CREATE TABLE IF NOT EXISTS playground_messages (
     conversation_id TEXT NOT NULL REFERENCES playground_conversations(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
     raw_response TEXT,
     created_at INTEGER NOT NULL
 );
@@ -295,7 +298,10 @@ def migrate(db_path: str) -> None:
         for table, column, definition in (
             ("request_logs", "usage_reported", "INTEGER NOT NULL DEFAULT 0"),
             ("usage_daily", "usage_reported_requests", "INTEGER NOT NULL DEFAULT 0"),
+            ("usage_daily", "usage_estimated_requests", "INTEGER NOT NULL DEFAULT 0"),
+            ("request_logs", "usage_kind", "TEXT NOT NULL DEFAULT 'unknown'"),
             ("playground_runs", "conversation_id", "TEXT"),
+            ("playground_messages", "model", "TEXT NOT NULL DEFAULT ''"),
             ("api_keys", "key_encrypted", "TEXT"),
         ):
             columns = {

@@ -17,6 +17,7 @@ export type RequestLog = {
   prompt_tokens: number;
   completion_tokens: number;
   usage_reported: number;
+  usage_kind: "reported" | "estimated" | "unknown";
   ttft_ms: number | null;
   latency_ms: number;
 };

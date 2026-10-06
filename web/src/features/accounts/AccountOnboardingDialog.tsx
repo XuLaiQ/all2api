@@ -34,7 +34,7 @@ type Props = {
   channelsError?: string;
   onRetryChannels?: () => void;
   onClose: () => void;
-  onComplete: (message: string) => void;
+  onComplete: (message: string, channel?: string) => void;
 };
 
 type ChatGptImportMethod = "menu" | "oauth" | "token" | "session" | "codex" | "account-json";
@@ -414,7 +414,7 @@ export function AccountOnboardingDialog({
         if (!active) return;
         setSession((current) => ({ ...current, ...completed }));
         if (completed.status === "success" || completed.status === "succeeded") {
-          onComplete(`${selectedChannel?.name ?? channel} 账号授权成功，账号列表已更新`);
+          onComplete(`${selectedChannel?.name ?? channel} 账号授权成功，账号列表已更新`, channel);
         } else if (completed.error || completed.message) {
           setError(completed.error || completed.message || "账号保存失败");
         }
@@ -435,7 +435,7 @@ export function AccountOnboardingDialog({
           setSession((current) => ({ ...current, ...next }));
           if (next.message) setMessage(next.message);
           if (next.status === "success" || next.status === "succeeded") {
-            onComplete(`${selectedChannel?.name ?? channel} 账号授权成功，账号列表已更新`);
+            onComplete(`${selectedChannel?.name ?? channel} 账号授权成功，账号列表已更新`, channel);
           }
           if (next.status && terminalStatuses.has(next.status) && next.status !== "success" && next.status !== "succeeded") {
             setError(next.error || next.message || "账号授权失败");
@@ -533,7 +533,7 @@ export function AccountOnboardingDialog({
         window.open(result.authorize_url, "_blank", "noopener,noreferrer");
       }
       if (result.status === "success" || result.status === "succeeded") {
-        onComplete(`${selectedChannel.name} 账号新增成功，账号列表已更新`);
+        onComplete(`${selectedChannel.name} 账号新增成功，账号列表已更新`, channel);
       }
     } catch (cause: unknown) {
       setError(errorMessage(cause));
@@ -558,7 +558,7 @@ export function AccountOnboardingDialog({
       });
       setSession((current) => ({ ...current, ...result }));
       if (result.status === "success" || result.status === "succeeded") {
-        onComplete(`${selectedChannel?.name ?? channel} 账号新增成功，账号列表已更新`);
+        onComplete(`${selectedChannel?.name ?? channel} 账号新增成功，账号列表已更新`, channel);
       } else if (result.message) setMessage(result.message);
     } catch (cause: unknown) {
       setError(errorMessage(cause));

@@ -166,13 +166,17 @@ def upsert_model_cache(
 
 
 @router.post("/refresh", dependencies=[Depends(_require_model_admin)])
-async def refresh_models(user: AdminUser) -> dict:
+async def refresh_models(
+    user: AdminUser,
+    channel: str | None = Query(default=None, min_length=1, max_length=32),
+) -> dict:
     del user
     db_path = get_settings().db_path
     adapters = [
         adapter
         for adapter in get_registry().values()
-        if adapter_catalogue_enabled(adapter, db_path)
+        if (channel is None or adapter.slug == channel)
+        and adapter_catalogue_enabled(adapter, db_path)
     ]
     results = await asyncio.gather(
         *(fetch_adapter_models(adapter) for adapter in adapters),

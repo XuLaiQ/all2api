@@ -39,10 +39,10 @@ tests/                     当前扁平测试集；目标按 unit/integration/co
 ```powershell
 uv sync --extra dev
 Copy-Item .env.example .env
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8888 --reload
 ```
 
-健康检查：`GET http://127.0.0.1:8080/admin/api/healthz`；OpenAPI：`http://127.0.0.1:8080/docs`。管理员会话需配置强密码和随机 session secret；生产不得使用默认值。
+健康检查：`GET http://127.0.0.1:8888/admin/api/healthz`；OpenAPI：`http://127.0.0.1:8888/docs`。管理员会话需配置强密码和随机 session secret；生产不得使用默认值。
 
 ### Doubao 原生二维码登录
 

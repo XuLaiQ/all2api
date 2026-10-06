@@ -309,7 +309,7 @@ function LogRow({ row }: { row: RequestLog }) {
       </td>
       <td><span className={`status-label ${statusTone(row.status)}`}>{row.status}</span></td>
       <td>{row.latency_ms.toLocaleString("zh-CN")} ms</td>
-      <td>{row.usage_reported ? tokens.toLocaleString("zh-CN") : "未知"}</td>
+      <td>{row.usage_kind === "unknown" ? "未知" : `${tokens.toLocaleString("zh-CN")}（${row.usage_kind === "estimated" ? "估算" : "已报告"}）`}</td>
       <td>{row.stream ? "流式" : "非流式"}</td>
       <td>{row.fallback_depth}</td>
     </tr>

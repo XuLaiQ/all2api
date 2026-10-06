@@ -19,6 +19,7 @@ import {
 } from "./accountsApi";
 import { Select } from "../../app/controls/Select";
 import { AccountOnboardingDialog } from "./AccountOnboardingDialog";
+import { refreshModels } from "../models/modelsApi";
 
 type FilterDraft = { channel: string; status: string; search: string };
 const emptyFilters: FilterDraft = { channel: "", status: "", search: "" };
@@ -174,11 +175,12 @@ export function AccountsPage() {
     setPage(1);
   }
 
-  const handleOnboardingComplete = useCallback((message: string) => {
+  const handleOnboardingComplete = useCallback((message: string, channel?: string) => {
     setOnboardingOpen(false);
     setNoticeMessage(message);
     setPage(1);
     setRetry((value) => value + 1);
+    if (channel) void refreshModels(channel).catch(() => undefined);
   }, []);
 
   async function handleAccountEnabled(account: AccountRecord) {

@@ -10,7 +10,6 @@ accounts can chat without a browser verification round-trip.
 
 from __future__ import annotations
 
-import base64
 import json
 from collections.abc import Iterator, Mapping
 from typing import Any
@@ -30,51 +29,19 @@ from .errors import (
     ChatGPTUpstreamUnavailableError,
 )
 from .manifest import CHATGPT_WEB_BASE_URL
+from .oauth_client import credential_client_id
 
-CODEX_DEFAULT_MODEL = "gpt-5.5"
 CODEX_RESPONSES_PATH = "/backend-api/codex/responses"
 CODEX_MODELS_PATH = "/backend-api/codex/models?client_version=0.50.0"
-
-
-def _jwt_payload(token: str) -> dict[str, Any]:
-    """Decode the unsigned payload of a JWT-shaped token without verification."""
-
-    parts = str(token or "").split(".")
-    if len(parts) != 3:
-        return {}
-    padded = parts[1] + "=" * (-len(parts[1]) % 4)
-    try:
-        value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-    except (ValueError, TypeError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def credential_client_id(credentials: Mapping[str, Any]) -> str:
-    """Best-effort OAuth client id for refresh calls.
-
-    The refresh token must be exchanged with the client it was issued to, so
-    the stored ``client_id`` wins; otherwise the claim embedded in the token
-    JWT is used as a fallback.
-    """
-
-    stored = str(credentials.get("client_id") or "").strip()
-    if stored:
-        return stored
-    for key in ("access_token", "accessToken", "id_token", "idToken"):
-        claim = str(_jwt_payload(str(credentials.get(key) or "")).get("client_id") or "").strip()
-        if claim:
-            return claim
-    return ""
 
 
 def is_codex_credentials(credentials: Mapping[str, Any]) -> bool:
     """Decide whether credentials belong to the Codex/OAuth backend flow.
 
-    An explicit ``auth_mode`` marker wins.  Import mappers store the OAuth
-    markers (``client_id`` / ``organization_id`` / ``id_token``) alongside the
-    tokens, and plain Web session imports never carry them, so marker presence
-    is the practical discriminator.
+    An explicit ``auth_mode`` marker wins.  OAuth bundles can authenticate
+    either the Web or Codex backend, so imported accounts default to Web unless
+    the source explicitly declares Codex; legacy unmarked objects retain the
+    marker-based fallback for compatibility.
     """
 
     mode = str(credentials.get("auth_mode") or "").strip().lower()
@@ -298,7 +265,9 @@ class ChatGPTCodexClient:
         instructions, items = cls._input_items(payload.get("messages"))
         model = str(payload.get("model") or "").strip()
         if not model or model == "auto":
-            model = CODEX_DEFAULT_MODEL
+            raise ChatGPTInvalidRequestError(
+                "ChatGPT model must be selected from the live model catalogue"
+            )
         body: dict[str, Any] = {
             "model": model,
             "store": False,
@@ -395,7 +364,6 @@ class ChatGPTCodexClient:
 
 
 __all__ = [
-    "CODEX_DEFAULT_MODEL",
     "CODEX_MODELS_PATH",
     "CODEX_RESPONSES_PATH",
     "ChatGPTCodexClient",

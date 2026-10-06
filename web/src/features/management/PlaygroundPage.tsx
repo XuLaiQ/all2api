@@ -8,7 +8,7 @@ import { Button } from "../../app/controls/Button";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { Select } from "../../app/controls/Select";
-import { fetchModels, type ModelRecord } from "../models/modelsApi";
+import { fetchModels, refreshModels, type ModelRecord } from "../models/modelsApi";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
   fetchPlaygroundConversation,
@@ -30,6 +30,7 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "error";
   content: string;
+  model?: string;
   raw?: unknown;
 };
 
@@ -133,6 +134,7 @@ function restoreConversationMessage(item: {
   id: string;
   role: "user" | "assistant" | "error";
   content: string;
+  model?: string;
   raw?: unknown;
 }): ChatMessage {
   const content = item.raw !== undefined ? responseContent(item.raw) : item.content.trim() || "（空响应）";
@@ -141,10 +143,11 @@ function restoreConversationMessage(item: {
       id: item.id,
       role: "error",
       content: "上游返回了空内容，该请求未生成有效回答，请重新发送。",
+      model: item.model,
       raw: item.raw,
     };
   }
-  return { id: item.id, role: item.role, content, raw: item.raw };
+  return { id: item.id, role: item.role, content, model: item.model, raw: item.raw };
 }
 
 function runStatusLabel(run: PlaygroundRun): string {
@@ -249,13 +252,20 @@ export function PlaygroundPage() {
     const controller = new AbortController();
     setModelsLoading(true);
     setModelsError("");
-    fetchModels(1, { channel, enabled: true }, controller.signal, 200)
-      .then((result) => {
-        setModels(result.data);
-        setModel((current) => result.data.some((item) => item.upstream_id === current)
-          ? current
-          : result.data[0]?.upstream_id ?? (channel === "chatgpt" ? "auto" : ""));
-      })
+    const loadModels = async () => {
+      let result = await fetchModels(1, { channel, enabled: true }, controller.signal, 200);
+      if (result.data.length === 0 && role === "admin") {
+        await refreshModels(channel);
+        if (controller.signal.aborted) return;
+        result = await fetchModels(1, { channel, enabled: true }, controller.signal, 200);
+      }
+      if (controller.signal.aborted) return;
+      setModels(result.data);
+      setModel((current) => result.data.some((item) => item.upstream_id === current)
+        ? current
+        : result.data[0]?.upstream_id ?? "");
+    };
+    loadModels()
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
           setModels([]);
@@ -267,21 +277,10 @@ export function PlaygroundPage() {
         if (!controller.signal.aborted) setModelsLoading(false);
       });
     return () => controller.abort();
-  }, [channel, modelsRetry]);
+  }, [channel, modelsRetry, role]);
 
   const selectedChannel = useMemo(() => channels.find((item) => item.slug === channel), [channels, channel]);
-  const availableModels = useMemo<ModelRecord[]>(() => models.length > 0 ? models : channel === "chatgpt" ? [{
-    id: "chatgpt/auto",
-    channel: "chatgpt",
-    upstream_id: "auto",
-    display_name: "自动选择",
-    kind: "chat",
-    caps: ["chat", "search"],
-    context_window: null,
-    max_output: null,
-    multiplier: 1,
-    enabled: true,
-  }] : [], [channel, models]);
+  const availableModels = useMemo<ModelRecord[]>(() => models, [models]);
   const selectedModel = useMemo(() => availableModels.find((item) => item.upstream_id === model), [availableModels, model]);
   const modelLabel = selectedModel?.display_name ?? model;
 
@@ -350,7 +349,7 @@ export function PlaygroundPage() {
     const prompt = message.trim();
     if (role !== "admin" || !channel || !selected || !prompt || busy) return;
 
-    setMessages((current) => [...current, { id: createMessageId(), role: "user", content: prompt }]);
+    setMessages((current) => [...current, { id: createMessageId(), role: "user", content: prompt, model: selected.upstream_id }]);
     setMessage("");
     setBusy(true);
     setError("");
@@ -358,7 +357,7 @@ export function PlaygroundPage() {
     const assistantId = createMessageId();
     const streamController = new AbortController();
     streamAbortRef.current = streamController;
-    setMessages((current) => [...current, { id: assistantId, role: "assistant", content: "" }]);
+    setMessages((current) => [...current, { id: assistantId, role: "assistant", content: "", model: selected.upstream_id }]);
     try {
       const contextMessages = messages
         .filter((item): item is ChatMessage & { role: "user" | "assistant" } => item.role !== "error")
@@ -441,9 +440,9 @@ export function PlaygroundPage() {
       </div>
 
       {playgroundTab === "skills" && <PlaygroundSkillPanel />}
-      {playgroundTab === "search" && <PlaygroundSearchPanel channel={channel || "chatgpt"} model={model || "auto"} />}
-      {playgroundTab === "ppt" && <PlaygroundEditableFilePanel kind="ppt" channel={channel || "chatgpt"} model={model || "auto"} />}
-      {playgroundTab === "psd" && <PlaygroundEditableFilePanel kind="psd" channel={channel || "chatgpt"} model={model || "auto"} />}
+      {playgroundTab === "search" && <PlaygroundSearchPanel channel={channel || "chatgpt"} model={model} />}
+      {playgroundTab === "ppt" && <PlaygroundEditableFilePanel kind="ppt" channel={channel || "chatgpt"} model={model} />}
+      {playgroundTab === "psd" && <PlaygroundEditableFilePanel kind="psd" channel={channel || "chatgpt"} model={model} />}
 
       {playgroundTab === "chat" && <div className="playground-layout">
         <section className="playground-conversation" aria-label="调试对话">
@@ -493,7 +492,7 @@ export function PlaygroundPage() {
                   {item.role === "user" ? <UserRound size={16} /> : item.role === "error" ? <AlertCircle size={16} /> : <Bot size={17} />}
                 </div>
                 <div className="playground-message-content">
-                  <div className="playground-message-name">{item.role === "user" ? "你" : item.role === "error" ? "调试台" : modelLabel || "助手"}</div>
+                  <div className="playground-message-name">{item.role === "user" ? "你" : item.role === "error" ? "调试台" : item.model || "助手"}</div>
                   <div className="playground-message-text">
                     {item.role === "assistant"
                       ? item.content
@@ -516,7 +515,7 @@ export function PlaygroundPage() {
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 placeholder={role === "admin" ? "给模型发送消息…" : "当前角色仅可查看历史运行记录"}
-                disabled={role !== "admin" || busy || !selectedModel}
+                disabled={role !== "admin" || !selectedModel}
                 aria-label="消息"
               />
               <Button variant="unstyled" className="playground-send-button" type="submit" disabled={role !== "admin" || busy || !channel || !selectedModel || !message.trim()} title="发送消息" aria-label="发送消息">

@@ -6,6 +6,7 @@ export type UsageSummary = {
   completion_tokens: number;
   tokens: number;
   usage_reported_requests: number;
+  usage_estimated_requests: number;
   usage_unknown_requests: number;
   credits: number | null;
   credits_available: boolean;
@@ -24,6 +25,7 @@ export type UsageRow = {
   completion_tokens: number;
   tokens: number;
   usage_reported_requests: number;
+  usage_estimated_requests: number;
   usage_unknown_requests: number;
   credits: number | null;
   credits_available: boolean;

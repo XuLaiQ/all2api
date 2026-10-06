@@ -18,10 +18,9 @@ from app.infrastructure.credentials import record_account
 from app.infrastructure.provision_state import ProvisionStateStore
 from app.ports.credentials import CredentialStore, InMemoryCredentialStore
 
-from .codex_client import credential_client_id
 from .errors import OAuthExpiredError, OAuthStateError, public_error
 from .mapper import canonical_account, token_record
-from .oauth_client import OAuthClient
+from .oauth_client import OAuthClient, credential_client_id
 
 
 @dataclass

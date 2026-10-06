@@ -4,14 +4,43 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 import urllib.parse
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+from app.infrastructure.http import build_client
+
 from .errors import OAuthProtocolError
+
+
+def _jwt_payload(token: str) -> dict[str, Any]:
+    parts = str(token or "").split(".")
+    if len(parts) != 3:
+        return {}
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def credential_client_id(credentials: Mapping[str, Any]) -> str:
+    """Return the OAuth client id bound to imported credentials when available."""
+
+    stored = str(credentials.get("client_id") or "").strip()
+    if stored:
+        return stored
+    for key in ("access_token", "accessToken", "id_token", "idToken"):
+        claim = str(_jwt_payload(str(credentials.get(key) or "")).get("client_id") or "").strip()
+        if claim:
+            return claim
+    return ""
 
 
 def _b64(value: bytes) -> str:
@@ -25,6 +54,7 @@ class OAuthConfig:
     client_id: str = "all2api"
     redirect_uri: str = "http://127.0.0.1:1455/auth/callback"
     scopes: tuple[str, ...] = ("openid", "profile", "email", "offline_access")
+    proxy: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,7 +105,11 @@ class OAuthClient:
             "code_verifier": verifier,
         }
         if self.http_client is None:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5)) as client:
+            async with build_client(
+                proxy=self.config.proxy,
+                timeout=20,
+                connect_timeout=5,
+            ) as client:
                 response = await client.post(self.config.token_endpoint, data=payload)
         else:
             response = await self.http_client.post(self.config.token_endpoint, data=payload)
@@ -105,7 +139,11 @@ class OAuthClient:
             "refresh_token": token,
         }
         if self.http_client is None:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5)) as client:
+            async with build_client(
+                proxy=self.config.proxy,
+                timeout=20,
+                connect_timeout=5,
+            ) as client:
                 response = await client.post(self.config.token_endpoint, data=payload)
         else:
             response = await self.http_client.post(self.config.token_endpoint, data=payload)

@@ -14,5 +14,5 @@ COPY app ./app
 RUN rm -rf ./app/compat/legacy_bridge || true
 RUN uv sync --frozen --no-dev
 
-EXPOSE 8080
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+EXPOSE 8888
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8888"]
