@@ -1,0 +1,303 @@
+/* Page-local styles for routes. */
+.route-table{
+  min-width: 860px;
+}
+.route-target-list{
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  color: #40525d;
+  font-size: 12px;
+}
+.route-target-list li{
+  padding-left: 2px;
+}
+.route-channel{
+  display: inline-block;
+  min-width: 62px;
+  margin-right: 8px;
+  color: #176c67;
+  font-weight: 700;
+}
+.route-row-actions{
+  display: flex;
+  gap: 7px;
+}
+.route-row-actions button,
+.route-target-title button{
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid #cbd6d9;
+  border-radius: 4px;
+  background: #fff;
+  color: #40525d;
+  font-size: 12px;
+  cursor: pointer;
+}
+.route-row-actions .danger-action{
+  border-color: #e1c6c6;
+  color: #9f4141;
+}
+.route-editor{
+  width: min(100%, 680px);
+}
+.route-enabled-toggle{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #40525d;
+  font-size: 13px;
+  font-weight: 600;
+}
+.route-enabled-toggle input{
+  width: 16px;
+  height: 16px;
+  accent-color: #267b72;
+}
+.route-target-editor-list{
+  display: grid;
+  gap: 10px;
+}
+.route-target-editor{
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d6e0e2;
+  border-radius: 4px;
+  background: #fbfcfc;
+}
+.route-target-title{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #40525d;
+  font-size: 12px;
+}
+.route-target-title > div{
+  display: flex;
+  gap: 5px;
+}
+.route-target-title button{
+  width: 30px;
+  min-height: 28px;
+  padding: 0;
+  font-size: 15px;
+}
+.route-target-title button:disabled,
+.add-route-target:disabled{
+  cursor: default;
+  opacity: 0.42;
+}
+.add-route-target{
+  min-height: 34px;
+  border: 1px dashed #9fb2b7;
+  border-radius: 4px;
+  background: #fff;
+  color: #35645f;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+@media (max-width: 820px){.route-row-actions{
+    flex-wrap: wrap;
+  }
+}
+.route-row-actions button.danger-action{
+  color: var(--danger);
+}
+.route-row-actions button.danger-action:hover{
+  border-color: color-mix(in srgb, var(--danger), transparent 55%);
+  background: color-mix(in srgb, var(--danger), var(--surface) 92%);
+  color: var(--danger);
+}
+.route-row-actions button,
+.route-target-title button{
+  border-color: var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  color: var(--text-secondary);
+  box-shadow: 3px 3px 7px rgb(156 171 185 / 24%), -3px -3px 7px rgb(255 255 255 / 60%);
+}
+.route-row-actions button:hover,
+.route-target-title button:not(:disabled):hover{
+  color: var(--primary);
+  box-shadow: var(--shadow-inset);
+}
+.route-target-editor{
+  border-color: var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+.route-channel{
+  color: var(--primary);
+}
+.route-row-actions button:not(.danger-action):hover,
+.route-target-title button:not(:disabled):hover{
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+.route-list{
+  display: grid;
+  gap: 10px;
+}
+.route-card{
+  padding: 13px;
+  border-radius: 11px;
+  background: var(--app-bg);
+  box-shadow: var(--shadow-soft);
+}
+.route-card-head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.route-card-head strong{
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.route-card-head span{
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.route-flow{
+  display: flex;
+  align-items: stretch;
+  gap: 7px;
+  margin-top: 11px;
+  overflow-x: auto;
+}
+.route-target{
+  display: grid;
+  min-width: 112px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 6px;
+  padding: 8px;
+  border-radius: 9px;
+  background: var(--app-bg);
+  box-shadow: var(--shadow-inset);
+}
+.route-target b{
+  grid-row: span 2;
+  color: var(--primary);
+  font-size: 12px;
+}
+.route-target strong,
+.route-target small{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-target strong{
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.route-target small{
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.route-target-list,
+.route-enabled-toggle,
+.route-target-title{
+  color: var(--text-secondary);
+}
+.add-route-target{
+  border-color: var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-soft);
+}
+.add-route-target:hover{
+  color: var(--primary);
+  box-shadow: var(--shadow-inset);
+}
+.route-enabled-toggle input{
+  accent-color: var(--primary);
+}
+.route-list{
+  align-content: stretch;
+  grid-auto-rows: minmax(0, 1fr);
+}
+.route-card{
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+.route-card .route-flow{
+  flex: 1 1 auto;
+}
+.route-card-head span,
+.route-target small{
+  font-size: 12px;
+}
+.data-table .route-row-actions{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.data-table.has-row-actions td:last-child:has(.route-row-actions){
+  padding-right: 14px;
+}
+.data-table .route-row-actions{
+  min-width: 180px;
+  white-space: nowrap;
+}
+.data-table .route-row-actions button{
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-soft);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.data-table .route-row-actions button:hover:not(:disabled){
+  color: var(--primary);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-inset);
+  transform: translateY(-1px);
+}
+.data-table .route-row-actions button:focus-visible{
+  outline: 2px solid color-mix(in srgb, var(--primary), transparent 48%);
+  outline-offset: 2px;
+}
+.data-table .route-row-actions button:disabled{
+  cursor: not-allowed;
+  opacity: .48;
+  transform: none;
+}
+.data-table .route-row-actions button.danger-action{
+  border-color: color-mix(in srgb, var(--danger), transparent 58%);
+  background: color-mix(in srgb, var(--danger), var(--surface-inset) 88%);
+  color: var(--danger);
+}
+.data-table .route-row-actions button.danger-action:hover:not(:disabled){
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger), var(--surface-raised) 82%);
+  color: var(--danger);
+}
+@media (max-width: 820px){.data-table .route-row-actions{
+    min-width: 160px;
+  }
+.data-table .route-row-actions button{
+    min-height: 34px;
+    padding: 0 11px;
+    font-size: 12px;
+  }
+}

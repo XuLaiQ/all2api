@@ -10,6 +10,7 @@ import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import { clearExpiredLogs, fetchLogs, type LogFilters, type RequestLog } from "./logsApi";
 import { Select } from "../../app/controls/Select";
 import { DateInput } from "../../app/controls/DateInput";
+import "./LogsPage.css";
 
 type DraftFilters = {
   request_id: string;

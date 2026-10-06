@@ -7,6 +7,7 @@ import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { Select } from "../../app/controls/Select";
 import { createUser, deleteUser, fetchUsers, patchUser, type ManagedUser } from "./managementApi";
+import "./ManagementPage.css";
 
 export function UsersPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();

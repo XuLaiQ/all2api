@@ -9,6 +9,7 @@ import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import { fetchModels, refreshModels, setModelEnabled, type ModelFilters, type ModelRecord } from "./modelsApi";
 import { Select } from "../../app/controls/Select";
+import "./ModelsPage.css";
 
 type DraftFilters = { channel: string; kind: string; enabled: string; search: string };
 const emptyFilters: DraftFilters = { channel: "", kind: "", enabled: "", search: "" };

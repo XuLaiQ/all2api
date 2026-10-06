@@ -1,40 +1,27 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { AlertCircle, Bot, Check, Copy, FileJson, MessageCircle, Plus, RefreshCw, Send, Sparkles, Trash2, UserRound } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { AlertCircle, RefreshCw } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
-import { Pagination } from "../../app/data/Pagination";
-import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
-import { Select } from "../../app/controls/Select";
 import { fetchModels, refreshModels, type ModelRecord } from "../models/modelsApi";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
+  deletePlaygroundConversation,
   fetchPlaygroundConversation,
   fetchPlaygroundConversations,
   fetchPlaygroundRuns,
-  deletePlaygroundConversation,
+  runPlaygroundFileTask,
+  runPlaygroundSearch,
   runPlaygroundStream,
   type PlaygroundConversationSummary,
   type PlaygroundResult,
   type PlaygroundRun,
 } from "./managementApi";
-import {
-  PlaygroundEditableFilePanel,
-  PlaygroundSearchPanel,
-  PlaygroundSkillPanel,
-} from "./PlaygroundCapabilities";
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant" | "error";
-  content: string;
-  model?: string;
-  raw?: unknown;
-};
-
-type PlaygroundTab = "skills" | "search" | "ppt" | "psd" | "chat";
+import { PlaygroundComposer } from "./playground/PlaygroundComposer";
+import { PlaygroundConversation } from "./playground/PlaygroundConversation";
+import { PlaygroundHistorySidebar } from "./playground/PlaygroundHistorySidebar";
+import type { ChatMessage, ComposerMode, PlaygroundSidebarTab } from "./playground/types";
+import "./PlaygroundPage.css";
 
 function stripThinkMarkup(value: string): string {
   return value
@@ -62,16 +49,14 @@ function responseContent(value: unknown): string {
         })
         .filter((chunk) => chunk && chunk !== "（空响应）")
         .join("");
-      if (chunks) return chunks;
-      return "（空响应）";
+      return chunks || "（空响应）";
     }
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
         const parsed = responseContent(JSON.parse(trimmed) as unknown);
         if (parsed !== "（空响应）") return parsed;
-        return "（空响应）";
       } catch {
-        // Plain text can legitimately begin with a brace; keep it as written.
+        // Plain text can legitimately begin with a brace.
       }
     }
     return trimmed;
@@ -87,20 +72,14 @@ function responseContent(value: unknown): string {
   const choices = Array.isArray(payload.choices) ? payload.choices : [];
   const choiceText = choices.map(responseContent).filter((item) => item && item !== "（空响应）").join("");
   if (choiceText) return choiceText;
-  for (const key of ["message", "delta"]) {
-    if (payload[key] !== undefined) {
-      const text = responseContent(payload[key]);
-      if (text !== "（空响应）") return text;
-    }
-  }
-  for (const key of ["output_text", "text", "content"]) {
+  for (const key of ["message", "delta", "output_text", "text", "content"]) {
     if (payload[key] !== undefined) {
       const text = responseContent(payload[key]);
       if (text !== "（空响应）") return text;
     }
   }
   for (const key of ["output", "data"]) {
-    if (typeof payload[key] === "string") return stripThinkMarkup(payload[key] as string);
+    if (typeof payload[key] === "string") return stripThinkMarkup(payload[key]);
     if (payload[key] !== undefined && (typeof payload[key] === "object" || Array.isArray(payload[key]))) {
       const text = responseContent(payload[key]);
       if (text !== "（空响应）") return text;
@@ -150,30 +129,24 @@ function restoreConversationMessage(item: {
   return { id: item.id, role: item.role, content, model: item.model, raw: item.raw };
 }
 
-function runStatusLabel(run: PlaygroundRun): string {
-  if (run.status === "ok" && (run.response_status ?? 500) < 400) return "已完成";
-  if (run.status === "running") return "处理中";
-  return "失败";
-}
-
 export function PlaygroundPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [models, setModels] = useState<ModelRecord[]>([]);
   const [conversations, setConversations] = useState<PlaygroundConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [sidebarTab, setSidebarTab] = useState<"conversations" | "requests">("conversations");
+  const [sidebarTab, setSidebarTab] = useState<PlaygroundSidebarTab>("conversations");
   const [requestRuns, setRequestRuns] = useState<PlaygroundRun[]>([]);
   const [requestPage, setRequestPage] = useState(1);
   const [requestTotal, setRequestTotal] = useState(0);
   const [requestLoading, setRequestLoading] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [pageSize, setPageSize] = useState(20);
   const [total, setTotal] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [channel, setChannel] = useState("");
   const [model, setModel] = useState("");
-  const [playgroundTab, setPlaygroundTab] = useState<PlaygroundTab>("chat");
+  const [composerMode, setComposerMode] = useState<ComposerMode>("chat");
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [response, setResponse] = useState<unknown>(null);
@@ -188,9 +161,7 @@ export function PlaygroundPage() {
   const transcriptRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => () => {
-    streamAbortRef.current?.abort();
-  }, []);
+  useEffect(() => () => streamAbortRef.current?.abort(), []);
 
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -205,10 +176,10 @@ export function PlaygroundPage() {
       fetchChannels(controller.signal),
       fetchPlaygroundConversations(page, pageSize, controller.signal),
     ])
-      .then(([channelResult, runResult]) => {
+      .then(([channelResult, conversationResult]) => {
         setChannels(channelResult);
-        setConversations(runResult.data);
-        setTotal(runResult.pagination.total);
+        setConversations(conversationResult.data);
+        setTotal(conversationResult.pagination.total);
         setChannel((current) => channelResult.some((item) => item.slug === current)
           ? current
           : channelResult.find((item) => item.enabled)?.slug ?? channelResult[0]?.slug ?? "");
@@ -280,10 +251,8 @@ export function PlaygroundPage() {
   }, [channel, modelsRetry, role]);
 
   const selectedChannel = useMemo(() => channels.find((item) => item.slug === channel), [channels, channel]);
-  const availableModels = useMemo<ModelRecord[]>(() => models, [models]);
-  const selectedModel = useMemo(() => availableModels.find((item) => item.upstream_id === model), [availableModels, model]);
+  const selectedModel = useMemo(() => models.find((item) => item.upstream_id === model), [models, model]);
   const modelLabel = selectedModel?.display_name ?? model;
-
   function handleChannelChange(nextChannel: string) {
     setChannel(nextChannel);
     setModel("");
@@ -343,11 +312,11 @@ export function PlaygroundPage() {
     }
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>, images: string[]) {
     event.preventDefault();
-    const selected = availableModels.find((item) => item.upstream_id === model);
+    const selected = models.find((item) => item.upstream_id === model);
     const prompt = message.trim();
-    if (role !== "admin" || !channel || !selected || !prompt || busy) return;
+    if (role !== "admin" || !channel || !selected || !prompt || busy || (composerMode === "psd" && images.length === 0)) return;
 
     setMessages((current) => [...current, { id: createMessageId(), role: "user", content: prompt, model: selected.upstream_id }]);
     setMessage("");
@@ -355,6 +324,58 @@ export function PlaygroundPage() {
     setError("");
     setResponse(null);
     const assistantId = createMessageId();
+
+    if (composerMode === "search" || composerMode === "ppt" || composerMode === "psd") {
+      try {
+        if (composerMode === "search") {
+          const result = await runPlaygroundSearch({ channel, model: selected.upstream_id, prompt });
+          const sources = result.sources.length > 0
+            ? `\n\n来源：\n${result.sources.map((source) => `- [${source.title || source.url}](${source.url})`).join("\n")}`
+            : "";
+          const content = `${result.answer || "（空响应）"}${sources}`;
+          setResponse(result);
+          setMessages((current) => [...current, { id: assistantId, role: "assistant", content, model: selected.upstream_id, raw: result }]);
+        } else {
+          const result = await runPlaygroundFileTask({
+            channel,
+            model: selected.upstream_id,
+            kind: composerMode,
+            prompt,
+            base64_images: images,
+          });
+          const links = [
+            result.primary_url ? `[下载${composerMode === "ppt" ? " PPT" : " PSD"}](${result.primary_url})` : "",
+            result.zip_url ? `[下载素材包](${result.zip_url})` : "",
+          ].filter(Boolean).join("\n");
+          const failed = result.status !== "success";
+          const content = failed ? result.error || "文件任务失败" : `文件已生成。${links ? `\n\n${links}` : ""}`;
+          setResponse(result);
+          setMessages((current) => [...current, { id: assistantId, role: failed ? "error" : "assistant", content, model: selected.upstream_id, raw: result }]);
+          if (failed) setError(content);
+        }
+        setReload((value) => value + 1);
+      } catch (cause: unknown) {
+        const detail = cause instanceof ApiClientError ? cause.message : "调试请求失败";
+        setError(detail);
+        setMessages((current) => [...current, { id: assistantId, role: "error", content: detail, model: selected.upstream_id }]);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    const runtimePrompt = composerMode === "image"
+      ? `请执行图像生成任务，使用当前图像参数完成：${prompt}`
+      : composerMode === "video"
+        ? `请执行视频生成任务，使用当前视频参数完成：${prompt}`
+        : composerMode === "writing"
+          ? `请帮我写作：${prompt}`
+          : composerMode === "quiz"
+            ? `请解答并分析：${prompt}`
+            : composerMode === "transcribe"
+              ? `请执行录音转写：${prompt}`
+              : prompt;
+
     const streamController = new AbortController();
     streamAbortRef.current = streamController;
     setMessages((current) => [...current, { id: assistantId, role: "assistant", content: "", model: selected.upstream_id }]);
@@ -367,14 +388,14 @@ export function PlaygroundPage() {
         channel,
         model: selected.upstream_id,
         conversation_id: conversationId ?? undefined,
-        messages: [...contextMessages, { role: "user", content: prompt }],
-      }, (event) => {
-        if (event.type === "delta") {
+        messages: [...contextMessages, { role: "user", content: runtimePrompt }],
+      }, (streamEvent) => {
+        if (streamEvent.type === "delta") {
           setMessages((current) => current.map((item) => item.id === assistantId
-            ? { ...item, content: item.content + stripThinkMarkup(event.content) }
+            ? { ...item, content: item.content + stripThinkMarkup(streamEvent.content) }
             : item));
-        } else if (event.type === "error") {
-          streamError = event.message;
+        } else if (streamEvent.type === "error") {
+          streamError = streamEvent.message;
         }
       }, streamController.signal);
       const failure = playgroundFailureMessage(result);
@@ -382,12 +403,7 @@ export function PlaygroundPage() {
       setResponse(result.response);
       const finalError = streamError || failure;
       setMessages((current) => current.map((item) => item.id === assistantId
-        ? {
-            ...item,
-            role: finalError ? "error" : "assistant",
-            content: finalError || responseContent(result.response),
-            raw: result.response,
-          }
+        ? { ...item, role: finalError ? "error" : "assistant", content: finalError || responseContent(result.response), raw: result.response }
         : item));
       if (finalError) setError(finalError);
       else setReload((value) => value + 1);
@@ -395,9 +411,7 @@ export function PlaygroundPage() {
       if (streamController.signal.aborted) return;
       const detail = cause instanceof ApiClientError ? cause.message : "调试请求失败";
       setError(detail);
-      setMessages((current) => current.map((item) => item.id === assistantId
-        ? { ...item, role: "error", content: detail }
-        : item));
+      setMessages((current) => current.map((item) => item.id === assistantId ? { ...item, role: "error", content: detail } : item));
     } finally {
       if (streamAbortRef.current === streamController) streamAbortRef.current = null;
       setBusy(false);
@@ -411,6 +425,26 @@ export function PlaygroundPage() {
     window.setTimeout(() => setCopied(false), 1600);
   }
 
+  const composer = <PlaygroundComposer
+    role={role}
+    channels={channels}
+    channel={channel}
+    model={model}
+    selectedChannel={selectedChannel}
+    selectedModel={selectedModel}
+    availableModels={models}
+    modelsLoading={modelsLoading}
+    message={message}
+    busy={busy}
+    mode={composerMode}
+    onChannelChange={handleChannelChange}
+    onModelChange={setModel}
+    onMessageChange={(event) => setMessage(event.target.value)}
+    onKeyDown={handleComposerKeyDown}
+    onModeChange={setComposerMode}
+    onSubmit={(event, images) => void submit(event, images)}
+  />;
+
   return (
     <main className="page-content data-page management-page playground-page">
       <div className="page-heading playground-page-heading">
@@ -419,182 +453,55 @@ export function PlaygroundPage() {
           <h1>调试台</h1>
           <p>选择渠道和模型，开始一段新的测试对话</p>
         </div>
-        <Button variant="secondary" onClick={() => setReload((value) => value + 1)} disabled={historyLoading}>
+        <Button variant="icon" className="playground-page-refresh" onClick={() => setReload((value) => value + 1)} disabled={historyLoading} title="刷新记录" aria-label="刷新记录">
           <RefreshCw size={15} aria-hidden="true" className={historyLoading ? "spin" : undefined} />
-          刷新记录
         </Button>
       </div>
 
       {error && <div className="notice notice-error playground-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{error}</span></div>}
-
-      <div className="playground-mode-tabs" role="tablist" aria-label="调试功能">
-        {([
-          ["skills", "搜索 Skill"],
-          ["search", "联网搜索"],
-          ["ppt", "PPT 生成"],
-          ["psd", "PSD 生成"],
-          ["chat", "对话"],
-        ] as const).map(([value, label]) => (
-          <Button key={value} variant="unstyled" role="tab" aria-selected={playgroundTab === value} className={`playground-mode-tab${playgroundTab === value ? " is-active" : ""}`} onClick={() => setPlaygroundTab(value)}>{label}</Button>
-        ))}
+      <div className="playground-layout">
+        <PlaygroundConversation
+          modelLabel={modelLabel}
+          channelLabel={selectedChannel?.name}
+          busy={busy}
+          messages={messages}
+          transcriptRef={transcriptRef}
+          onSuggestion={setMessage}
+          composer={composer}
+        />
+        <PlaygroundHistorySidebar
+          role={role}
+          sidebarTab={sidebarTab}
+          conversations={conversations}
+          requestRuns={requestRuns}
+          conversationId={conversationId}
+          historyLoading={historyLoading}
+          requestLoading={requestLoading}
+          total={total}
+          requestTotal={requestTotal}
+          page={page}
+          requestPage={requestPage}
+          pageSize={pageSize}
+          busy={busy}
+          deletingConversationId={deletingConversationId}
+          response={response}
+          copied={copied}
+          modelsError={modelsError}
+          onStartNewConversation={startNewConversation}
+          onOpenConversation={(id) => void openConversation(id)}
+          onDeleteConversation={(id, title) => void deleteConversation(id, title)}
+          onSidebarTabChange={setSidebarTab}
+          onReload={() => setReload((value) => value + 1)}
+          onPageChange={setPage}
+          onRequestPageChange={setRequestPage}
+          onPageSizeChange={(nextPageSize) => {
+            setPage(1);
+            setRequestPage(1);
+            setPageSize(nextPageSize);
+          }}
+          onCopyLatestResponse={() => void copyLatestResponse()}
+        />
       </div>
-
-      {playgroundTab === "skills" && <PlaygroundSkillPanel />}
-      {playgroundTab === "search" && <PlaygroundSearchPanel channel={channel || "chatgpt"} model={model} />}
-      {playgroundTab === "ppt" && <PlaygroundEditableFilePanel kind="ppt" channel={channel || "chatgpt"} model={model} />}
-      {playgroundTab === "psd" && <PlaygroundEditableFilePanel kind="psd" channel={channel || "chatgpt"} model={model} />}
-
-      {playgroundTab === "chat" && <div className="playground-layout">
-        <section className="playground-conversation" aria-label="调试对话">
-          <header className="playground-toolbar">
-            <div className="playground-context">
-              <div className="playground-context-icon" aria-hidden="true"><Sparkles size={17} /></div>
-              <div>
-                <strong>{modelLabel || "新对话"}</strong>
-                <span>{selectedChannel?.name ?? "等待选择渠道"} · 流式文本调试</span>
-              </div>
-            </div>
-            <div className="playground-toolbar-controls">
-              <label className="playground-select-field"><span>渠道</span><Select
-                value={channel}
-                onChange={handleChannelChange}
-                disabled={role !== "admin"}
-                placeholder="选择渠道"
-                options={channels.map((item) => ({ value: item.slug, label: `${item.name} (${item.slug})` }))}
-              /></label>
-              <label className="playground-select-field"><span>模型</span><Select
-                value={model}
-                onChange={setModel}
-                disabled={role !== "admin" || !channel || modelsLoading || availableModels.length === 0}
-                placeholder={modelsLoading ? "读取模型…" : !channel ? "先选渠道" : "选择模型"}
-                options={availableModels.map((item) => ({
-                  value: item.upstream_id,
-                  label: item.display_name === item.upstream_id ? item.display_name : `${item.display_name} (${item.upstream_id})`,
-                }))}
-              /></label>
-              <Button variant="unstyled" className="playground-new-button" onClick={startNewConversation} title="新建对话">
-                <Plus size={16} aria-hidden="true" />
-                新对话
-              </Button>
-            </div>
-          </header>
-
-          <div className="playground-transcript" ref={transcriptRef} aria-live="polite">
-            {messages.length === 0 ? (
-              <div className="playground-empty-state">
-                <div className="playground-empty-icon" aria-hidden="true"><MessageCircle size={24} /></div>
-                <h2>准备开始对话</h2>
-                <p>从模型广场选择一个可用模型，然后发送第一条消息。</p>
-              </div>
-            ) : messages.map((item) => (
-              <article className={`playground-message is-${item.role}`} key={item.id}>
-                <div className="playground-message-avatar" aria-hidden="true">
-                  {item.role === "user" ? <UserRound size={16} /> : item.role === "error" ? <AlertCircle size={16} /> : <Bot size={17} />}
-                </div>
-                <div className="playground-message-content">
-                  <div className="playground-message-name">{item.role === "user" ? "你" : item.role === "error" ? "调试台" : item.model || "助手"}</div>
-                  <div className="playground-message-text">
-                    {item.role === "assistant"
-                      ? item.content
-                        ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
-                        : busy ? <span className="playground-stream-cursor" aria-hidden="true" /> : "（空响应）"
-                      : item.content}
-                  </div>
-                  {item.raw !== undefined && <details className="playground-raw-message"><summary><FileJson size={14} aria-hidden="true" />查看原始响应</summary><pre>{JSON.stringify(item.raw, null, 2)}</pre></details>}
-                </div>
-              </article>
-            ))}
-            {busy && <div className="playground-typing" role="status"><span /><span /><span />正在生成回复…</div>}
-          </div>
-
-          <form className="playground-composer" onSubmit={(event) => void submit(event)}>
-            <div className="playground-composer-box">
-              <textarea
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                onKeyDown={handleComposerKeyDown}
-                rows={1}
-                placeholder={role === "admin" ? "给模型发送消息…" : "当前角色仅可查看历史运行记录"}
-                disabled={role !== "admin" || !selectedModel}
-                aria-label="消息"
-              />
-              <Button variant="unstyled" className="playground-send-button" type="submit" disabled={role !== "admin" || busy || !channel || !selectedModel || !message.trim()} title="发送消息" aria-label="发送消息">
-                <Send size={17} aria-hidden="true" />
-              </Button>
-            </div>
-            <div className="playground-composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><span>{selectedModel ? `${selectedChannel?.name ?? channel} / ${model}` : "请选择可用模型"}</span></div>
-          </form>
-        </section>
-
-        <aside className="playground-history" aria-label="调试台侧栏">
-          <header className="playground-history-header">
-            <div>
-              <div className="playground-sidebar-tabs" role="tablist" aria-label="调试台侧栏视图">
-                <Button variant="unstyled" className={`playground-sidebar-tab${sidebarTab === "conversations" ? " is-active" : ""}`} role="tab" aria-selected={sidebarTab === "conversations"} onClick={() => setSidebarTab("conversations")}>对话历史</Button>
-                <Button variant="unstyled" className={`playground-sidebar-tab${sidebarTab === "requests" ? " is-active" : ""}`} role="tab" aria-selected={sidebarTab === "requests"} onClick={() => setSidebarTab("requests")}>请求记录</Button>
-              </div>
-              <span>{sidebarTab === "conversations" ? (total ? `${total} 个会话` : "暂无历史会话") : (requestTotal ? `${requestTotal} 条请求` : "暂无请求记录")}</span>
-            </div>
-            <Button variant="unstyled" className="playground-icon-button" onClick={() => setReload((value) => value + 1)} disabled={historyLoading || requestLoading} title="刷新当前列表" aria-label="刷新当前列表"><RefreshCw size={16} aria-hidden="true" /></Button>
-          </header>
-          <div className="playground-history-list">
-            {sidebarTab === "conversations" && (
-              <>
-                {historyLoading && <div className="playground-history-state">正在读取…</div>}
-                {!historyLoading && conversations.length === 0 && <div className="playground-history-state">发送第一条消息后，对话会保存在这里。</div>}
-                {!historyLoading && conversations.map((conversation) => (
-                  <div
-                    className={`playground-history-item${conversation.id === conversationId ? " is-active" : ""}`}
-                    key={conversation.id}
-                  >
-                    <Button variant="unstyled" className="playground-history-item-open" onClick={() => void openConversation(conversation.id)}>
-                      <div className="playground-history-item-top"><span className="playground-status-dot is-ok" /><strong>{conversation.title}</strong><span>{conversation.message_count} 条</span></div>
-                      <div className="playground-history-item-meta"><span>{conversation.channel} · {conversation.model}</span><span>{new Date(conversation.updated_at * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span></div>
-                    </Button>
-                    {role === "admin" && <Button variant="unstyled" className="playground-history-delete"
-                      disabled={busy || deletingConversationId !== null}
-                      onClick={() => void deleteConversation(conversation.id, conversation.title)}
-                      title="删除对话"
-                      aria-label={`删除对话 ${conversation.title}`}
-                    >
-                      {deletingConversationId === conversation.id ? <RefreshCw size={14} className="spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
-                    </Button>}
-                  </div>
-                ))}
-              </>
-            )}
-            {sidebarTab === "requests" && (
-              <>
-                {requestLoading && <div className="playground-history-state">正在读取…</div>}
-                {!requestLoading && requestRuns.length === 0 && <div className="playground-history-state">暂无请求记录。</div>}
-                {!requestLoading && requestRuns.map((run) => (
-                  <div className="playground-history-item" key={run.id}>
-                    <div className="playground-history-item-top"><span className={`playground-status-dot is-${run.status}`} /><strong>{run.model}</strong><span>{runStatusLabel(run)}</span></div>
-                    <div className="playground-history-item-meta"><span>{run.channel} · HTTP {run.response_status ?? "—"}</span><span>{new Date(run.created_at * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span></div>
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
-          <Pagination
-            currentPage={sidebarTab === "conversations" ? page : requestPage}
-            pageSize={pageSize}
-            total={sidebarTab === "conversations" ? total : requestTotal}
-            pageSizes={PAGE_SIZE_OPTIONS}
-            layout="prev, pager, next"
-            small
-            disabled={sidebarTab === "conversations" ? historyLoading : requestLoading}
-            onCurrentChange={sidebarTab === "conversations" ? setPage : setRequestPage}
-            onSizeChange={(nextPageSize) => {
-              if (sidebarTab === "conversations") setPage(1);
-              else setRequestPage(1);
-              setPageSize(nextPageSize);
-            }}
-          />
-          {response !== null && <details className="playground-latest-response"><summary><span>最新原始响应</span><Button variant="unstyled" onClick={(event) => { event.preventDefault(); void copyLatestResponse(); }} title="复制最新响应" aria-label="复制最新响应">{copied ? <Check size={14} /> : <Copy size={14} />}</Button></summary><pre>{JSON.stringify(response, null, 2)}</pre></details>}
-          {modelsError && <div className="playground-history-error">{modelsError}</div>}
-        </aside>
-      </div>}
     </main>
   );
 }

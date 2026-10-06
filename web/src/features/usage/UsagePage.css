@@ -1,0 +1,113 @@
+/* Page-local styles for usage. */
+.usage-status-row{
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: #687680;
+  font-size: 12px;
+}
+.usage-status-row{
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.credits-unavailable{
+  color: #96631e;
+}
+.section-heading-tabs{
+  align-items: center;
+}
+.segmented-tabs{
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #d1dcde;
+  border-radius: 5px;
+  background: #edf2f2;
+}
+.segmented-tabs button{
+  min-width: 58px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #5f6e78;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.segmented-tabs button.active{
+  background: #fff;
+  color: #176c67;
+  box-shadow: 0 1px 3px rgb(28 48 55 / 12%);
+}
+.usage-table{
+  font-variant-numeric: tabular-nums;
+}
+.usage-bar-cell{
+  width: 180px;
+}
+.usage-bar-track{
+  display: block;
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #e7eded;
+}
+.usage-bar-track > span{
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #26877c;
+}
+@media (max-width: 820px){.section-heading-tabs{
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+@media (max-width: 420px){.segmented-tabs{
+    width: 100%;
+  }
+.segmented-tabs button{
+    min-width: 0;
+    flex: 1;
+    padding: 0 6px;
+  }
+}
+.segmented-tabs{
+  border-color: var(--border-soft);
+  background: var(--surface-inset);
+  box-shadow: var(--shadow-inset);
+}
+.segmented-tabs button.active{
+  background: var(--surface-raised);
+  color: var(--primary);
+  box-shadow: var(--shadow-raised);
+}
+.credits-unavailable{
+  color: var(--text-secondary);
+}
+.usage-status-row{
+  color: var(--text-secondary);
+}
+.usage-page .usage-breakdown{
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+.usage-page .usage-breakdown > .table-wrap,
+.usage-page .usage-breakdown > .table-state{
+  min-height: 180px;
+  max-height: none;
+  flex: 1 1 auto;
+}
+@media (max-width: 820px){.usage-page .usage-breakdown,
+.usage-page .usage-breakdown > .table-wrap,
+.usage-page .usage-breakdown > .table-state{
+    min-height: 0;
+    max-height: none;
+    height: auto;
+  }
+}

@@ -21,6 +21,7 @@ import {
   type KeyFilters,
   type KeyInput,
 } from "./keysApi";
+import "./KeysPage.css";
 
 type EditorState = {
   id?: number;

@@ -10,6 +10,7 @@ import {
   type UsageRow,
   type UsageSummary,
 } from "./usageApi";
+import "./UsagePage.css";
 
 const groups: { id: UsageGroup; label: string }[] = [
   { id: "daily", label: "按日" },

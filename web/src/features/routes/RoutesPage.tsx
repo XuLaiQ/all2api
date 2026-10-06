@@ -14,6 +14,7 @@ import {
   type RegisteredChannel,
   type RouteInput,
 } from "./routesApi";
+import "./RoutesPage.css";
 
 type TargetDraft = { channel: string; model: string };
 type EditorState = { alias: string; originalAlias?: string; enabled: boolean; targets: TargetDraft[] };

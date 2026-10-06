@@ -17,6 +17,7 @@ import {
   type AccountFilters,
   type AccountRecord,
 } from "./accountsApi";
+import "./AccountsPage.css";
 import { Select } from "../../app/controls/Select";
 import { AccountOnboardingDialog } from "./AccountOnboardingDialog";
 import { refreshModels } from "../models/modelsApi";

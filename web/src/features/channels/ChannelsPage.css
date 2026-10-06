@@ -1,0 +1,24 @@
+/* Page-local styles for channels. */
+.channel-name{
+  display: block;
+}
+.channel-name{
+  color: #273742;
+  font-weight: 650;
+}
+.channel-table{
+  min-width: 860px;
+}
+.channel-tags{
+  color: #40525d;
+  font-size: 12px;
+}
+.channel-name{
+  color: var(--text-primary);
+}
+.channel-tags{
+  color: var(--text-secondary);
+}
+.channel-name{
+  font-size: 14px;
+}

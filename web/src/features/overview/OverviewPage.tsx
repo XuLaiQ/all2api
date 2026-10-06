@@ -13,6 +13,7 @@ import { fetchRoutes, type ModelRoute } from "../routes/routesApi";
 import { fetchSystemMetrics, type SystemMetrics } from "../system/systemApi";
 import { fetchUsageRows, type ChannelOverview, type UsageRow } from "../usage/usageApi";
 import { fetchOverview, type OverviewPayload, type RecentUsageSeries } from "./overviewApi";
+import "./OverviewPage.css";
 
 echarts.use([LineChart, PieChart, GridComponent, TooltipComponent, CanvasRenderer]);
 

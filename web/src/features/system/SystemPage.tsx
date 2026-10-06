@@ -16,6 +16,7 @@ import {
   type SystemInfo,
   type SystemMetrics,
 } from "./systemApi";
+import "./SystemPage.css";
 
 function bytes(value: number | undefined): string {
   if (value === undefined) return "—";

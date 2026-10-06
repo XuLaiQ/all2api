@@ -3,6 +3,7 @@ import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
+import "./ChannelsPage.css";
 
 function runtimeLabel(state: string): { label: string; tone: string } {
   if (state === "breaker_open") return { label: "熔断", tone: "danger" };

@@ -7,6 +7,7 @@ import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { fetchAuditLogs, type AuditFilters, type AuditRecord } from "./auditApi";
 import { DateInput } from "../../app/controls/DateInput";
+import "./AuditPage.css";
 
 type FilterDraft = { actor: string; action: string; target: string; from: string; to: string };
 const emptyFilters: FilterDraft = { actor: "", action: "", target: "", from: "", to: "" };

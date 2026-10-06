@@ -15,6 +15,7 @@ import { loadSlim } from "@tsparticles/slim";
 import { ArrowUpRight, Eye, EyeOff, LockKeyhole, ShieldCheck, UserRound } from "lucide-react";
 import { ApiClientError, apiClient } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import "./LoginPage.css";
 
 interface LoginPageProps {
   onAuthenticated: (username: string, role: "admin" | "viewer") => void;

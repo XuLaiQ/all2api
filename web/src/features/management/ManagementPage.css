@@ -1,0 +1,71 @@
+/* Page-local styles for management. */
+.management-page .management-form{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.management-form label{
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+.management-form input{
+  min-height: 38px;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 9px 12px;
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-inset);
+  font: inherit;
+}
+.management-form input{
+  height: 38px;
+  font-size: 13px;
+}
+.management-form .ctrl-select{
+  height: 38px;
+  min-height: 38px;
+  font-size: 13px;
+}
+.management-form input:focus{
+  border-color: transparent;
+  outline: 2px solid color-mix(in srgb, var(--primary), transparent 68%);
+  outline-offset: 2px;
+  box-shadow: var(--shadow-inset);
+}
+.management-form input:disabled{
+  cursor: not-allowed;
+  opacity: .55;
+}
+.management-form > button{
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 0 16px;
+  background: var(--primary);
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.management-form > button:disabled{
+  opacity: .55;
+  cursor: not-allowed;
+}
+.management-response{
+  max-height: 280px;
+  overflow: auto;
+  margin: 16px 0 0;
+  padding: 14px;
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
