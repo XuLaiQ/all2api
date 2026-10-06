@@ -15,7 +15,7 @@ from app.adapters.workbuddy.provisioner import WorkBuddyProvisioner
 from app.infrastructure import db, security
 from app.ports.credentials import InMemoryCredentialStore
 from app.routers import admin, gateway
-from app.scheduler import pool
+from app.scheduler import pool, runtime
 
 
 class _WorkBuddyRefreshClient:
@@ -267,7 +267,11 @@ def test_gateway_selected_native_account_falls_back_to_lease_id(tmp_path, monkey
 def test_native_local_account_can_route_without_public_channel_key(tmp_path, monkeypatch):
     db_path = tmp_path / "native-local-account.db"
     db.migrate(str(db_path))
-    monkeypatch.setattr(gateway, "get_settings", lambda: SimpleNamespace(db_path=str(db_path)))
+    def test_settings():
+        return SimpleNamespace(db_path=str(db_path))
+
+    monkeypatch.setattr(gateway, "get_settings", test_settings)
+    monkeypatch.setattr(runtime, "get_settings", test_settings)
     with db.database(str(db_path)) as conn:
         conn.execute(
             """INSERT INTO accounts
