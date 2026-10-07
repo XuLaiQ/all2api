@@ -106,6 +106,14 @@ export function PlaygroundComposer({
   return (
     <form className="playground-composer" onSubmit={(event) => onSubmit(event, images.map((image) => image.url))}>
       <div className="playground-composer-box">
+        <div className="playground-composer-row">
+          <textarea value={message} onChange={onMessageChange} onKeyDown={onKeyDown} rows={2} placeholder={placeholder} disabled={role !== "admin" || !selectedModel} aria-label="消息" />
+          <Button variant="unstyled" className="playground-send-button" type="submit" disabled={sendDisabled} title={mode === "chat" ? "发送消息" : "开始生成"} aria-label={mode === "chat" ? "发送消息" : "开始生成"}>
+            <Send size={17} aria-hidden="true" />
+          </Button>
+        </div>
+        {images.length > 0 && <div className="playground-composer-attachments">{images.map((image) => <div key={image.id} className="playground-composer-attachment"><img src={image.url} alt={image.name} /><Button variant="unstyled" onClick={() => setImages((current) => current.filter((item) => item.id !== image.id))} title={`移除 ${image.name}`} aria-label={`移除 ${image.name}`}><X size={12} /></Button></div>)}</div>}
+        {uploadError && <div className="playground-composer-upload-error" role="alert">{uploadError}</div>}
         <div className="playground-composer-tools">
           <label className="playground-composer-chip"><span>渠道</span><Select
             value={channel}
@@ -129,14 +137,6 @@ export function PlaygroundComposer({
           <PlaygroundComposerActions mode={mode} onModeChange={onModeChange} onAttach={() => inputRef.current?.click()} />
           <PlaygroundComposerModeControls mode={mode} />
           <input ref={inputRef} className="playground-composer-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void appendFiles(event.target.files); event.currentTarget.value = ""; }} disabled={role !== "admin" || busy} />
-        </div>
-        {images.length > 0 && <div className="playground-composer-attachments">{images.map((image) => <div key={image.id} className="playground-composer-attachment"><img src={image.url} alt={image.name} /><Button variant="unstyled" onClick={() => setImages((current) => current.filter((item) => item.id !== image.id))} title={`移除 ${image.name}`} aria-label={`移除 ${image.name}`}><X size={12} /></Button></div>)}</div>}
-        {uploadError && <div className="playground-composer-upload-error" role="alert">{uploadError}</div>}
-        <div className="playground-composer-row">
-          <textarea value={message} onChange={onMessageChange} onKeyDown={onKeyDown} rows={2} placeholder={placeholder} disabled={role !== "admin" || !selectedModel} aria-label="消息" />
-          <Button variant="unstyled" className="playground-send-button" type="submit" disabled={sendDisabled} title={mode === "chat" ? "发送消息" : "开始生成"} aria-label={mode === "chat" ? "发送消息" : "开始生成"}>
-            <Send size={17} aria-hidden="true" />
-          </Button>
         </div>
       </div>
       <div className="playground-composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><span>{selectedModel ? `${selectedChannel?.name ?? channel} / ${model}` : "请选择可用模型"}</span></div>

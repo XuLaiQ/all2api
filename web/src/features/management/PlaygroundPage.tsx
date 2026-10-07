@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { AlertCircle, RefreshCw } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
-import { Button } from "../../app/controls/Button";
 import { fetchModels, refreshModels, type ModelRecord } from "../models/modelsApi";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
@@ -447,17 +446,6 @@ export function PlaygroundPage() {
 
   return (
     <main className="page-content data-page management-page playground-page">
-      <div className="page-heading playground-page-heading">
-        <div>
-          <span className="page-eyebrow">PLAYGROUND</span>
-          <h1>调试台</h1>
-          <p>选择渠道和模型，开始一段新的测试对话</p>
-        </div>
-        <Button variant="icon" className="playground-page-refresh" onClick={() => setReload((value) => value + 1)} disabled={historyLoading} title="刷新记录" aria-label="刷新记录">
-          <RefreshCw size={15} aria-hidden="true" className={historyLoading ? "spin" : undefined} />
-        </Button>
-      </div>
-
       {error && <div className="notice notice-error playground-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{error}</span></div>}
       <div className="playground-layout">
         <PlaygroundConversation
