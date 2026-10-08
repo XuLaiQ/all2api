@@ -1,5 +1,11 @@
 export type ComposerMode = "chat" | "image" | "ppt" | "video" | "writing" | "quiz" | "transcribe" | "search" | "psd";
 
+export type PlaygroundGenerationSettings = {
+  imageRatio: string;
+  videoRatio: string;
+  videoDuration: number;
+};
+
 export type PlaygroundSidebarTab = "conversations" | "requests";
 
 export type ChatMessage = {

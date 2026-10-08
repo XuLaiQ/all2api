@@ -221,6 +221,10 @@ select{
   -webkit-mask-image: url(/icons/nav-models.svg);
   mask-image: url(/icons/nav-models.svg);
 }
+.side-icon-media{
+  -webkit-mask-image: url(/icons/nav-models.svg);
+  mask-image: url(/icons/nav-models.svg);
+}
 .side-icon-routes{
   -webkit-mask-image: url(/icons/nav-routes.svg);
   mask-image: url(/icons/nav-routes.svg);

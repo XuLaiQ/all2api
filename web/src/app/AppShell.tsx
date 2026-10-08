@@ -16,6 +16,7 @@ const searchablePages = [
   { label: "渠道", path: "/channels", keywords: ["channel"] },
   { label: "账号池", path: "/accounts", keywords: ["account", "账号"] },
   { label: "模型广场", path: "/models", keywords: ["model", "模型"] },
+  { label: "素材库", path: "/media", keywords: ["media", "asset", "素材", "图库"] },
   { label: "路由规则", path: "/routes", keywords: ["route", "路由"] },
   { label: "网关密钥", path: "/keys", keywords: ["key", "密钥"] },
   { label: "请求日志", path: "/logs", keywords: ["request", "log", "请求"] },
@@ -39,6 +40,7 @@ export function AppShell() {
     "/channels": "渠道",
     "/accounts": "账号池",
     "/models": "模型广场",
+    "/media": "素材库",
     "/routes": "路由规则",
     "/keys": "网关密钥",
     "/logs": "请求日志",
@@ -186,6 +188,9 @@ export function AppShell() {
               </NavLink>
               <NavLink to="/models" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
                 <span className="side-icon side-icon-models" aria-hidden="true" />模型广场
+              </NavLink>
+              <NavLink to="/media" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
+                <span className="side-icon side-icon-media" aria-hidden="true" />素材库
               </NavLink>
               <NavLink to="/routes" className={({ isActive }) => isActive ? "side-link active" : "side-link"}>
                 <span className="side-icon side-icon-routes" aria-hidden="true" />路由规则

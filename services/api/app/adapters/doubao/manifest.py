@@ -13,7 +13,10 @@ def build_manifest(adapter_version: str = "0.2.0") -> ChannelManifest:
         display_name="Doubao",
         adapter_version=adapter_version,
         protocols=("openai", "anthropic", "responses"),
-        capabilities=("chat",),  # Only verified capabilities; multimedia planned for P1
+        # Doubao Web exposes image/video generation through the Samantha
+        # completion endpoint.  The adapter adds the synthetic capability
+        # models only after an authenticated catalogue request succeeds.
+        capabilities=("chat", "image", "video"),
         account_flows=(
             ProvisionFlowSpec(
                 id="create-profile",

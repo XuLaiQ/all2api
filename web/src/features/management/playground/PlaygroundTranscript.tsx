@@ -12,6 +12,25 @@ type PlaygroundTranscriptProps = {
   onSuggestion: (prompt: string) => void;
 };
 
+type MediaItem = { kind: "image" | "video"; src: string; label: string };
+
+function mediaItems(value: unknown): MediaItem[] {
+  if (!value || typeof value !== "object") return [];
+  const data = (value as { data?: unknown }).data;
+  if (!Array.isArray(data)) return [];
+  return data.flatMap<MediaItem>((item, index) => {
+    if (!item || typeof item !== "object") return [];
+    const entry = item as { url?: unknown; video_url?: unknown; b64_json?: unknown };
+    const video = typeof entry.video_url === "string" ? entry.video_url : "";
+    const image = typeof entry.url === "string"
+      ? entry.url
+      : typeof entry.b64_json === "string" ? `data:image/png;base64,${entry.b64_json}` : "";
+    if (video) return [{ kind: "video", src: video, label: `生成视频 ${index + 1}` }];
+    if (image) return [{ kind: "image", src: image, label: `生成图片 ${index + 1}` }];
+    return [];
+  });
+}
+
 export function PlaygroundTranscript({ messages, busy, transcriptRef, onSuggestion }: PlaygroundTranscriptProps) {
   return (
     <div className="playground-transcript" ref={transcriptRef} aria-live="polite">
@@ -43,6 +62,11 @@ export function PlaygroundTranscript({ messages, busy, transcriptRef, onSuggesti
                   : busy ? <span className="playground-stream-cursor" aria-hidden="true" /> : "（空响应）"
                 : item.content}
             </div>
+            {item.raw !== undefined && mediaItems(item.raw).length > 0 && <div className="playground-media-results">
+              {mediaItems(item.raw).map((media) => media.kind === "video"
+                ? <video key={media.src} className="playground-media-video" src={media.src} controls preload="metadata" aria-label={media.label} />
+                : <a key={media.src} href={media.src} target="_blank" rel="noreferrer"><img className="playground-media-image" src={media.src} alt={media.label} /></a>)}
+            </div>}
             {item.raw !== undefined && <details className="playground-raw-message"><summary><FileJson size={14} aria-hidden="true" />查看原始响应</summary><pre>{JSON.stringify(item.raw, null, 2)}</pre></details>}
           </div>
         </article>

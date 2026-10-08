@@ -273,7 +273,22 @@ class ChatGPTAdapter:
             client = await self._client(account)
             result = await client.search(
                 str(payload.get("prompt") or payload.get("query") or ""),
-                str(payload.get("model") or "auto"),
+                str(payload.get("model") or ""),
+            )
+            return httpx.Response(200, json=result)
+        if capability == "image":
+            payload = self._payload(request)
+            client = await self._client(account)
+            result = await client.generate_image(
+                str(payload.get("prompt") or ""),
+                model=str(payload.get("model") or ""),
+                images=[
+                    str(item)
+                    for item in payload.get("base64_images", [])
+                    if isinstance(item, str)
+                ],
+                size=str(payload.get("size") or "1024x1024"),
+                quality=str(payload.get("quality") or "auto"),
             )
             return httpx.Response(200, json=result)
         if capability != "chat":
@@ -281,7 +296,7 @@ class ChatGPTAdapter:
         return await self.invoke(request, account)
 
     async def search(
-        self, prompt: str, model: str = "auto", account: Any = None
+        self, prompt: str, model: str, account: Any = None
     ) -> Mapping[str, Any]:
         """Run the native Web search flow for the management playground."""
 
@@ -293,7 +308,7 @@ class ChatGPTAdapter:
         kind: str,
         prompt: str,
         images: list[str],
-        model: str = "auto",
+        model: str,
         account: Any = None,
     ) -> Mapping[str, Any]:
         client = await self._client(account)

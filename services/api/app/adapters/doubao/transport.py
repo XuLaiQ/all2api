@@ -9,6 +9,7 @@ module owns that private protocol and converts it to the gateway contract.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import re
@@ -25,7 +26,9 @@ from app.infrastructure.http import build_client
 from .manifest import DOUBAO_MANIFEST
 
 DOUBAO_ALICE_COMPLETION_PATH = "/alice/message/stream_call_bot"
+DOUBAO_SAMANTHA_COMPLETION_PATH = "/samantha/chat/completion"
 DOUBAO_MODEL_CATALOGUE_PATH = "/alice/slot/action_bar_v3/brief_list"
+DOUBAO_ACTION_BAR_ITEM_CONFIG_PATH = "/alice/slot/action_bar_v3/get_item_conf"
 DOUBAO_CHAT_PAGE_PATH = "/chat/"
 DOUBAO_DEFAULT_BOT_ID = "7338286299411103781"
 DOUBAO_AID = "582478"
@@ -258,6 +261,180 @@ def _catalogue_models(value: Any) -> list[dict[str, Any]]:
                 model["agent_mode"] = item["agent_mode"]
             models.append(model)
     return models
+
+
+def _samantha_events(raw: bytes) -> list[Mapping[str, Any]]:
+    """Decode Samantha's event-data envelopes without exposing raw payloads."""
+
+    events: list[Mapping[str, Any]] = []
+    normalized = raw.decode("utf-8", "replace").replace("\r\n", "\n")
+    for frame in normalized.split("\n\n"):
+        data = "\n".join(
+            line[5:].lstrip(" ") for line in frame.split("\n") if line.startswith("data:")
+        ).strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            value = json.loads(data)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(value, Mapping):
+            events.append(value)
+    return events
+
+
+def _samantha_event_data(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = _decode_json_layers(event.get("event_data"))
+    return value if isinstance(value, Mapping) else {}
+
+
+def _samantha_message(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = _decode_json_layers(_samantha_event_data(event).get("message"))
+    return value if isinstance(value, Mapping) else {}
+
+
+def _samantha_content(message: Mapping[str, Any]) -> Any:
+    value = _decode_json_layers(message.get("content"))
+    return value
+
+
+def _decode_json_layers(value: Any, *, limit: int = 5) -> Any:
+    for _ in range(limit):
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text or text[0] not in "[{":
+            return value
+        try:
+            decoded = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return value
+        if decoded == value:
+            return value
+        value = decoded
+    return value
+
+
+def _first_media_url(value: Any, keys: tuple[str, ...]) -> str:
+    value = _decode_json_layers(value)
+    if isinstance(value, Mapping):
+        for key in keys:
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                if candidate.startswith(("http://", "https://")):
+                    return candidate
+                if key == "main_url" or key.endswith("_raw"):
+                    try:
+                        decoded = base64.b64decode(candidate).decode("utf-8", "replace").strip()
+                    except (binascii.Error, ValueError, UnicodeDecodeError):
+                        decoded = ""
+                    if decoded.startswith(("http://", "https://")):
+                        return decoded
+            elif isinstance(candidate, (Mapping, list)):
+                found = _first_media_url(candidate, keys)
+                if found:
+                    return found
+        for child in value.values():
+            found = _first_media_url(child, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _first_media_url(child, keys)
+            if found:
+                return found
+    return ""
+
+
+def _json_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return value
+
+
+def _generation_option_models(
+    payload: Any,
+    entry_types: Mapping[str, int],
+) -> list[dict[str, Any]]:
+    """Map Doubao's per-skill selector config to model catalogue records."""
+
+    if not isinstance(payload, Mapping):
+        return []
+    data = payload.get("data")
+    item_list = data.get("item_list") if isinstance(data, Mapping) else None
+    if not isinstance(item_list, Mapping):
+        return []
+    results: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item_id, item in item_list.items():
+        if not isinstance(item, Mapping):
+            continue
+        instruction_type = int(entry_types.get(str(item_id), 0) or 0)
+        kind = "image" if instruction_type == 4 else "video" if instruction_type == 18 else ""
+        instruction_conf = item.get("instruction_conf")
+        if not isinstance(instruction_conf, Mapping):
+            continue
+        instruction_items = instruction_conf.get("instruction_item_list")
+        if not isinstance(instruction_items, list):
+            continue
+        for instruction in instruction_items:
+            if not isinstance(instruction, Mapping):
+                continue
+            template = _json_value(instruction.get("template"))
+            if not isinstance(template, Mapping):
+                continue
+            selectors = template.get("selector_list")
+            if not isinstance(selectors, list):
+                continue
+            for selector in selectors:
+                if not isinstance(selector, Mapping):
+                    continue
+                config = _json_value(selector.get("template"))
+                if not isinstance(config, Mapping):
+                    continue
+                key = _text(config.get("key"))
+                selector_kind = ""
+                if key == "model" and kind == "image":
+                    selector_kind = "image"
+                elif key == "video-model" and kind == "video":
+                    selector_kind = "video"
+                if selector_kind not in {"image", "video"}:
+                    continue
+                options = config.get("option_list")
+                if not isinstance(options, list):
+                    continue
+                for option in options:
+                    if not isinstance(option, Mapping):
+                        continue
+                    option_key = _text(
+                        option.get("option_key")
+                        or option.get("value")
+                        or option.get("display_text")
+                    )
+                    display_name = _text(option.get("display_text") or option_key)
+                    if not option_key or not display_name:
+                        continue
+                    dedupe_key = (selector_kind, option_key)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    extra = option.get("extra") if isinstance(option.get("extra"), Mapping) else {}
+                    results.append(
+                        {
+                            "id": option_key,
+                            "name": display_name,
+                            "kind": selector_kind,
+                            "caps": [selector_kind],
+                            "owned_by": "doubao",
+                            "option_key": option_key,
+                            "description": _text(extra.get("sub_display")),
+                            "skill_type": 3 if selector_kind == "image" else 17,
+                        }
+                    )
+    return results
 
 
 def _message_text(value: Any) -> str:
@@ -502,6 +679,276 @@ class DoubaoHttpTransport(NativeHttpAdapter):
         if csrf:
             headers["x-tt-passport-csrf-token"] = csrf
         return headers
+
+    async def _samantha_request(
+        self,
+        credentials: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        *,
+        timeout: float,
+    ) -> bytes:
+        """Call the authenticated Doubao multimedia endpoint."""
+
+        client, owned = self._client()
+        try:
+            response = await client.post(
+                self._url(DOUBAO_SAMANTHA_COMPLETION_PATH, credentials),
+                params=self._query(credentials),
+                headers=self._headers(credentials),
+                json=dict(payload),
+                timeout=timeout,
+            )
+            raw = bytes(response.content)
+            if response.status_code >= 400:
+                self._raise_upstream_error(response.status_code, raw)
+            return raw
+        except httpx.TimeoutException as exc:
+            raise DoubaoUpstreamError(
+                "豆包多媒体请求超时，请稍后重试",
+                status_code=504,
+                code="upstream_timeout",
+                retryable=True,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise DoubaoUpstreamError(
+                "豆包多媒体连接失败，请检查网络或稍后重试",
+                status_code=502,
+                code="upstream_unavailable",
+                retryable=True,
+            ) from exc
+        finally:
+            if owned:
+                await client.aclose()
+
+    @staticmethod
+    def _samantha_payload(
+        prompt: str,
+        *,
+        skill_id: int,
+        content_type: int,
+        ratio: str = "",
+        model: str = "",
+        duration: int | None = None,
+    ) -> dict[str, Any]:
+        content: dict[str, Any] = {"text": prompt}
+        if ratio:
+            content["ratio"] = ratio
+        if model:
+            content["model"] = model
+        if duration is not None:
+            content["duration"] = int(duration)
+        variables: dict[str, Any] = {
+            "style": "",
+            "ratio": ratio,
+            "model": model,
+            "template_type": "placeholder",
+        }
+        if duration is not None:
+            variables["duration"] = str(duration)
+        input_skill = {
+            "skill_id": str(skill_id),
+            "skill_type": skill_id,
+            "variables": variables,
+        }
+        samantha_context = json.dumps(
+            {"query_context": variables}, ensure_ascii=False, separators=(",", ":")
+        )
+        extra_ext = {
+            "input_skill": json.dumps(input_skill, ensure_ascii=False),
+            "answer_with_suggest": "0",
+            "samantha_context": samantha_context,
+        }
+        message = {
+            "content": json.dumps(content, ensure_ascii=False),
+            "content_type": content_type,
+            "attachments": [],
+            "references": [],
+            "skill": {
+                "skill_type": skill_id,
+                "skill_type_no_default": skill_id,
+                "skill_id": str(skill_id),
+                "skill_id_no_default": str(skill_id),
+            },
+            # These fields mirror the Web send-message envelope. Older
+            # Samantha deployments ignore the extra metadata, while newer
+            # deployments use it to select Seedream/Seedance variants.
+            "ext": {"samantha_context": samantha_context},
+            "extra_ext": extra_ext,
+            "extraExt": extra_ext,
+        }
+        return {
+            "messages": [message],
+            "completion_option": {
+                "is_regen": False,
+                "with_suggest": True,
+                "need_create_conversation": True,
+                "launch_stage": 1,
+                "is_replace": False,
+                "is_delete": False,
+                "is_ai_playground": False,
+                "memory_type": 2,
+                "message_from": 0,
+                "use_deep_think": False,
+                "use_auto_cot": False,
+                "resend_for_regen": False,
+                "enable_commerce_credit": False,
+                "action_bar_skill_id": skill_id,
+            },
+            "evaluate_option": {"web_ab_params": ""},
+            "local_conversation_id": str(uuid.uuid4()),
+            "local_message_id": str(uuid.uuid4()),
+        }
+
+    @staticmethod
+    def _samantha_error(raw: bytes, operation: str) -> None:
+        for event in _samantha_events(raw):
+            event_data = _samantha_event_data(event)
+            code = event_data.get("code") or event_data.get("error_code") or event.get("code")
+            message = (
+                event_data.get("message")
+                or event_data.get("msg")
+                or event_data.get("error_msg")
+                or event.get("message")
+            )
+            if code not in (None, "", 0, "0"):
+                status, mapped, retryable = _status_for_error(str(code))
+                raise DoubaoUpstreamError(
+                    _text(message) or f"豆包{operation}失败",
+                    status_code=status,
+                    code=mapped,
+                    retryable=retryable,
+                )
+
+    async def generate_image(
+        self,
+        prompt: str,
+        *,
+        ratio: str = "",
+        model: str = "",
+        account: Any = None,
+    ) -> dict[str, Any]:
+        credentials = await self._account_credentials(account)
+        if not _cookie_header(credentials):
+            raise DoubaoUpstreamError(
+                "豆包账号缺少 Cookie，请先导入或完成扫码登录",
+                status_code=401,
+                code="credential_missing",
+            )
+        raw = await self._samantha_request(
+            credentials,
+            self._samantha_payload(
+                prompt,
+                skill_id=3,
+                content_type=2009,
+                ratio=ratio,
+                model=model,
+            ),
+            timeout=180,
+        )
+        self._samantha_error(raw, "生图")
+        raw_images: list[dict[str, Any]] = []
+        fallback_images: list[dict[str, Any]] = []
+        for event in _samantha_events(raw):
+            message = _samantha_message(event)
+            if int(message.get("content_type") or 0) != 2010:
+                continue
+            content = _samantha_content(message)
+            if isinstance(content, Mapping) and isinstance(content.get("data"), list):
+                values = content["data"]
+            elif isinstance(content, list):
+                values = content
+            else:
+                values = [content]
+            for item in values:
+                url = _first_media_url(
+                    item, ("image_ori_raw", "image_raw", "image_ori", "image_thumb", "url")
+                )
+                if url:
+                    has_raw_variant = (
+                        _first_media_url(item, ("image_ori_raw", "image_raw", "url")) == url
+                    )
+                    target = raw_images if has_raw_variant else fallback_images
+                    target.append(
+                        {
+                            "url": url,
+                            "watermark_free": has_raw_variant,
+                            "source_variant": "image_ori_raw" if has_raw_variant else "fallback",
+                        }
+                    )
+        images = raw_images or fallback_images
+        if not images:
+            raise DoubaoUpstreamError(
+                "豆包没有返回生成图片，可能是账号风控或上游协议变化",
+                code="empty_media_response",
+            )
+        return {"created": int(time.time()), "data": images}
+
+    async def generate_video(
+        self,
+        prompt: str,
+        *,
+        ratio: str = "",
+        model: str = "",
+        duration: int | None = None,
+        account: Any = None,
+    ) -> dict[str, Any]:
+        credentials = await self._account_credentials(account)
+        if not _cookie_header(credentials):
+            raise DoubaoUpstreamError(
+                "豆包账号缺少 Cookie，请先导入或完成扫码登录",
+                status_code=401,
+                code="credential_missing",
+            )
+        raw = await self._samantha_request(
+            credentials,
+            self._samantha_payload(
+                prompt,
+                skill_id=17,
+                content_type=2020,
+                ratio=ratio,
+                model=model,
+                duration=duration,
+            ),
+            timeout=120,
+        )
+        self._samantha_error(raw, "视频生成")
+        task_id = ""
+        for event in _samantha_events(raw):
+            event_data = _samantha_event_data(event)
+            finish_reason = event_data.get("fin_reason")
+            if isinstance(finish_reason, Mapping):
+                task = finish_reason.get("async_task")
+                if isinstance(task, Mapping):
+                    task_id = _text(task.get("id")) or task_id
+        if task_id:
+            raw = await self._samantha_request(
+                credentials,
+                {"task_id": task_id, "event_id": 0},
+                timeout=360,
+            )
+            self._samantha_error(raw, "视频生成")
+        videos: list[dict[str, Any]] = []
+        for event in _samantha_events(raw):
+            message = _samantha_message(event)
+            if int(message.get("content_type") or 0) != 2021:
+                continue
+            content = _samantha_content(message)
+            if isinstance(content, Mapping) and isinstance(content.get("data"), list):
+                values = content["data"]
+            elif isinstance(content, list):
+                values = content
+            else:
+                values = [content]
+            for item in values:
+                url = _first_media_url(item, ("video_url", "main_url", "url"))
+                if url:
+                    videos.append({"url": url, "video_url": url})
+        if not videos:
+            raise DoubaoUpstreamError(
+                "豆包没有返回生成视频，可能是任务仍在排队或上游协议变化",
+                code="empty_media_response",
+            )
+        return {"created": int(time.time()), "data": videos}
 
     def _completion_payload(
         self,
@@ -950,6 +1397,73 @@ class DoubaoHttpTransport(NativeHttpAdapter):
         self._model_specs[scope] = {str(item["id"]): dict(item) for item in models}
         return models
 
+    async def list_generation_options(self, context: Any = None) -> list[Mapping[str, Any]]:
+        """Read the authenticated image/video selector config used by Doubao Web.
+
+        The normal brief-list endpoint only contains chat models. Creation
+        skills expose their model choices through a second per-item config API.
+        Keeping this lookup in the transport makes the admin model catalogue
+        match the account's actual Web entitlements.
+        """
+
+        credentials = await self._account_credentials(context)
+        if not _cookie_header(credentials):
+            return []
+        client, owned = self._client()
+        try:
+            headers = self._headers(credentials)
+            headers["Accept"] = "application/json"
+            brief = await client.post(
+                self._url(DOUBAO_MODEL_CATALOGUE_PATH, credentials),
+                params=self._query(credentials),
+                headers=headers,
+                json={
+                    "bot_id": _credential_value(credentials, "bot_id") or self.bot_id,
+                    "language_code": "zh",
+                },
+            )
+            if brief.status_code >= 400:
+                self._raise_upstream_error(brief.status_code, bytes(brief.content))
+            brief_payload = brief.json()
+            entries = (
+                brief_payload.get("data", {}).get("entry_list", [])
+                if isinstance(brief_payload, Mapping)
+                else []
+            )
+            if not isinstance(entries, list):
+                return []
+            entry_types = {
+                str(item.get("item_id")): int(item.get("instruction_type") or 0)
+                for item in entries
+                if isinstance(item, Mapping) and item.get("item_id") is not None
+            }
+            item_ids = [item_id for item_id in entry_types if item_id]
+            if not item_ids:
+                return []
+            config = await client.post(
+                self._url(DOUBAO_ACTION_BAR_ITEM_CONFIG_PATH, credentials),
+                params=self._query(credentials),
+                headers=headers,
+                json={
+                    "bot_id": _credential_value(credentials, "bot_id") or self.bot_id,
+                    "language_code": "zh",
+                    "item_ids": item_ids,
+                },
+            )
+            if config.status_code >= 400:
+                self._raise_upstream_error(config.status_code, bytes(config.content))
+            return _generation_option_models(config.json(), entry_types)
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            raise DoubaoUpstreamError(
+                "豆包生图/视频模型目录请求失败，请稍后重试",
+                status_code=502,
+                code="catalogue_unavailable",
+                retryable=True,
+            ) from exc
+        finally:
+            if owned:
+                await client.aclose()
+
     async def health(self, context: Any = None) -> Mapping[str, Any]:
         credentials = await self._account_credentials(context)
         if not _cookie_header(credentials):
@@ -960,7 +1474,7 @@ class DoubaoHttpTransport(NativeHttpAdapter):
         return {"status": "configured", "transport": "http"}
 
     async def invoke(self, request: Any, account: Any = None) -> httpx.Response:
-        _model, payload, _headers, _stream = self._payload(request)
+        model, payload, _headers, _stream = self._payload(request)
         credentials = await self._account_credentials(account)
         try:
             raw = await self._upstream(payload, credentials)
@@ -986,6 +1500,54 @@ class DoubaoHttpTransport(NativeHttpAdapter):
                 headers={"content-type": "application/json"},
                 json={"error": {"message": exc.message, "code": exc.code}},
                 request=httpx.Request("POST", f"{self.base_url}{DOUBAO_ALICE_COMPLETION_PATH}"),
+            )
+
+    async def invoke_capability(
+        self,
+        capability: str,
+        request: Any,
+        account: Any = None,
+    ) -> httpx.Response:
+        normalized = str(capability or "").strip().lower()
+        if normalized not in {"image", "video"}:
+            return await super().invoke_capability(normalized, request, account)
+        model, payload, _headers, _stream = self._payload(request)
+        prompt = _text(payload.get("prompt"))
+        if not prompt:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "prompt is required", "code": "invalid_request_error"}},
+            )
+        ratio = _text(payload.get("ratio"))
+        selected_model = _text(model or payload.get("model"))
+        duration_value = payload.get("duration")
+        try:
+            duration = int(duration_value) if duration_value is not None else None
+        except (TypeError, ValueError):
+            duration = None
+        try:
+            result = (
+                await self.generate_image(
+                    prompt,
+                    ratio=ratio,
+                    model=selected_model,
+                    account=account,
+                )
+                if normalized == "image"
+                else await self.generate_video(
+                    prompt,
+                    ratio=ratio,
+                    model=selected_model,
+                    duration=duration,
+                    account=account,
+                )
+            )
+            return httpx.Response(200, headers={"content-type": "application/json"}, json=result)
+        except DoubaoUpstreamError as exc:
+            return httpx.Response(
+                exc.status_code,
+                headers={"content-type": "application/json"},
+                json={"error": {"message": exc.message, "code": exc.code}},
             )
 
     async def open_stream(self, request: Any, account: Any = None) -> NativeStream:

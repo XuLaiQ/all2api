@@ -570,7 +570,7 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             model_env="A2A_DOUBAO_API_KEY",
             account_env="A2A_DOUBAO_API_KEY",
             protocols=("openai", "anthropic", "responses"),
-            caps=("chat",),
+            caps=("chat", "image", "video"),
             manifest=doubao.build_manifest(),
             provisioner=doubao_provisioner,
             upstream_adapter=doubao_adapter,
@@ -590,7 +590,7 @@ def _build_registry(settings: Settings) -> dict[str, AdapterSpec]:
             model_env="A2A_CHATGPT_AUTH_KEY",
             account_env="A2A_CHATGPT_AUTH_KEY",
             protocols=("openai", "anthropic", "responses"),
-            caps=("chat",),
+            caps=("chat", "image"),
             # ChatGPT onboarding is implemented in-process.  Keep the legacy
             # manifest fields below during the compatibility migration, but
             # use the canonical package manifest and CredentialStore port for

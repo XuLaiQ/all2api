@@ -85,6 +85,8 @@ export type PlaygroundFileResult = {
   error?: string;
 };
 
+export type PlaygroundGenerationResult = PlaygroundResult;
+
 export async function runPlaygroundSearch(body: {
   channel?: string;
   model?: string;
@@ -102,6 +104,25 @@ export async function runPlaygroundFileTask(body: {
   base64_images?: string[];
 }): Promise<PlaygroundFileResult> {
   const response = await apiClient.post<DataResponse<PlaygroundFileResult>>("/playground/editable-file", body);
+  return response.data.data;
+}
+
+export async function runPlaygroundGeneration(body: {
+  channel: string;
+  model: string;
+  capability: "image" | "video";
+  prompt: string;
+  n?: number;
+  size?: string;
+  quality?: string;
+  ratio?: string;
+  duration?: number;
+  base64_images?: string[];
+}): Promise<PlaygroundGenerationResult> {
+  const response = await apiClient.post<DataResponse<PlaygroundGenerationResult>>(
+    "/playground/generations",
+    body,
+  );
   return response.data.data;
 }
 

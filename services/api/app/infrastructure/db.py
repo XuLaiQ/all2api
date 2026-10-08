@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.config import API_DIR
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels (
@@ -239,6 +239,29 @@ CREATE TABLE IF NOT EXISTS playground_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_playground_messages_conversation_created
     ON playground_messages(conversation_id, created_at ASC);
+CREATE TABLE IF NOT EXISTS media_assets (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    run_id TEXT,
+    conversation_id TEXT,
+    channel TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+    filename TEXT NOT NULL,
+    storage_path TEXT,
+    source_url TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_assets_actor_created
+    ON media_assets(actor, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_media_assets_kind_created
+    ON media_assets(kind, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_media_assets_channel_created
+    ON media_assets(channel, created_at DESC);
 CREATE TABLE IF NOT EXISTS provision_sessions (
     channel TEXT NOT NULL,
     session_id TEXT NOT NULL,

@@ -7,6 +7,7 @@ import { NotFoundPage } from "./app/NotFoundPage";
 import { KeysPage } from "./features/keys/KeysPage";
 import { LogsPage } from "./features/logs/LogsPage";
 import { ModelsPage } from "./features/models/ModelsPage";
+import { MediaLibraryPage } from "./features/media/MediaLibraryPage";
 import { OverviewPage } from "./features/overview/OverviewPage";
 import { RoutesPage } from "./features/routes/RoutesPage";
 import { SystemPage } from "./features/system/SystemPage";
@@ -31,6 +32,7 @@ export const router = createBrowserRouter([
       { path: "channels", element: <ChannelsPage /> },
       { path: "accounts", element: <AccountsPage /> },
       { path: "models", element: <ModelsPage /> },
+      { path: "media", element: <MediaLibraryPage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },

@@ -9,6 +9,7 @@ import {
   fetchPlaygroundConversation,
   fetchPlaygroundConversations,
   fetchPlaygroundRuns,
+  runPlaygroundGeneration,
   runPlaygroundFileTask,
   runPlaygroundSearch,
   runPlaygroundStream,
@@ -19,13 +20,34 @@ import {
 import { PlaygroundComposer } from "./playground/PlaygroundComposer";
 import { PlaygroundConversation } from "./playground/PlaygroundConversation";
 import { PlaygroundHistorySidebar } from "./playground/PlaygroundHistorySidebar";
-import type { ChatMessage, ComposerMode, PlaygroundSidebarTab } from "./playground/types";
+import type {
+  ChatMessage,
+  ComposerMode,
+  PlaygroundGenerationSettings,
+  PlaygroundSidebarTab,
+} from "./playground/types";
 import "./PlaygroundPage.css";
 
 function stripThinkMarkup(value: string): string {
   return value
     .replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, "")
     .replace(/<\/?think\b[^>]*>/gi, "");
+}
+
+function mediaResultSummary(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const data = (value as { data?: unknown }).data;
+  if (!Array.isArray(data)) return "";
+  const media = data.filter((item) => {
+    if (!item || typeof item !== "object") return false;
+    const entry = item as { url?: unknown; video_url?: unknown; b64_json?: unknown };
+    return typeof entry.url === "string"
+      || typeof entry.video_url === "string"
+      || typeof entry.b64_json === "string";
+  });
+  if (media.length === 0) return "";
+  const isVideo = media.some((item) => typeof (item as { video_url?: unknown }).video_url === "string");
+  return `已生成 ${media.length} 个${isVideo ? "视频" : "图片"}结果。`;
 }
 
 function responseContent(value: unknown): string {
@@ -68,6 +90,8 @@ function responseContent(value: unknown): string {
   if (typeof value !== "object") return String(value);
 
   const payload = value as Record<string, unknown>;
+  const mediaSummary = mediaResultSummary(value);
+  if (mediaSummary) return mediaSummary;
   const choices = Array.isArray(payload.choices) ? payload.choices : [];
   const choiceText = choices.map(responseContent).filter((item) => item && item !== "（空响应）").join("");
   if (choiceText) return choiceText;
@@ -95,6 +119,29 @@ function responseError(value: unknown): string {
     return (error as { message: string }).message;
   }
   return "";
+}
+
+function generationSummary(value: unknown, capability: "image" | "video"): string {
+  if (value && typeof value === "object") {
+    const data = (value as { data?: unknown }).data;
+    if (Array.isArray(data)) {
+      return `已生成 ${data.length || 1} 个${capability === "image" ? "图片" : "视频"}结果。`;
+    }
+  }
+  return `已完成${capability === "image" ? "生图" : "视频生成"}请求。`;
+}
+
+function ratioToSize(ratio: string): string {
+  const sizes: Record<string, string> = {
+    "9:16": "1024x1536",
+    "2:3": "1024x1536",
+    "3:4": "1024x1365",
+    "4:3": "1365x1024",
+    "3:2": "1536x1024",
+    "16:9": "1536x864",
+    "1:1": "1024x1024",
+  };
+  return sizes[ratio] ?? "1024x1024";
 }
 
 function playgroundFailureMessage(result: PlaygroundResult): string {
@@ -146,6 +193,11 @@ export function PlaygroundPage() {
   const [channel, setChannel] = useState("");
   const [model, setModel] = useState("");
   const [composerMode, setComposerMode] = useState<ComposerMode>("chat");
+  const [generationSettings, setGenerationSettings] = useState<PlaygroundGenerationSettings>({
+    imageRatio: "1:1",
+    videoRatio: "16:9",
+    videoDuration: 10,
+  });
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [response, setResponse] = useState<unknown>(null);
@@ -224,10 +276,16 @@ export function PlaygroundPage() {
     setModelsError("");
     const loadModels = async () => {
       let result = await fetchModels(1, { channel, enabled: true }, controller.signal, 200);
-      if (result.data.length === 0 && role === "admin") {
-        await refreshModels(channel);
-        if (controller.signal.aborted) return;
-        result = await fetchModels(1, { channel, enabled: true }, controller.signal, 200);
+      if (role === "admin") {
+        try {
+          await refreshModels(channel);
+          if (controller.signal.aborted) return;
+          result = await fetchModels(1, { channel, enabled: true }, controller.signal, 200);
+        } catch (cause: unknown) {
+          // Keep an observed cache usable when a provider is temporarily
+          // unavailable; a missing cache still surfaces the refresh error.
+          if (result.data.length === 0) throw cause;
+        }
       }
       if (controller.signal.aborted) return;
       setModels(result.data);
@@ -250,12 +308,47 @@ export function PlaygroundPage() {
   }, [channel, modelsRetry, role]);
 
   const selectedChannel = useMemo(() => channels.find((item) => item.slug === channel), [channels, channel]);
-  const selectedModel = useMemo(() => models.find((item) => item.upstream_id === model), [models, model]);
+  const modeCapability = composerMode === "image" || composerMode === "video" ? composerMode : "chat";
+  const modeModels = useMemo(
+    () => models.filter((item) => item.caps.includes(modeCapability)),
+    [models, modeCapability],
+  );
+  const availableModes = useMemo<ComposerMode[]>(
+    () => [
+      ...(models.some((item) => item.caps.includes("chat")) ? ["chat" as const] : []),
+      ...(models.some((item) => item.caps.includes("image")) ? ["image" as const] : []),
+      ...(models.some((item) => item.caps.includes("video")) ? ["video" as const] : []),
+    ],
+    [models],
+  );
+  const selectedModel = useMemo(() => modeModels.find((item) => item.upstream_id === model), [modeModels, model]);
   const modelLabel = selectedModel?.display_name ?? model;
   function handleChannelChange(nextChannel: string) {
     setChannel(nextChannel);
     setModel("");
+    setComposerMode("chat");
   }
+
+  function handleModeChange(nextMode: ComposerMode) {
+    setComposerMode(nextMode);
+    const capability = nextMode === "image" || nextMode === "video" ? nextMode : "chat";
+    const nextModel = models.find((item) => item.caps.includes(capability));
+    setModel(nextModel?.upstream_id ?? "");
+  }
+
+  useEffect(() => {
+    if (availableModes.length === 0) {
+      setModel("");
+      return;
+    }
+    if (!availableModes.includes(composerMode)) {
+      setComposerMode("chat");
+      return;
+    }
+    if (!modeModels.some((item) => item.upstream_id === model)) {
+      setModel(modeModels[0]?.upstream_id ?? "");
+    }
+  }, [availableModes, composerMode, modeModels, model]);
 
   function startNewConversation() {
     setConversationId(null);
@@ -313,7 +406,7 @@ export function PlaygroundPage() {
 
   async function submit(event: FormEvent<HTMLFormElement>, images: string[]) {
     event.preventDefault();
-    const selected = models.find((item) => item.upstream_id === model);
+    const selected = modeModels.find((item) => item.upstream_id === model);
     const prompt = message.trim();
     if (role !== "admin" || !channel || !selected || !prompt || busy || (composerMode === "psd" && images.length === 0)) return;
 
@@ -323,6 +416,43 @@ export function PlaygroundPage() {
     setError("");
     setResponse(null);
     const assistantId = createMessageId();
+
+    if (composerMode === "image" || composerMode === "video") {
+      try {
+        const ratio = composerMode === "image"
+          ? generationSettings.imageRatio === "自动" ? "" : generationSettings.imageRatio
+          : generationSettings.videoRatio === "自动" ? "" : generationSettings.videoRatio;
+        const result = await runPlaygroundGeneration({
+          channel,
+          model: selected.upstream_id,
+          capability: composerMode,
+          prompt,
+          size: composerMode === "image" ? ratioToSize(ratio) : undefined,
+          ratio,
+          duration: generationSettings.videoDuration,
+          base64_images: images,
+        });
+        const failed = result.status !== "ok" || result.response_status >= 400;
+        const content = failed
+          ? responseError(result.response) || `生成失败（上游 HTTP ${result.response_status}）`
+          : generationSummary(result.response, composerMode);
+        if (result.conversation_id) setConversationId(result.conversation_id);
+        setResponse(result.response);
+        setMessages((current) => [
+          ...current,
+          { id: assistantId, role: failed ? "error" : "assistant", content, model: selected.upstream_id, raw: result.response },
+        ]);
+        if (failed) setError(content);
+        else setReload((value) => value + 1);
+      } catch (cause: unknown) {
+        const detail = cause instanceof ApiClientError ? cause.message : "媒体生成请求失败";
+        setError(detail);
+        setMessages((current) => [...current, { id: assistantId, role: "error", content: detail, model: selected.upstream_id }]);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
 
     if (composerMode === "search" || composerMode === "ppt" || composerMode === "psd") {
       try {
@@ -363,17 +493,13 @@ export function PlaygroundPage() {
       return;
     }
 
-    const runtimePrompt = composerMode === "image"
-      ? `请执行图像生成任务，使用当前图像参数完成：${prompt}`
-      : composerMode === "video"
-        ? `请执行视频生成任务，使用当前视频参数完成：${prompt}`
-        : composerMode === "writing"
-          ? `请帮我写作：${prompt}`
-          : composerMode === "quiz"
-            ? `请解答并分析：${prompt}`
-            : composerMode === "transcribe"
-              ? `请执行录音转写：${prompt}`
-              : prompt;
+    const runtimePrompt = composerMode === "writing"
+      ? `请帮我写作：${prompt}`
+      : composerMode === "quiz"
+        ? `请解答并分析：${prompt}`
+        : composerMode === "transcribe"
+          ? `请执行录音转写：${prompt}`
+          : prompt;
 
     const streamController = new AbortController();
     streamAbortRef.current = streamController;
@@ -431,7 +557,9 @@ export function PlaygroundPage() {
     model={model}
     selectedChannel={selectedChannel}
     selectedModel={selectedModel}
-    availableModels={models}
+    availableModels={modeModels}
+    availableModes={availableModes}
+    generationSettings={generationSettings}
     modelsLoading={modelsLoading}
     message={message}
     busy={busy}
@@ -440,7 +568,8 @@ export function PlaygroundPage() {
     onModelChange={setModel}
     onMessageChange={(event) => setMessage(event.target.value)}
     onKeyDown={handleComposerKeyDown}
-    onModeChange={setComposerMode}
+    onModeChange={handleModeChange}
+    onGenerationSettingsChange={setGenerationSettings}
     onSubmit={(event, images) => void submit(event, images)}
   />;
 

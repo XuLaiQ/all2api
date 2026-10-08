@@ -55,8 +55,9 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 - 请求日志：按请求 ID、渠道、模型、状态和时间筛选，分页查看并清理过期数据。
 - 审计日志：记录登录、Key、账号、渠道、路由、模型、用户和保留策略等管理写操作。
 - 用量统计：按天、渠道、模型或 Key 汇总请求和 Token，并区分已报告/未知用量。
+- 素材库：持久化保存各渠道生成的图片、视频、PPT、PSD 和素材包，支持筛选、回显、播放、下载和删除；豆包生图默认返回无水印原图（`image_ori_raw`），对未拿到原图而带水印的图片可在素材库一键像素级去水印并保存 `_clean` 副本。
 - 系统健康：查看服务信息、存储检查、指标、保留策略和渠道运行状态。
-- 调试台：管理员对已配置 native runtime 发起流式文本调试请求，支持 Markdown 回答、会话历史和请求记录管理。
+- 调试台：管理员对已配置 native runtime 发起聊天、图片和视频调试请求，支持媒体结果预览、会话历史和请求记录管理。
 - 用户管理：维护 viewer/admin 角色和启用状态；当前登录凭据仍由环境变量提供。
 
 ## 支持范围
@@ -66,8 +67,8 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 | 渠道 | 标识 | 协议 | 当前能力 | 账号新增方式 |
 | --- | --- | --- | --- | --- |
 | WorkBuddy | `wb` | OpenAI、Anthropic、Responses | 文本聊天 | Token 导入、二维码 OAuth（`cn`/`global`） |
-| Doubao | `doubao` | OpenAI、Anthropic、Responses | 文本聊天 | 本地 profile、二维码登录；默认使用 native HTTP QR worker，可选 Playwright |
-| ChatGPT | `chatgpt` | OpenAI、Anthropic、Responses | 文本聊天 | Token 导入、OAuth PKCE；支持凭据刷新 |
+| Doubao | `doubao` | OpenAI、Anthropic、Responses | 文本聊天、图片生成、视频生成 | 本地 profile、二维码登录；默认使用 native HTTP QR worker，可选 Playwright |
+| ChatGPT | `chatgpt` | OpenAI、Anthropic、Responses | 文本聊天、图片生成 | Token 导入、OAuth PKCE；支持凭据刷新 |
 
 ### 协议接口
 
@@ -78,13 +79,15 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 | `POST` | `/v1/messages` | 支持 | Anthropic Messages 文本协议，支持 `x-api-key` 或 Bearer 认证 |
 | `POST` | `/v1/responses` | 支持 | OpenAI Responses 文本协议，支持流式转换 |
 
-三个内置渠道的 manifest 当前都只声明 `chat` 能力。以下接口虽然保留了统一路由入口，但不是当前产品能力：
+WorkBuddy 只声明 `chat`；Doubao 声明 `chat`、`image`、`video`；ChatGPT 声明 `chat`、`image`。以下接口虽然保留了统一路由入口，但不是当前产品能力：
 
 协议转换以文本输入为主；Anthropic Messages 包含已实现的 tool use/tool result 映射，Responses 当前只接受文本或文本消息输入。
 
 | 路径 | 当前行为 |
 | --- | --- |
-| `/v1/images/generations`、`/v1/video/generations`、`/v1/audio/generations`、`/v1/search` | 能力调度入口已存在；当前内置渠道未声明对应能力，不能按已支持接口使用 |
+| `/v1/images/generations` | 仅接受对应渠道实时模型目录返回的生图模型 |
+| `/v1/video/generations` | 仅接受对应渠道实时模型目录返回的生视频模型 |
+| `/v1/audio/generations`、`/v1/search` | 能力路由已存在，但当前版本不在调试台开放 |
 | `/v1/images/edits`、`/v1/files`、`/v1/files/download` | 返回 `capability_not_supported` |
 | `/v1/ppt/generations`、`/v1/psd/generations`、`/v1/editable-file-tasks` | 返回 `capability_not_supported` |
 | `/v1/messages/count_tokens` | 当前未实现，返回 `capability_not_supported` |
@@ -107,7 +110,9 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
              WorkBuddy / Doubao / ChatGPT 官方平台
 
                          SQLite + WAL
-              账号、模型、Key、日志、用量、审计、session
+              账号、模型、Key、日志、用量、审计、session、素材元数据
+                         │
+                 data/media-assets/ 素材文件
                          │
                  Fernet 加密的渠道凭据
 ```

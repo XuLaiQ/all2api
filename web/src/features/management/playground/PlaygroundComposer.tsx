@@ -6,7 +6,7 @@ import type { ModelRecord } from "../../models/modelsApi";
 import type { ChannelOverview } from "../../usage/usageApi";
 import { PlaygroundComposerActions } from "./PlaygroundComposerActions";
 import { PlaygroundComposerModeControls } from "./PlaygroundComposerModeControls";
-import type { ComposerMode } from "./types";
+import type { ComposerMode, PlaygroundGenerationSettings } from "./types";
 
 export type ComposerImage = {
   id: string;
@@ -22,6 +22,8 @@ type PlaygroundComposerProps = {
   selectedChannel?: ChannelOverview;
   selectedModel?: ModelRecord;
   availableModels: ModelRecord[];
+  availableModes: ComposerMode[];
+  generationSettings: PlaygroundGenerationSettings;
   modelsLoading: boolean;
   message: string;
   busy: boolean;
@@ -31,6 +33,7 @@ type PlaygroundComposerProps = {
   onMessageChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onModeChange: (mode: ComposerMode) => void;
+  onGenerationSettingsChange: (settings: PlaygroundGenerationSettings) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>, images: string[]) => void;
 };
 
@@ -63,6 +66,8 @@ export function PlaygroundComposer({
   selectedChannel,
   selectedModel,
   availableModels,
+  availableModes,
+  generationSettings,
   modelsLoading,
   message,
   busy,
@@ -72,6 +77,7 @@ export function PlaygroundComposer({
   onMessageChange,
   onKeyDown,
   onModeChange,
+  onGenerationSettingsChange,
   onSubmit,
 }: PlaygroundComposerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -134,8 +140,15 @@ export function PlaygroundComposer({
               label: item.display_name === item.upstream_id ? item.display_name : `${item.display_name} (${item.upstream_id})`,
             }))}
           /></label>
-          <PlaygroundComposerActions mode={mode} onModeChange={onModeChange} onAttach={() => inputRef.current?.click()} />
-          <PlaygroundComposerModeControls mode={mode} />
+          <PlaygroundComposerActions mode={mode} availableModes={availableModes} onModeChange={onModeChange} onAttach={() => inputRef.current?.click()} />
+          <PlaygroundComposerModeControls
+            mode={mode}
+            availableModels={availableModels}
+            selectedModel={selectedModel}
+            settings={generationSettings}
+            onModelChange={onModelChange}
+            onSettingsChange={onGenerationSettingsChange}
+          />
           <input ref={inputRef} className="playground-composer-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void appendFiles(event.target.files); event.currentTarget.value = ""; }} disabled={role !== "admin" || busy} />
         </div>
       </div>

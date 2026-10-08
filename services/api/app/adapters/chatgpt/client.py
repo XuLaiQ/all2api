@@ -427,9 +427,31 @@ class ChatGPTWebClient:
                 if not model_id or model_id in seen:
                     continue
                 seen.add(model_id)
+                raw_capabilities = value.get("capabilities") or value.get("features")
+                capabilities = {
+                    str(item).strip().lower()
+                    for item in raw_capabilities
+                    if str(item).strip()
+                } if isinstance(raw_capabilities, list) else set()
+                model_text = " ".join(
+                    str(value.get(key) or "")
+                    for key in ("slug", "id", "name", "title", "type")
+                ).lower()
+                if capabilities & {"image", "image_generation", "image-gen", "image_gen"}:
+                    caps = ["image"]
+                    kind = "image"
+                elif any(token in model_text for token in ("gpt-image", "dall-e", "image-gen")):
+                    caps = ["image"]
+                    kind = "image"
+                else:
+                    caps = ["chat"]
+                    kind = "chat"
                 result.append(
                     {
                         "id": model_id,
+                        "name": str(value.get("name") or value.get("title") or model_id),
+                        "kind": kind,
+                        "caps": caps,
                         "object": "model",
                         "created": int(value.get("created") or 0),
                         "owned_by": str(value.get("owned_by") or "chatgpt"),
@@ -514,7 +536,11 @@ class ChatGPTWebClient:
 
     @staticmethod
     def _conversation_body(payload: Mapping[str, Any]) -> dict[str, Any]:
-        model = str(payload.get("model") or "auto").strip() or "auto"
+        model = str(payload.get("model") or "").strip()
+        if not model:
+            raise ChatGPTInvalidRequestError(
+                "ChatGPT model must be selected from the live model catalogue"
+            )
         return {
             "action": "next",
             "messages": ChatGPTWebClient._conversation_messages(payload.get("messages")),
@@ -701,12 +727,17 @@ class ChatGPTWebClient:
             "assistant_message_id": str(message.get("id") or ""),
         }
 
-    async def search(self, prompt: str, model: str = "auto") -> dict[str, Any]:
+    async def search(self, prompt: str, model: str) -> dict[str, Any]:
         """Run the ChatGPT Web search composer and return a redacted result DTO."""
 
         query = str(prompt or "").strip()
         if not query:
             raise ChatGPTInvalidRequestError("search prompt is required")
+        selected_model = str(model or "").strip()
+        if not selected_model:
+            raise ChatGPTInvalidRequestError(
+                "search model must be selected from the live model catalogue"
+            )
         await self._bootstrap()
         prepare_path = "/backend-api/f/conversation/prepare"
         prepared = await self._json_request(
@@ -716,7 +747,7 @@ class ChatGPTWebClient:
                 "action": "next",
                 "fork_from_shared_post": False,
                 "parent_message_id": "client-created-root",
-                "model": str(model or "auto"),
+                "model": selected_model,
                 "client_prepare_state": "success",
                 "timezone_offset_min": -480,
                 "timezone": "Asia/Shanghai",
@@ -772,7 +803,7 @@ class ChatGPTWebClient:
                 }
             ],
             "parent_message_id": "client-created-root",
-            "model": str(model or "auto"),
+            "model": selected_model,
             "client_prepare_state": "success",
             "timezone_offset_min": -480,
             "timezone": "Asia/Shanghai",
@@ -941,12 +972,298 @@ class ChatGPTWebClient:
             if owned:
                 await self._close_resource(client)
 
+    @classmethod
+    def _image_reference_ids(cls, value: Any) -> tuple[list[str], list[str]]:
+        file_ids: list[str] = []
+        attachment_ids: list[str] = []
+
+        def add(target: list[str], item: str) -> None:
+            if item and item not in target:
+                target.append(item)
+
+        def walk(item: Any) -> None:
+            if isinstance(item, str):
+                for prefix, target in (
+                    ("file-service://", file_ids),
+                    ("sediment://", attachment_ids),
+                ):
+                    if prefix in item:
+                        add(target, item.split(prefix, 1)[1].split()[0].strip("\"',)}]"))
+                return
+            if isinstance(item, Mapping):
+                for child in item.values():
+                    walk(child)
+            elif isinstance(item, list):
+                for child in item:
+                    walk(child)
+
+        walk(value)
+        return file_ids, attachment_ids
+
+    @classmethod
+    def _image_result_reference_ids(cls, value: Any) -> tuple[list[str], list[str]]:
+        """Read image ids from assistant/tool messages, excluding user inputs."""
+
+        if not isinstance(value, Mapping) or not isinstance(value.get("mapping"), Mapping):
+            return cls._image_reference_ids(value)
+        file_ids: list[str] = []
+        attachment_ids: list[str] = []
+        for node in value["mapping"].values():
+            if not isinstance(node, Mapping):
+                continue
+            message = node.get("message")
+            if not isinstance(message, Mapping):
+                continue
+            author = message.get("author")
+            role = str(author.get("role") or "").lower() if isinstance(author, Mapping) else ""
+            if role not in {"assistant", "tool"}:
+                continue
+            new_file_ids, new_attachment_ids = cls._image_reference_ids(
+                {"content": message.get("content"), "metadata": message.get("metadata")}
+            )
+            file_ids.extend(item for item in new_file_ids if item not in file_ids)
+            attachment_ids.extend(item for item in new_attachment_ids if item not in attachment_ids)
+        return file_ids, attachment_ids
+
+    async def _download_image_bytes(
+        self,
+        conversation_id: str,
+        file_id: str,
+        *,
+        attachment: bool = False,
+    ) -> bytes | None:
+        paths = (
+            [
+                f"/backend-api/conversation/{conversation_id}/attachment/{file_id}/download",
+                f"/backend-api/files/{file_id}/download",
+            ]
+            if attachment
+            else [
+                f"/backend-api/files/download/{file_id}",
+                f"/backend-api/files/{file_id}/download",
+            ]
+        )
+        for path in paths:
+            client, owned = self._client()
+            response: Any = None
+            try:
+                response = await client.get(
+                    f"{self.base_url}{path}",
+                    headers=self._headers(path, accept="*/*"),
+                    timeout=120,
+                )
+                if response.status_code >= 400:
+                    continue
+                content_type = str(response.headers.get("content-type") or "").lower()
+                if "json" not in content_type:
+                    return bytes(response.content)
+                try:
+                    payload = response.json()
+                except (TypeError, ValueError):
+                    payload = {}
+                url = (
+                    str(payload.get("download_url") or payload.get("url") or "")
+                    if isinstance(payload, Mapping)
+                    else ""
+                )
+                if not url:
+                    continue
+                download = await client.get(url, timeout=120)
+                if download.status_code < 400:
+                    return bytes(download.content)
+            except (httpx.TimeoutException, httpx.RequestError):
+                continue
+            finally:
+                if response is not None:
+                    await self._close_resource(response)
+                if owned:
+                    await self._close_resource(client)
+        return None
+
+    async def generate_image(
+        self,
+        prompt: str,
+        model: str,
+        images: list[str] | None = None,
+        size: str = "1024x1024",
+        quality: str = "auto",
+    ) -> dict[str, Any]:
+        """Generate an image through ChatGPT Web's authenticated picture flow."""
+
+        query = str(prompt or "").strip()
+        if not query:
+            raise ChatGPTInvalidRequestError("image prompt is required")
+        requested_model = str(model or "").strip()
+        if not requested_model:
+            raise ChatGPTInvalidRequestError(
+                "image model must be selected from the live model catalogue"
+            )
+        if not self.access_token:
+            raise ChatGPTAuthError()
+
+        uploaded = [
+            await self._upload_editable_image(value, index)
+            for index, value in enumerate(images or [], start=1)
+        ]
+        await self._bootstrap()
+        upstream_model = requested_model
+        prepared = await self._json_request(
+            "POST",
+            "/backend-api/f/conversation/prepare",
+            json_body={
+                "action": "next",
+                "fork_from_shared_post": False,
+                "parent_message_id": "client-created-root",
+                "model": upstream_model,
+                "client_prepare_state": "success",
+                "timezone_offset_min": -480,
+                "timezone": "Asia/Shanghai",
+                "conversation_mode": {"kind": "primary_assistant"},
+                "system_hints": ["picture_v2"],
+                "partial_query": {
+                    "id": str(uuid.uuid4()),
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": [query]},
+                },
+                "supports_buffering": True,
+                "supported_encodings": ["v1"],
+                "attachment_mime_types": [str(item["mime_type"]) for item in uploaded],
+            },
+            timeout=60,
+        )
+        conduit_token = str(prepared.get("conduit_token") or "").strip()
+        if not conduit_token:
+            raise ChatGPTProtocolError("ChatGPT image generation did not return a conduit token")
+        requirements = await self._requirements()
+        parts: list[Any] = [
+            {
+                "content_type": "image_asset_pointer",
+                "asset_pointer": f"file-service://{item['file_id']}",
+                "size_bytes": item["file_size"],
+                "width": item["width"],
+                "height": item["height"],
+            }
+            for item in uploaded
+        ]
+        parts.append(query)
+        message = {
+            "id": str(uuid.uuid4()),
+            "author": {"role": "user"},
+            "create_time": time.time(),
+            "content": {"content_type": "multimodal_text" if uploaded else "text", "parts": parts},
+            "metadata": {
+                "system_hints": ["picture_v2"],
+                "serialization_metadata": {"custom_symbol_offsets": []},
+                "attachments": [
+                    {
+                        "id": item["file_id"],
+                        "mimeType": item["mime_type"],
+                        "name": item["file_name"],
+                        "size": item["file_size"],
+                        "width": item["width"],
+                        "height": item["height"],
+                    }
+                    for item in uploaded
+                ],
+            },
+        }
+        path = "/backend-api/f/conversation"
+        extra = {
+            "X-Conduit-Token": conduit_token,
+            "OpenAI-Sentinel-Chat-Requirements-Token": requirements["token"],
+            **(
+                {"OpenAI-Sentinel-Turnstile-Token": requirements["turnstile"]}
+                if requirements.get("turnstile")
+                else {}
+            ),
+            **(
+                {"OpenAI-Sentinel-Proof-Token": requirements["proof"]}
+                if requirements.get("proof")
+                else {}
+            ),
+            **(
+                {"OpenAI-Sentinel-SO-Token": requirements["so_token"]}
+                if requirements.get("so_token")
+                else {}
+            ),
+        }
+        client, owned = self._client()
+        response: Any = None
+        try:
+            response = await client.post(
+                f"{self.base_url}{path}",
+                headers=self._headers(path, accept="text/event-stream", extra=extra),
+                json={
+                    "action": "next",
+                    "messages": [message],
+                    "parent_message_id": "client-created-root",
+                    "model": upstream_model,
+                    "client_prepare_state": "sent",
+                    "timezone_offset_min": -480,
+                    "timezone": "Asia/Shanghai",
+                    "conversation_mode": {"kind": "primary_assistant"},
+                    "enable_message_followups": True,
+                    "supports_buffering": True,
+                    "supported_encodings": ["v1"],
+                    "system_hints": ["picture_v2"],
+                    "client_contextual_info": {"app_name": "chatgpt.com"},
+                    "thinking_effort": "high",
+                },
+                timeout=self.timeout,
+            )
+            self._raise_for_status(response)
+            raw = bytes(response.content)
+        except httpx.TimeoutException as exc:
+            raise ChatGPTTimeoutError() from exc
+        except httpx.RequestError as exc:
+            raise ChatGPTUpstreamUnavailableError() from exc
+        finally:
+            if response is not None:
+                await self._close_resource(response)
+            if owned:
+                await self._close_resource(client)
+
+        _, conversation_id = self._sse_text(raw)
+        file_ids, attachment_ids = self._image_reference_ids(raw.decode("utf-8", "replace"))
+        for _ in range(30):
+            if conversation_id and not (file_ids or attachment_ids):
+                try:
+                    value = await self._json_request(
+                        "GET", f"/backend-api/conversation/{conversation_id}", timeout=60
+                    )
+                    new_file_ids, new_attachment_ids = self._image_result_reference_ids(value)
+                    file_ids.extend(item for item in new_file_ids if item not in file_ids)
+                    attachment_ids.extend(
+                        item for item in new_attachment_ids if item not in attachment_ids
+                    )
+                except ChatGPTError:
+                    pass
+            if file_ids or attachment_ids:
+                break
+            await asyncio.sleep(1)
+        images_out: list[dict[str, str]] = []
+        for file_id in file_ids:
+            content = await self._download_image_bytes(conversation_id, file_id)
+            if content:
+                images_out.append({"b64_json": base64.b64encode(content).decode("ascii")})
+        for attachment_id in attachment_ids:
+            content = await self._download_image_bytes(
+                conversation_id, attachment_id, attachment=True
+            )
+            if content:
+                images_out.append({"b64_json": base64.b64encode(content).decode("ascii")})
+        if not images_out:
+            text, _ = self._sse_text(raw)
+            raise ChatGPTProtocolError(text or "ChatGPT did not return a generated image")
+        await self.aclose()
+        return {"created": int(time.time()), "data": images_out}
+
     async def generate_editable(
         self,
         kind: str,
         prompt: str,
         images: list[str] | None = None,
-        model: str = "auto",
+        model: str = "",
     ) -> dict[str, Any]:
         """Request a PPT/PSD artifact and return attachment descriptors.
 
@@ -958,6 +1275,11 @@ class ChatGPTWebClient:
         normalized_kind = str(kind or "").strip().lower()
         if normalized_kind not in {"ppt", "psd"}:
             raise ChatGPTInvalidRequestError("editable file kind is invalid")
+        selected_model = str(model or "").strip()
+        if not selected_model:
+            raise ChatGPTInvalidRequestError(
+                "editable file model must be selected from the live model catalogue"
+            )
         image_values = list(images or [])
         if normalized_kind == "psd" and not image_values:
             raise ChatGPTInvalidRequestError("PSD generation requires an image")
@@ -980,7 +1302,7 @@ class ChatGPTWebClient:
                 "action": "next",
                 "fork_from_shared_post": False,
                 "parent_message_id": "client-created-root",
-                "model": str(model or "auto"),
+                "model": selected_model,
                 "client_prepare_state": "success",
                 "timezone_offset_min": -480,
                 "timezone": "Asia/Shanghai",
@@ -1066,7 +1388,7 @@ class ChatGPTWebClient:
                     "action": "next",
                     "messages": [message],
                     "parent_message_id": "client-created-root",
-                    "model": str(model or "auto"),
+                    "model": selected_model,
                     "client_prepare_state": "sent",
                     "timezone_offset_min": -480,
                     "timezone": "Asia/Shanghai",
@@ -1215,7 +1537,7 @@ class ChatGPTWebClient:
             self._raise_for_status(response)
             raw = response.content
             content, conversation_id = self._sse_text(raw)
-            model = str(payload.get("model") or body.get("model") or "auto")
+            model = str(payload.get("model") or body.get("model") or "").strip()
             stream = bool(payload.get("stream"))
             converted = self._openai_response(
                 model=model,

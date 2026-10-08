@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import codecs
 import inspect
 import json
@@ -17,7 +19,7 @@ from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.convertors import StringConvertor, register_url_convertor
 
@@ -39,6 +41,8 @@ from app.compat.legacy_bridge import provisioning
 from app.config import get_settings
 from app.infrastructure.credentials import AccountNotFoundError
 from app.infrastructure.db import SCHEMA_VERSION, database, resolve_db_path
+from app.infrastructure.http import build_client
+from app.infrastructure.media_store import MAX_ASSET_BYTES, MediaAssetStore
 from app.infrastructure.security import require_admin_request, require_same_origin
 from app.infrastructure.token_usage import estimate_usage
 from app.scheduler.runtime import account_runtime_snapshot, channel_state, runtime_states
@@ -174,17 +178,39 @@ class PlaygroundChatRequest(BaseModel):
 
 
 class PlaygroundSearchRequest(BaseModel):
-    model: str = Field(default="auto", min_length=1, max_length=256)
+    model: str = Field(min_length=1, max_length=256)
     channel: str = Field(default="chatgpt", min_length=1, max_length=64)
     prompt: str = Field(min_length=1, max_length=16_000)
 
 
 class PlaygroundEditableFileRequest(BaseModel):
-    model: str = Field(default="auto", min_length=1, max_length=256)
+    model: str = Field(min_length=1, max_length=256)
     channel: str = Field(default="chatgpt", min_length=1, max_length=64)
     kind: Literal["ppt", "psd"]
     prompt: str = Field(default="", max_length=16_000)
     base64_images: list[str] = Field(default_factory=list, max_length=4)
+
+
+class PlaygroundGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=256)
+    capability: Literal["image", "video"]
+    prompt: str = Field(min_length=1, max_length=16_000)
+    n: int = Field(default=1, ge=1, le=4)
+    size: str = Field(default="1024x1024", max_length=32)
+    quality: str = Field(default="auto", max_length=32)
+    ratio: str = Field(default="", max_length=16)
+    duration: int = Field(default=10, ge=1, le=60)
+    base64_images: list[str] = Field(default_factory=list, max_length=4)
+
+
+class MediaWatermarkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    data_url: str = Field(min_length=32, max_length=140_000_000)
+    filename: str = Field(default="", max_length=160)
 
 
 _RETENTION_SETTING_DEFAULTS = {
@@ -2146,6 +2172,18 @@ def _playground_file_root() -> Path:
     return root
 
 
+def _media_store() -> MediaAssetStore:
+    return MediaAssetStore(get_settings().db_path)
+
+
+def _media_asset_payload(record: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(record)
+    payload.pop("storage_path", None)
+    payload["content_url"] = f"/admin/api/media/assets/{record['id']}/content?inline=1"
+    payload["storage_status"] = "stored" if record.get("storage_path") else "remote"
+    return payload
+
+
 def _playground_safe_filename(value: object, fallback: str) -> str:
     name = Path(str(value or "")).name.replace("\x00", "").strip()
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
@@ -2409,6 +2447,160 @@ def _backfill_playground_usage() -> None:
                 error=None if str(run["status"]) == "ok" else "调试请求失败",
                 recorded_at=int(run["created_at"]),
             )
+
+
+@router.get("/media/assets", tags=["media"])
+def list_media_assets(
+    user: AdminContext,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=24, ge=1, le=100),
+    kind: str | None = Query(default=None, min_length=1, max_length=32),
+    channel: str | None = Query(default=None, min_length=1, max_length=64),
+    search: str | None = Query(default=None, min_length=1, max_length=256),
+) -> dict:
+    rows, total = _media_store().list_assets(
+        actor=_actor(user),
+        page=page,
+        page_size=page_size,
+        kind=kind,
+        channel=channel,
+        search=search,
+    )
+    return {
+        "data": [_media_asset_payload(row) for row in rows],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": (total + page_size - 1) // page_size,
+        },
+    }
+
+
+@router.get("/media/assets/{asset_id}/content", tags=["media"], response_model=None)
+async def media_asset_content(
+    asset_id: str,
+    user: AdminContext,
+    inline: bool = Query(default=False),
+) -> Response:
+    if not re.fullmatch(r"asset_[a-f0-9]{32}", asset_id):
+        raise HTTPException(status_code=404, detail="media asset not found")
+    store = _media_store()
+    record = store.get(asset_id, _actor(user))
+    if record is None:
+        raise HTTPException(status_code=404, detail="media asset not found")
+    path = store.content_path(record)
+    if path is not None:
+        return FileResponse(path, media_type=record["mime_type"], filename=record["filename"])
+    source_url = str(record.get("source_url") or "")
+    if source_url:
+        if inline:
+            client = build_client(timeout=90, connect_timeout=10)
+            try:
+                upstream = await client.get(source_url)
+                upstream.raise_for_status()
+                data = bytes(upstream.content)
+                if len(data) > MAX_ASSET_BYTES:
+                    raise HTTPException(
+                        status_code=413, detail="media asset exceeds the 100 MB limit"
+                    )
+                return Response(
+                    content=data,
+                    media_type=record["mime_type"],
+                    headers={"Content-Disposition": f'inline; filename="{record["filename"]}"'},
+                )
+            except HTTPException:
+                raise
+            except (httpx.HTTPError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=502, detail="remote media content unavailable"
+                ) from exc
+            finally:
+                await client.aclose()
+        return RedirectResponse(source_url, status_code=307)
+    raise HTTPException(status_code=404, detail="media asset content not found")
+
+
+@router.post(
+    "/media/assets/{asset_id}/remove-watermark",
+    tags=["media"],
+    dependencies=[Depends(_require_admin_write)],
+)
+def remove_media_watermark(
+    asset_id: str,
+    body: MediaWatermarkRequest,
+    user: AdminContext,
+    request: Request,
+) -> dict:
+    if not re.fullmatch(r"asset_[a-f0-9]{32}", asset_id):
+        raise HTTPException(status_code=404, detail="media asset not found")
+    store = _media_store()
+    actor = _actor(user)
+    source = store.get(asset_id, actor)
+    if source is None or source.get("kind") != "image":
+        raise HTTPException(status_code=404, detail="image asset not found")
+    match = re.fullmatch(
+        r"data:image/(?:png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\r\n]+)",
+        body.data_url,
+    )
+    if not match:
+        raise HTTPException(status_code=422, detail="watermark result must be a base64 image")
+    try:
+        data = base64.b64decode(match.group(1), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="watermark result is invalid") from exc
+    filename = body.filename.strip() or f"{Path(str(source['filename'])).stem}_clean.png"
+    record = store.add_bytes(
+        data,
+        actor=actor,
+        channel=str(source["channel"]),
+        model=str(source.get("model") or ""),
+        kind="image",
+        mime_type="image/png",
+        filename=filename,
+        run_id=source.get("run_id"),
+        conversation_id=source.get("conversation_id"),
+        metadata={
+            "operation": "gemini_pixel_watermark_removal",
+            "derived_from": asset_id,
+        },
+    )
+    with database(get_settings().db_path) as conn:
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="remove_media_watermark",
+            target=str(record["id"]),
+            detail=f"derived_from={asset_id}",
+        )
+    return {"data": _media_asset_payload(record)}
+
+
+@router.delete(
+    "/media/assets/{asset_id}",
+    tags=["media"],
+    dependencies=[Depends(_require_admin_write)],
+)
+def delete_media_asset(asset_id: str, user: AdminContext, request: Request) -> dict:
+    if not re.fullmatch(r"asset_[a-f0-9]{32}", asset_id):
+        raise HTTPException(status_code=404, detail="media asset not found")
+    store = _media_store()
+    actor = _actor(user)
+    if not store.delete(asset_id, actor):
+        raise HTTPException(status_code=404, detail="media asset not found")
+    with database(get_settings().db_path) as conn:
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="delete_media_asset",
+            target=asset_id,
+            detail="media asset deleted",
+        )
+    return {"data": {"id": asset_id, "deleted": True}}
+
+
 @router.get("/playground/conversations", tags=["playground"])
 def list_playground_conversations(
     user: AdminContext,
@@ -3046,6 +3238,218 @@ async def playground_chat(
 
 
 @router.post(
+    "/playground/generations",
+    tags=["playground"],
+    response_model=None,
+    dependencies=[Depends(_require_admin_write)],
+)
+async def playground_generation(
+    body: PlaygroundGenerationRequest,
+    request: Request,
+    user: AdminContext,
+) -> dict:
+    """Run a non-streaming image/video capability from the debug console."""
+
+    adapter = get_registry().get(body.channel)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="channel is not registered")
+    managed = _channel_management_state(body.channel)
+    if managed is not None and not bool(managed["enabled"]):
+        raise HTTPException(status_code=503, detail="channel_disabled")
+    runtime = getattr(adapter, "runtime", None)
+    invoke_capability = getattr(runtime, "invoke_capability", None)
+    if not callable(invoke_capability):
+        raise HTTPException(
+            status_code=501,
+            detail=f"selected channel does not implement native {body.capability} generation",
+        )
+
+    model = body.model
+    prefix = f"{body.channel}/"
+    if model.startswith(prefix):
+        model = model[len(prefix) :]
+    if "/" in model:
+        raise HTTPException(status_code=422, detail="model must belong to the selected channel")
+
+    actor = _actor(user)
+    now = int(time.time())
+    conversation_id = f"conv_{uuid.uuid4().hex}"
+    run_id = f"pg_{uuid.uuid4().hex}"
+    payload: dict[str, object] = {
+        "model": model,
+        "prompt": body.prompt,
+        "n": body.n,
+        "size": body.size,
+        "quality": body.quality,
+        "ratio": body.ratio,
+        "duration": body.duration,
+        "base64_images": body.base64_images,
+    }
+    request_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
+    with database(get_settings().db_path) as conn:
+        conn.execute(
+            """INSERT INTO playground_conversations
+            (id, actor, title, channel, model, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (conversation_id, actor, body.prompt[:80], body.channel, model, now, now),
+        )
+        conn.execute(
+            """INSERT INTO playground_messages
+            (id, conversation_id, role, content, model, created_at)
+            VALUES (?, ?, 'user', ?, ?, ?)""",
+            (f"msg_{uuid.uuid4().hex}", conversation_id, body.prompt, model, time.time_ns()),
+        )
+        conn.execute(
+            """INSERT INTO playground_runs
+            (id, conversation_id, actor, channel, model, status, message_count,
+             request_bytes, created_at)
+            VALUES (?, ?, ?, ?, ?, 'running', 1, ?, ?)""",
+            (run_id, conversation_id, actor, body.channel, model, request_bytes, now),
+        )
+
+    account = _playground_account(body.channel)
+    status_code = 502
+    status = "failed"
+    response_body: object = None
+    error_detail = ""
+    try:
+        result = invoke_capability(
+            body.capability,
+            {"model": model, "payload": payload, "stream": False},
+            account,
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        if isinstance(result, httpx.Response):
+            status_code = result.status_code
+            try:
+                response_body = result.json()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                response_body = result.text
+        else:
+            status_code = 200
+            response_body = result
+        error_detail, _ = _playground_error(response_body)
+        status = "ok" if status_code < 400 and not error_detail else "failed"
+    except ChatGPTError as exc:
+        status_code = int(getattr(exc, "status_code", 502))
+        error_detail = _playground_exception_message(exc)
+    except Exception as exc:
+        error_detail = _playground_exception_message(exc)
+
+    media_assets: list[dict[str, Any]] = []
+    if status == "ok":
+        media_assets = await _media_store().add_generation_response(
+            response_body,
+            actor=actor,
+            channel=body.channel,
+            model=model,
+            capability=body.capability,
+            run_id=run_id,
+            conversation_id=conversation_id,
+            metadata={"prompt": body.prompt},
+        )
+        if isinstance(response_body, Mapping) and media_assets:
+            response_body = dict(response_body)
+            values = response_body.get("data")
+            if isinstance(values, list):
+                rewritten: list[object] = []
+                for index, value in enumerate(values):
+                    if index >= len(media_assets) or not isinstance(value, Mapping):
+                        rewritten.append(value)
+                        continue
+                    item = dict(value)
+                    asset = _media_asset_payload(media_assets[index])
+                    item["url"] = asset["content_url"]
+                    if body.capability == "video":
+                        item["video_url"] = asset["content_url"]
+                    if body.channel == "doubao" and body.capability == "image":
+                        item["watermark_free"] = True
+                        item["source_variant"] = "opencv_telea_inpaint"
+                    rewritten.append(item)
+                response_body["data"] = rewritten
+    completion = _playground_text(response_body) if status == "ok" else ""
+    if status == "ok" and not completion:
+        values = response_body.get("data") if isinstance(response_body, Mapping) else None
+        count = len(values) if isinstance(values, list) else 1
+        media_label = "图片" if body.capability == "image" else "视频"
+        completion = f"已生成 {count} 个{media_label}结果。"
+    message_content = completion or error_detail or "调试请求失败"
+    raw_response = None
+    if response_body is not None:
+        try:
+            raw_response = json.dumps(response_body, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raw_response = str(response_body)
+    completed_at = int(time.time())
+    with database(get_settings().db_path) as conn:
+        conn.execute(
+            """UPDATE playground_runs
+            SET status=?, response_status=?, error_code=?, completed_at=?
+            WHERE id=?""",
+            (
+                status,
+                status_code,
+                "upstream_error" if status != "ok" else None,
+                completed_at,
+                run_id,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO playground_messages
+            (id, conversation_id, role, content, model, raw_response, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                f"msg_{uuid.uuid4().hex}",
+                conversation_id,
+                "assistant" if status == "ok" else "error",
+                message_content,
+                model,
+                raw_response,
+                time.time_ns(),
+            ),
+        )
+        _record_playground_usage(
+            conn,
+            run_id=run_id,
+            channel=body.channel,
+            model=model,
+            status=status_code,
+            started=now,
+            messages=[{"role": "user", "content": body.prompt}],
+            completion=completion,
+            stream=False,
+            error=error_detail or None,
+            recorded_at=completed_at,
+        )
+        conn.execute(
+            "UPDATE playground_conversations SET updated_at=? WHERE id=?",
+            (completed_at, conversation_id),
+        )
+        _audit_write(
+            conn,
+            user=user,
+            request=request,
+            action="playground_generation",
+            target=run_id,
+            detail=f"capability={body.capability};model={model};status={status}",
+        )
+
+    return {
+        "data": {
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "channel": body.channel,
+            "model": model,
+            "status": status,
+            "response_status": status_code,
+            "response": response_body,
+            "assets": [_media_asset_payload(asset) for asset in media_assets],
+        }
+    }
+
+
+@router.post(
     "/playground/search",
     tags=["playground"],
     response_model=None,
@@ -3143,17 +3547,41 @@ async def playground_editable_file(
     task_root = _playground_file_root() / task_id
     task_root.mkdir(parents=True, exist_ok=False)
     urls: dict[str, str] = {}
+    media_assets: list[dict[str, Any]] = []
+    media_store = _media_store()
     for index, item in enumerate(raw_files, start=1):
         if not isinstance(item, Mapping) or not isinstance(item.get("content"), (bytes, bytearray)):
             continue
         filename = _playground_safe_filename(item.get("name"), f"{body.kind}-{index}")
+        content = bytes(item["content"])
         path = task_root / filename
-        path.write_bytes(bytes(item["content"]))
+        path.write_bytes(content)
+        is_archive = filename.lower().endswith(".zip")
+        media_assets.append(
+            media_store.add_bytes(
+                content,
+                actor=_actor(user),
+                channel=body.channel,
+                model=model,
+                kind="archive" if is_archive else body.kind,
+                mime_type=(
+                    "application/zip"
+                    if is_archive
+                    else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    if body.kind == "ppt"
+                    else "image/vnd.adobe.photoshop"
+                ),
+                filename=filename,
+                metadata={"prompt": body.prompt, "task_id": task_id},
+            )
+        )
         key = "zip_url" if filename.lower().endswith(".zip") else "primary_url"
         if key == "primary_url" and "primary_url" in urls:
             continue
         urls[key] = f"/admin/api/playground/files/{task_id}/{filename}"
     if "primary_url" not in urls or "zip_url" not in urls:
+        for asset in media_assets:
+            media_store.delete(str(asset["id"]), _actor(user))
         raise HTTPException(
             status_code=502, detail="editable file generation did not return both files"
         )
@@ -3166,7 +3594,15 @@ async def playground_editable_file(
             target=body.channel,
             detail=f"kind={body.kind};model={model}",
         )
-    return {"data": {"task_id": task_id, "kind": body.kind, "status": "success", **urls}}
+    return {
+        "data": {
+            "task_id": task_id,
+            "kind": body.kind,
+            "status": "success",
+            "assets": [_media_asset_payload(asset) for asset in media_assets],
+            **urls,
+        }
+    }
 
 
 @router.get("/playground/files/{task_id}/{filename:path}", tags=["playground"])

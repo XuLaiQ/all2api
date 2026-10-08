@@ -11,7 +11,10 @@ CHATGPT_MANIFEST = ChannelManifest(
     display_name="ChatGPT",
     adapter_version="1.0.0",
     protocols=("openai", "anthropic", "responses"),
-    capabilities=("chat",),
+    # The concrete chat/image model records are supplied by the authenticated
+    # provider catalogue at runtime; the manifest only declares capability
+    # families and never invents model names.
+    capabilities=("chat", "image"),
     health_checks=("backend-api/me", "backend-api/conversation/init", "backend-api/accounts/check"),
     config_schema={
         "type": "object",

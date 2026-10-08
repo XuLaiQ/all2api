@@ -5,6 +5,7 @@ import type { ComposerMode } from "./types";
 
 type PlaygroundComposerActionsProps = {
   mode: ComposerMode;
+  availableModes: ComposerMode[];
   onModeChange: (mode: ComposerMode) => void;
   onAttach: () => void;
 };
@@ -20,7 +21,7 @@ const modeLabels: Record<Exclude<ComposerMode, "chat">, string> = {
   psd: "PSD 生成",
 };
 
-export function PlaygroundComposerActions({ mode, onModeChange, onAttach }: PlaygroundComposerActionsProps) {
+export function PlaygroundComposerActions({ mode, availableModes, onModeChange, onAttach }: PlaygroundComposerActionsProps) {
   const [moreOpen, setMoreOpen] = useState(false);
 
   function choose(nextMode: ComposerMode) {
@@ -53,20 +54,20 @@ export function PlaygroundComposerActions({ mode, onModeChange, onAttach }: Play
     <div className="playground-composer-actions">
       <Button variant="unstyled" className="playground-composer-action playground-composer-attach" onClick={onAttach} title="添加参考图片" aria-label="添加参考图片"><span aria-hidden="true">+</span></Button>
       <span className="playground-composer-action-divider" aria-hidden="true" />
-      <Button variant="unstyled" className="playground-composer-action is-active" onClick={() => choose("chat")}><span className="playground-composer-action-bubble" aria-hidden="true" />对话</Button>
-      <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("image")}><ImageIcon size={15} aria-hidden="true" />图像生成</Button>
-      <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("ppt")}><Presentation size={15} aria-hidden="true" />PPT 生成</Button>
-      <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("video")}><Video size={15} aria-hidden="true" />视频生成</Button>
-      <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("writing")}><PenLine size={15} aria-hidden="true" />帮我写作</Button>
-      <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("quiz")}><CircleHelp size={15} aria-hidden="true" />解题答疑</Button>
-      <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("transcribe")}><Mic size={15} aria-hidden="true" />录音转写</Button>
-      <div className="playground-composer-more">
+      {availableModes.includes("chat") && <Button variant="unstyled" className="playground-composer-action is-active" onClick={() => choose("chat")}><span className="playground-composer-action-bubble" aria-hidden="true" />对话</Button>}
+      {availableModes.includes("image") && <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("image")}><ImageIcon size={15} aria-hidden="true" />图像生成</Button>}
+      {availableModes.includes("video") && <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("video")}><Video size={15} aria-hidden="true" />视频生成</Button>}
+      {availableModes.includes("search") && <Button variant="unstyled" className="playground-composer-action" onClick={() => choose("search")}><Search size={15} aria-hidden="true" />联网搜索</Button>}
+      {availableModes.some((item) => ["ppt", "writing", "quiz", "transcribe", "psd"].includes(item)) && <div className="playground-composer-more">
         <Button variant="unstyled" className={`playground-composer-action${moreOpen ? " is-active" : ""}`} onClick={() => setMoreOpen((current) => !current)} aria-expanded={moreOpen} aria-haspopup="menu"><MoreHorizontal size={16} aria-hidden="true" />更多</Button>
         {moreOpen && <div className="playground-more-menu" role="menu">
-          <Button variant="unstyled" role="menuitem" onClick={() => choose("search")}><Search size={14} aria-hidden="true" />联网搜索</Button>
-          <Button variant="unstyled" role="menuitem" onClick={() => choose("psd")}><Layers3 size={14} aria-hidden="true" />PSD 生成</Button>
+          {availableModes.includes("ppt") && <Button variant="unstyled" role="menuitem" onClick={() => choose("ppt")}><Presentation size={14} aria-hidden="true" />PPT 生成</Button>}
+          {availableModes.includes("writing") && <Button variant="unstyled" role="menuitem" onClick={() => choose("writing")}><PenLine size={14} aria-hidden="true" />帮我写作</Button>}
+          {availableModes.includes("quiz") && <Button variant="unstyled" role="menuitem" onClick={() => choose("quiz")}><CircleHelp size={14} aria-hidden="true" />解题答疑</Button>}
+          {availableModes.includes("transcribe") && <Button variant="unstyled" role="menuitem" onClick={() => choose("transcribe")}><Mic size={14} aria-hidden="true" />录音转写</Button>}
+          {availableModes.includes("psd") && <Button variant="unstyled" role="menuitem" onClick={() => choose("psd")}><Layers3 size={14} aria-hidden="true" />PSD 生成</Button>}
         </div>}
-      </div>
+      </div>}
     </div>
   );
 }

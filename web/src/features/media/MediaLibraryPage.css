@@ -1,0 +1,49 @@
+.media-library-page{ gap: 16px; }
+.media-filter-form{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+.media-filter-form label{ display: grid; min-width: 160px; gap: 5px; color: var(--text-muted); font-size: 12px; font-weight: 700; }
+.media-filter-form .media-search-field{ min-width: min(320px, 100%); flex: 1 1 260px; }
+.media-filter-form input{ height: 36px; min-width: 0; padding: 0 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-control); background: var(--surface-inset); color: var(--text-primary); }
+.media-library-state{ padding: 56px 20px; border: 1px dashed var(--border-soft); border-radius: var(--radius-panel); color: var(--text-muted); text-align: center; background: var(--surface); }
+.media-asset-grid{ display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.media-asset-card{ min-width: 0; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius-panel); background: var(--surface); box-shadow: var(--shadow-soft); }
+.media-asset-preview{ position: relative; display: grid; width: 100%; aspect-ratio: 4 / 3; padding: 0; border: 0; background: var(--surface-inset); color: var(--text-primary); cursor: pointer; overflow: hidden; }
+.media-asset-preview img,.media-asset-preview video{ width: 100%; height: 100%; object-fit: cover; }
+.media-asset-preview:hover img,.media-asset-preview:hover video{ transform: scale(1.02); }
+.media-asset-preview img,.media-asset-preview video{ transition: transform .18s ease; }
+.media-play-badge{ position: absolute; left: 50%; top: 50%; display: grid; width: 42px; height: 42px; place-items: center; transform: translate(-50%, -50%); border-radius: 50%; background: color-mix(in srgb, #111 72%, transparent); color: #fff; }
+.media-file-placeholder{ display: grid; align-content: center; justify-items: center; gap: 7px; padding: 18px; color: var(--primary); }
+.media-file-placeholder strong{ font-size: 14px; }
+.media-file-placeholder span{ max-width: 100%; overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.media-asset-info{ display: grid; gap: 8px; padding: 12px; }
+.media-asset-title{ overflow: hidden; color: var(--text-primary); font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.media-asset-meta,.media-asset-source{ display: flex; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: 11px; }
+.media-asset-source span:last-child{ max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-asset-actions{ display: flex; align-items: center; gap: 7px; }
+.media-asset-actions .ui-button--secondary{ flex: 1; justify-content: center; }
+.media-viewer-backdrop{ position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, #0b1220 62%, transparent); }
+.media-viewer{ display: flex; width: min(960px, 100%); max-height: min(88dvh, 860px); flex-direction: column; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius-panel); background: var(--surface); box-shadow: var(--shadow-raised); }
+.media-viewer-header{ display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--border-soft); }
+.media-viewer-header div{ min-width: 0; display: grid; gap: 4px; }
+.media-viewer-header strong{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-viewer-header span{ color: var(--text-muted); font-size: 12px; }
+.media-viewer-body{ display: grid; min-height: 260px; place-items: center; overflow: auto; padding: 20px; background: var(--surface-inset); }
+.media-viewer-body > img,.media-viewer-body > video{ display: block; max-width: 100%; max-height: 70dvh; object-fit: contain; }
+.media-viewer-file{ display: grid; justify-items: center; gap: 12px; color: var(--text-secondary); text-align: center; }
+.media-viewer-file svg{ color: var(--primary); }
+.media-viewer-file p{ margin: 0; color: var(--text-muted); }
+@media (max-width: 680px){
+  .media-filter-form{ align-items: stretch; }
+  .media-filter-form label{ min-width: calc(50% - 5px); }
+  .media-filter-form .media-search-field{ min-width: 100%; }
+  .media-viewer-backdrop{ padding: 10px; }
+}

@@ -58,14 +58,6 @@ _upstream_slots = asyncio.Semaphore(64)
 PUBLIC_MODEL_DISCOVERY_TIMEOUT_SECONDS = 5
 
 
-_CAPABILITY_DEFAULT_MODELS = {
-    # Search providers expose a provider-owned default model.  Keep this
-    # explicit so a search client can omit model while still going through
-    # normal key scope and account selection.
-    "search": "chatgpt/auto",
-}
-
-
 def _allowed(key: dict[str, Any], channel: str, model_id: str) -> bool:
     """Backward-compatible boolean scope check for model listings."""
 
@@ -438,6 +430,27 @@ def _supports_capability(adapter: Any, capability: str) -> bool:
     return _capability_name(capability) in _adapter_capabilities(adapter)
 
 
+def _model_supports_capability(channel: str, model: str, capability: str) -> bool:
+    """Require a live/cached model declaration for non-chat capabilities."""
+
+    if capability == "chat":
+        return True
+    with database(get_settings().db_path) as conn:
+        row = conn.execute(
+            "SELECT caps FROM models WHERE channel = ? AND upstream_id = ? AND enabled = 1",
+            (channel, model),
+        ).fetchone()
+    if row is None:
+        return False
+    try:
+        values = json.loads(row["caps"] or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return capability in {
+        _capability_name(value) for value in values if isinstance(value, str)
+    }
+
+
 def _resolve_capability_targets(
     model_id: str,
     key: dict[str, Any],
@@ -453,6 +466,9 @@ def _resolve_capability_targets(
     channel, separator, _ = model_id.partition("/")
     if separator:
         adapter = adapters.get(channel)
+        upstream_model = model_id[len(channel) + 1 :]
+        if not _model_supports_capability(channel, upstream_model, capability):
+            raise HTTPException(status_code=404, detail="capability_not_supported")
         if adapter is not None and not _supports_capability(adapter, capability):
             raise HTTPException(status_code=404, detail="capability_not_supported")
 
@@ -461,6 +477,9 @@ def _resolve_capability_targets(
         target
         for target in targets
         if _supports_capability(adapters.get(target["channel"]), capability)
+        and _model_supports_capability(
+            target["channel"], target["upstream_model"], capability
+        )
     ]
     if not supported:
         raise HTTPException(status_code=404, detail="capability_not_supported")
@@ -718,6 +737,8 @@ async def list_models(key: KeyContext) -> dict:
                     "created": now,
                     "owned_by": adapter.slug,
                     "name": display_name,
+                    "kind": str(item.get("kind") or "chat"),
+                    "caps": list(item.get("caps") or item.get("capabilities") or ["chat"]),
                 }
             )
             model_ids.add(model_id)
@@ -725,7 +746,7 @@ async def list_models(key: KeyContext) -> dict:
     if unavailable_channels:
         with database(db_path) as conn:
             cached_rows = conn.execute(
-                """SELECT id, channel, upstream_id, display_name
+                """SELECT id, channel, upstream_id, display_name, kind, caps
                 FROM models WHERE enabled = 1 ORDER BY channel, display_name, id"""
             ).fetchall()
         for row in cached_rows:
@@ -742,6 +763,8 @@ async def list_models(key: KeyContext) -> dict:
                     "created": now,
                     "owned_by": channel,
                     "name": str(row["display_name"] or row["upstream_id"]),
+                    "kind": str(row["kind"] or "chat"),
+                    "caps": json.loads(row["caps"] or "[]"),
                 }
             )
             model_ids.add(model_id)
@@ -1052,10 +1075,7 @@ async def _dispatch_chat(
         raise HTTPException(status_code=422, detail="request body must be an object")
     model_value = payload.get("model")
     if not isinstance(model_value, str) or not model_value.strip():
-        if capability == "search":
-            model_value = _CAPABILITY_DEFAULT_MODELS[capability]
-        else:
-            raise HTTPException(status_code=422, detail="model is required")
+        raise HTTPException(status_code=422, detail="model is required")
     model_id = model_value.strip()
     if capability != "chat" and payload.get("stream") is True:
         raise HTTPException(

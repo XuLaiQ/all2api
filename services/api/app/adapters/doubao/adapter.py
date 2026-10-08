@@ -93,16 +93,20 @@ class DoubaoAdapter:
         await self.provisioner.startup()
 
     async def list_models(self, context: Any = None) -> list[Mapping[str, Any]]:
-        """Return models supplied by an already migrated catalogue port.
+        """Return the authenticated chat and generation catalogue from Doubao Web."""
 
-        The native adapter deliberately performs no legacy HTTP request.  A
-        future Doubao model client can populate ``context['models']`` here.
-        """
-
-        if isinstance(context, Mapping) and isinstance(context.get("models"), list):
-            return [item for item in context["models"] if isinstance(item, Mapping)]
         if self.runtime is not None:
-            return await self.runtime.list_models(context)
+            values = await self.runtime.list_models(context)
+            generation_options: list[Mapping[str, Any]] = []
+            option_reader = getattr(self.runtime, "list_generation_options", None)
+            if callable(option_reader):
+                generation_options = [
+                    item
+                    for item in await option_reader(context)
+                    if isinstance(item, Mapping)
+                ]
+            combined = [*values, *generation_options]
+            return combined
         return []
 
     async def list_accounts(self, context: Any = None) -> list[Mapping[str, Any]]:
