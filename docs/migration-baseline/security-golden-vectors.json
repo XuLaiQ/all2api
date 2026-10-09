@@ -1,0 +1,19 @@
+{
+  "api_key_sha256": {
+    "input": "sk-a2a-fixture",
+    "sha256": "a3333ea68e538e6d7adbe3654b96af01ec7dcb1a93c18044744bf3107a1a7b3e"
+  },
+  "fernet": {
+    "master_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "token": "gAAAAABlU_EA3dKXHoyYT5_LycPowzYjlcQtoVA4i5TNDcp05M3_gOmXaW3_Z3WHg6nC2JxBNnz1G8dMQBT_7_ZZlxW3pfA8midb6y8Y__g0DhJOYE93G2g=",
+    "plaintext": "all2api fernet fixture"
+  },
+  "session_cookie": {
+    "name": "a2a_session",
+    "session_secret": "fixture-session-secret-0123456789",
+    "payload": "eyJzaWQiOiJmaXh0dXJlLXNlc3Npb24iLCJ1c2VybmFtZSI6ImFkbWluIiwicm9sZSI6ImFkbWluIiwic3YiOjEsImV4cCI6MTcwMDA4NjQwMH0",
+    "signature": "wv8jc-Zs-uWhs-WvOI7pRmuqTV0LU_RoBua7chpItpk",
+    "signature_algorithm": "HMAC-SHA256 over the ASCII payload using the configured session secret"
+  },
+  "secrets_written": false
+}

@@ -1,0 +1,32 @@
+{
+  "format": "all2api-chatgpt-connectivity-v1",
+  "checked_at": "2026-10-08T21:43:22Z",
+  "secrets_logged": false,
+  "probes": [
+    {
+      "target": "https://chatgpt.com/",
+      "status": 0,
+      "result": "timeout_15s"
+    },
+    {
+      "target": "https://chatgpt.com/backend-api/models",
+      "status": 0,
+      "result": "timeout_15s"
+    },
+    {
+      "target": "https://chat.openai.com/",
+      "status": 0,
+      "result": "timeout_15s"
+    },
+    {
+      "target": "https://auth.openai.com/",
+      "status": 403,
+      "result": "reachable_without_credentials"
+    }
+  ],
+  "dns": {
+    "target": "chatgpt.com",
+    "a_record_observed": true
+  },
+  "conclusion": "ChatGPT Web hosts and Web API endpoint are unreachable from the Go process environment; no credential or upstream response body was logged."
+}

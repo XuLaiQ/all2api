@@ -1,0 +1,39 @@
+{
+  "generated_at": "2026-10-08T08:07:23.863788+00:00",
+  "source": "services/api/app (migration-time read-only inspection)",
+  "contract": {
+    "openapi_paths": 72,
+    "routes": 82
+  },
+  "config_fields": 56,
+  "database": {
+    "status": "collected_read_only",
+    "schema_version": 11,
+    "tables": {
+      "account_runtime_state": 1,
+      "accounts": 3,
+      "api_key_rate_events": 4,
+      "api_keys": 2,
+      "audit_logs": 319,
+      "channel_runtime_state": 5,
+      "channels": 1,
+      "credentials": 3,
+      "media_assets": 5,
+      "models": 41,
+      "playground_conversations": 26,
+      "playground_messages": 108,
+      "playground_runs": 64,
+      "provision_idempotency": 15,
+      "provision_sessions": 3,
+      "request_logs": 82,
+      "route_targets": 0,
+      "routes": 0,
+      "schema_migrations": 10,
+      "settings": 0,
+      "usage_daily": 32,
+      "users": 1
+    },
+    "source_path": "omitted"
+  },
+  "secrets_written": false
+}

@@ -144,7 +144,7 @@ export function SystemPage() {
               <dl className="system-detail-grid">
                 <Detail label="服务" value={info?.service ?? "—"} />
                 <Detail label="版本" value={info?.version ?? "—"} />
-                <Detail label="Python" value={info ? `${info.python_version} · ${info.python_implementation}` : "—"} />
+                <Detail label="Go" value={info ? `${info.go_version} · ${info.implementation}` : "—"} />
                 <Detail label="Schema" value={String(info?.schema_version ?? "—")} />
                 <Detail label="数据库" value={info?.database.present ? bytes(info.database.bytes) : "未创建"} />
                 <Detail label="运行态文件" value={runtime.label} />

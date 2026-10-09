@@ -1,0 +1,29 @@
+{
+  "status": "collected_read_only",
+  "schema_version": 11,
+  "tables": {
+    "account_runtime_state": 1,
+    "accounts": 3,
+    "api_key_rate_events": 4,
+    "api_keys": 2,
+    "audit_logs": 319,
+    "channel_runtime_state": 5,
+    "channels": 1,
+    "credentials": 3,
+    "media_assets": 5,
+    "models": 41,
+    "playground_conversations": 26,
+    "playground_messages": 108,
+    "playground_runs": 64,
+    "provision_idempotency": 15,
+    "provision_sessions": 3,
+    "request_logs": 82,
+    "route_targets": 0,
+    "routes": 0,
+    "schema_migrations": 10,
+    "settings": 0,
+    "usage_daily": 32,
+    "users": 1
+  },
+  "source_path": "omitted"
+}

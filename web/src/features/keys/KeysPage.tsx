@@ -34,6 +34,7 @@ type EditorState = {
 
 type FilterDraft = { search: string; enabled: string };
 const emptyFilters: FilterDraft = { search: "", enabled: "" };
+type CopyTarget = number | "one-time";
 
 const emptyEditor: EditorState = {
   name: "",
@@ -64,6 +65,12 @@ function keyStatus(row: ApiKeyRecord): { label: string; className: string } {
 function maskKey(value: string): string {
   if (value.length <= 12) return `${value.slice(0, 4)}***`;
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function gatewayBaseUrl(): string {
+  const configured = import.meta.env.VITE_GATEWAY_BASE_URL?.trim();
+  const base = (configured || window.location.origin).replace(/\/+$/, "");
+  return base.endsWith("/v1") ? base : `${base}/v1`;
 }
 
 async function copyText(value: string): Promise<boolean> {
@@ -113,6 +120,7 @@ export function KeysPage() {
   const [oneTimeKey, setOneTimeKey] = useState("");
   const [oneTimeTitle, setOneTimeTitle] = useState("");
   const [copiedKeyId, setCopiedKeyId] = useState<number | null>(null);
+  const [copiedUrlTarget, setCopiedUrlTarget] = useState<CopyTarget | null>(null);
   const [pendingAction, setPendingAction] = useState<{ id: number; kind: "rotate" | "revoke" } | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -257,6 +265,17 @@ export function KeysPage() {
     }, 1500);
   }
 
+  async function copyGatewayUrl(target: CopyTarget) {
+    if (!(await copyText(gatewayBaseUrl()))) {
+      setError("无法访问剪贴板，请手动复制调用地址");
+      return;
+    }
+    setCopiedUrlTarget(target);
+    window.setTimeout(() => {
+      setCopiedUrlTarget((current) => (current === target ? null : current));
+    }, 1500);
+  }
+
   return (
     <main className="page-content data-page keys-page">
       <div className="page-heading">
@@ -293,6 +312,21 @@ export function KeysPage() {
             <h2 id="one-time-key-title">{oneTimeTitle}</h2>
             <p>关闭此区域后无法再次查看完整值。请在继续前保存它。</p>
             <code>{oneTimeKey}</code>
+            <div className="one-time-key-url">
+              <span>调用地址</span>
+              <div className="key-url-cell">
+                <code title={gatewayBaseUrl()}>{gatewayBaseUrl()}</code>
+                <Button
+                  variant="unstyled"
+                  className="key-copy-button"
+                  aria-label={copiedUrlTarget === "one-time" ? "已复制调用地址" : "复制调用地址"}
+                  title={copiedUrlTarget === "one-time" ? "已复制" : "复制调用地址"}
+                  onClick={() => void copyGatewayUrl("one-time")}
+                >
+                  {copiedUrlTarget === "one-time" ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+                </Button>
+              </div>
+            </div>
           </div>
           <div className="log-filter-actions">
             <Button variant="primary" onClick={copyOneTimeKey}>复制密钥</Button>
@@ -335,7 +369,7 @@ export function KeysPage() {
       ) : (
         <DataTable className="key-table has-row-actions" ariaLabel="网关密钥列表">
             <thead>
-              <tr><th>名称 / 前缀</th><th>密钥</th><th>状态</th><th>渠道</th><th>模型</th><th>RPM</th><th>到期</th><th>最后使用</th><th>操作</th></tr>
+              <tr><th>名称 / 前缀</th><th>密钥</th><th>调用地址</th><th>状态</th><th>渠道</th><th>模型</th><th>RPM</th><th>到期</th><th>最后使用</th><th>操作</th></tr>
             </thead>
             <tbody>
               {rows.map((row) => {
@@ -357,6 +391,20 @@ export function KeysPage() {
                           onClick={() => void copyRowKey(row)}
                         >
                           {copiedKeyId === row.id ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+                        </Button>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="key-url-cell">
+                        <code title={gatewayBaseUrl()}>{gatewayBaseUrl()}</code>
+                        <Button
+                          variant="unstyled"
+                          className="key-copy-button"
+                          aria-label={copiedUrlTarget === row.id ? "已复制调用地址" : "复制调用地址"}
+                          title={copiedUrlTarget === row.id ? "已复制" : "复制调用地址"}
+                          onClick={() => void copyGatewayUrl(row.id)}
+                        >
+                          {copiedUrlTarget === row.id ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
                         </Button>
                       </div>
                     </td>

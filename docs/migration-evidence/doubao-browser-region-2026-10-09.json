@@ -1,0 +1,11 @@
+{
+  "format": "all2api-doubao-browser-region-v1",
+  "checked_at": "2026-10-09T05:37:49Z",
+  "secrets_logged": false,
+  "target": "https://www.doubao.com/chat/",
+  "observed_url": "https://www.doubao.com/security/doubao-region-ban?source=1",
+  "status": "region_restricted",
+  "page_text": "受区域限制，请先登录再使用豆包。你也可以选择使用 Dola。",
+  "login_action": "not_performed",
+  "conclusion": "Unauthenticated public browser access is region restricted; no login, credential entry or cookie inspection was performed."
+}

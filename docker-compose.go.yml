@@ -1,0 +1,110 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.golang
+    ports:
+      - "${API_PORT:-8888}:8888"
+    environment:
+      A2A_HOST: 0.0.0.0
+      A2A_ENV: ${A2A_ENV:-development}
+      A2A_PORT: "8888"
+      A2A_DB_PATH: /app/data/all2api.db
+      A2A_STATE_PATH: /app/data/gateway/state.json
+      A2A_SESSION_SECRET: ${A2A_SESSION_SECRET:-dev-only-change-me}
+      A2A_CREDENTIAL_MASTER_KEY: ${A2A_CREDENTIAL_MASTER_KEY:-}
+      A2A_ADMIN_USERNAME: ${A2A_ADMIN_USERNAME:-admin}
+      A2A_ADMIN_PASSWORD: ${A2A_ADMIN_PASSWORD:-}
+      A2A_ALLOW_WEAK_ADMIN_PASSWORD: ${A2A_ALLOW_WEAK_ADMIN_PASSWORD:-false}
+      A2A_ADMIN_TOKEN: ${A2A_ADMIN_TOKEN:-}
+      A2A_BOOTSTRAP_API_KEY: ${A2A_BOOTSTRAP_API_KEY:-}
+      A2A_BOOTSTRAP_RPM: ${A2A_BOOTSTRAP_RPM:-60}
+      A2A_TRUST_PROXY: ${A2A_TRUST_PROXY:-true}
+      A2A_TRUSTED_PROXIES: ${A2A_TRUSTED_PROXIES:-127.0.0.1,::1}
+      A2A_WB_PLATFORM_BASE: ${A2A_WB_PLATFORM_BASE:-https://copilot.tencent.com}
+      A2A_DOUBAO_PLATFORM_BASE: ${A2A_DOUBAO_PLATFORM_BASE:-https://www.doubao.com}
+      A2A_CHATGPT_PLATFORM_BASE: ${A2A_CHATGPT_PLATFORM_BASE:-https://auth.openai.com}
+      A2A_CHATGPT_WEB_BASE: ${A2A_CHATGPT_WEB_BASE:-https://chatgpt.com}
+      A2A_CHATGPT_PROXY: ${A2A_CHATGPT_PROXY:-}
+      A2A_CORS_ORIGINS: http://localhost:${WEB_PORT:-5555},http://127.0.0.1:${WEB_PORT:-5555}
+      A2A_DOUBAO_BROWSER_ENABLED: ${A2A_DOUBAO_BROWSER_ENABLED:-false}
+      A2A_DOUBAO_BROWSER_WORKER_BASE: ${A2A_DOUBAO_BROWSER_WORKER_BASE:-http://browser-worker:8891}
+      A2A_DOUBAO_BROWSER_WORKER_TOKEN: ${A2A_DOUBAO_BROWSER_WORKER_TOKEN:-}
+    volumes:
+      - go_api_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8888/admin/api/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  browser-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.golang
+    entrypoint: ["/usr/local/bin/doubao-browser-worker"]
+    environment:
+      A2A_DOUBAO_BROWSER_WORKER_PORT: "8891"
+      A2A_DOUBAO_BROWSER_ENABLED: ${A2A_DOUBAO_BROWSER_ENABLED:-false}
+      A2A_DOUBAO_PLATFORM_BASE: ${A2A_DOUBAO_PLATFORM_BASE:-https://www.doubao.com}
+      A2A_DOUBAO_PROFILE_ROOT: /app/data/doubao/profiles
+      A2A_DOUBAO_BROWSER_EXECUTABLE: ${A2A_DOUBAO_BROWSER_EXECUTABLE:-}
+      A2A_DOUBAO_BROWSER_HEADLESS: ${A2A_DOUBAO_BROWSER_HEADLESS:-true}
+      A2A_DOUBAO_BROWSER_WORKER_TOKEN: ${A2A_DOUBAO_BROWSER_WORKER_TOKEN:-}
+    volumes:
+      - go_browser_data:/app/data
+    expose:
+      - "8891"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8891/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  media-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.golang
+    entrypoint: ["/usr/local/bin/media-worker"]
+    environment:
+      A2A_MEDIA_WORKER_PORT: "8892"
+      A2A_MEDIA_WORKER_ROOT: /app/data/media-worker
+      A2A_MEDIA_WORKER_TOKEN: ${A2A_MEDIA_WORKER_TOKEN:-}
+    volumes:
+      - go_media_worker_data:/app/data
+    expose:
+      - "8892"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8892/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    image: node:24-bookworm-slim
+    working_dir: /workspace
+    command: >-
+      sh -lc "corepack enable && cd web && pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0 --port 5555"
+    ports:
+      - "${WEB_PORT:-5555}:5555"
+    environment:
+      VITE_PROXY_TARGET: http://api:8888
+    volumes:
+      - .:/workspace
+      - go_workspace_node_modules:/workspace/node_modules
+      - go_web_node_modules:/workspace/web/node_modules
+    init: true
+    depends_on:
+      api:
+        condition: service_healthy
+      browser-worker:
+        condition: service_healthy
+      media-worker:
+        condition: service_healthy
+
+volumes:
+  go_api_data:
+  go_browser_data:
+  go_workspace_node_modules:
+  go_web_node_modules:
+  go_media_worker_data:

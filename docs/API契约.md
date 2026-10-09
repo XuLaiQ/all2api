@@ -62,8 +62,20 @@ fallback、请求日志和用量统计。路由层只把请求发送到同时声
 - `search` -> `/v1/search`。
 
 这些通用路由当前为非流式 JSON dispatch；请求 `stream=true` 返回
-`invalid_request_error`。文件上传/下载、图像编辑、PPT/PSD 和可编辑文件任务仍返回
-`capability_not_supported`，不会把 provider-specific 协议伪装成通用结果。
+`invalid_request_error`。图片/视频成功结果会由 Go media store 归一化为本地 asset，
+并在网关响应中返回 `/v1/files/{file_id}/content`；无法下载的签名 URL 仍以 remote
+asset metadata 保留。图像编辑、PPT/PSD 和可编辑文件任务仍受 manifest gate，未声明
+时返回 `capability_not_supported`，不会把 provider-specific 协议伪装成通用结果。
+
+`POST /v1/files`、`GET /v1/files`、`GET/DELETE /v1/files/{file_id}` 和
+`GET /v1/files/{file_id}/content` 由 Go 本地 media store 提供。上传使用 multipart
+字段 `file`，可选 `purpose`；文件按网关 Key 隔离，响应不返回服务器路径，内容下载
+仍需同一 Key。单文件上限为 100 MB，provider 文件处理和多模态输入不由这些本地接口
+自动推断。
+
+Go media worker 的 `POST /v1/watermark/remove` 接受 `{ "data_base64": "..." }`，返回
+PNG base64、尺寸和 `method=go_region_repair`。该接口是本地确定性区域修复，不代表
+已通过任一 provider 的真实去水印质量验收。
 
 ## 3. 通用格式
 
@@ -104,7 +116,7 @@ fallback、请求日志和用量统计。路由层只把请求发送到同时声
 | 503 | `channel_disabled` / `adapter_unavailable` | 本地配置/worker 不可用 |
 | 504 | `upstream_timeout` | 平台请求超时 |
 
-数据面错误遵循对应 OpenAI/Anthropic error shape，不套管理 envelope。SSE 已开始后无法修改 HTTP 状态；发送协议错误帧并记录一次失败，不伪造 `[DONE]`。
+数据面错误遵循对应 OpenAI/Anthropic error shape，不套管理 envelope。SSE 已开始后无法修改 HTTP 状态；公共 Chat Completions、Anthropic Messages 和 Responses 均逐步输出 delta，发送协议错误帧并记录一次失败，不伪造 `[DONE]`。
 
 ## 5. 渠道目录和能力
 
@@ -171,8 +183,10 @@ POST /admin/api/accounts/{account_id}/refresh
 ```
 
 列表只返回 canonical Account 安全字段和网关运行态。账号新增由渠道 provision API 完成并直接写入本地账号表；该接口不会读取源项目数据库、文件或管理端口，也不会触发外部账号同步。
-`POST /admin/api/accounts/{account_id}/refresh` 仅允许管理员调用，调用对应 provisioner 的
-`refresh_credential`，只返回脱敏账号摘要并写入 `refresh_account` 审计事件。
+`POST /admin/api/accounts/{account_id}/refresh` 仅允许管理员调用。支持 token 轮换的渠道调用
+对应 provisioner 的 `refresh_credential`，只返回脱敏账号摘要并写入 `refresh_account` 审计事件。
+Doubao 的 Cookie/browser session 没有独立 token refresh endpoint；该渠道返回明确的
+`capability_not_supported`，管理员应重新导入 Cookie 或重新执行 QR/profile 授权，不得伪造刷新成功。
 
 ## 7. 网关 Key 管理
 
@@ -228,6 +242,11 @@ DELETE /admin/api/channels/{slug}
 
 alias target 为 `{channel, model}` 数组，顺序决定优先级。只对 429、连接失败、502/503/504 等可重试错误降级；流开始后不重放。日志至少记录 request_id、key_id、实际 channel/model、fallback_depth、status、error_kind、stream、usage 和 latency；不返回 token、Cookie、平台原始错误体或未脱敏账号标识。
 
+Go gateway 已支持使用不带 `/` 的 route alias 作为 `model`：启用 alias 按 priority target
+顺序解析；公共 `/v1` 和 Playground 流式请求仅在首个 target 输出前遇到可重试错误时回退，
+输出开始后不重放，并将 alias/upstream model/fallback depth 写入请求日志。真实渠道 E2E
+前不会扩大 manifest 能力。
+
 `GET /admin/api/settings` 返回可安全展示的运行时设置及其来源；当前支持
 `log_retention_days` 与 `usage_retention_days`。`POST` 只允许 `admin` 角色写入，值限制为
 1-36500 天，且用量保留期不得短于日志保留期。配置持久化在本地 SQLite `settings` 表，
@@ -238,8 +257,12 @@ alias target 为 `{channel, model}` 数组，顺序决定优先级。只对 429�
 会话系统提供。渠道写 API 只允许内置 registry 中已存在的渠道，配置内容仅接受非 Secret
 的 JSON 标量/对象，并写入审计；动态 provider 注册不在当前范围内。
 
-Playground 只支持管理员发起的文本请求，调用 native runtime，不调用 legacy bridge；请求支持流式
-SSE 输出，回答正文以会话消息形式持久化，运行元数据写入 `playground_runs`。
+Playground 支持管理员发起的文本流式/非流式请求，以及受 manifest gate 保护的图片、视频、
+搜索和 editable-file 路由；所有请求调用 native runtime，不调用 legacy bridge。文本回答、
+生成响应和运行元数据分别持久化到会话消息、media_assets 和 `playground_runs`。
+editable-file 生成结果使用 Go media asset content URL；旧的
+`/admin/api/playground/files/{task_id}/{filename}` 下载路径明确返回
+`capability_not_supported`，不会恢复 Python 文件目录依赖。
 
 ## 9. 会话、幂等和安全
 
@@ -287,8 +310,10 @@ block 事件；断流输出 `error` 后以 `message_stop` 收尾。未报告 tok
 `POST /v1/responses` 当前支持纯文本 `input`（字符串或 system/developer/user/assistant
 消息数组）、`instructions`、`max_output_tokens`、`temperature`、`top_p`、`stream`、
 string-valued `metadata` 和 `store:false`。tools、previous response continuation、background、
-reasoning、自定义 text format 与图像/音频/文件输入返回 `invalid_request_error`。流式输出
-`response.created`、`response.in_progress`、文本 delta 和完成/失败终态。上述能力需要随着
+reasoning、自定义 text format 与图像/音频/文件输入返回 `invalid_request_error`。`stream=true`
+通过 gateway stream port 逐步输出文本 delta；上游在首个 delta 后中断时输出协议 error
+终态，不伪造成功完成。流式输出包含 `response.created`、`response.in_progress`、文本 delta
+和完成/失败终态。上述能力需要随着
 内置 adapter 的 manifest 重新验证，而不是由 bridge 自动继承。
 
 ### 12.2 管理会话与安全
@@ -314,7 +339,7 @@ Cookie 写操作校验 `Origin` 与 `Host`；脚本 Bearer 管理令牌不进入
 | `GET /admin/api/accounts` | 读取本地账号快照，支持 `channel/status/search` | 账号仅由本项目的 provision 流程写入，不能读取源项目文件/DB |
 | `GET /admin/api/models` | 读取已观测模型缓存 | manifest/model mapper 持续维护缓存语义 |
 | `GET /admin/api/channels` | 读取当前 registry/config，不自动探测 | 升级为 manifest 安全视图和 provision schema 入口 |
-| `GET /admin/api/logs` | 服务端分页、请求/渠道/模型/状态/时间筛选 | 保留脱敏，不泄露 token、账号原值、IP/UA |
+| `GET /admin/api/logs` | 服务端分页、request id/渠道/模型/状态/error kind/stream/RFC3339 时间筛选，返回 upstream model、route alias、fallback depth、TTFT | 保留脱敏，不泄露 token、账号原值、IP/UA |
 | `GET /admin/api/metrics` | 读取本地请求/账号运行态，不主动探测 | 区分 adapter/config/platform/worker 健康 |
 | `GET /admin/api/settings` | 读取 retention 设置及来源 | 仅暴露白名单设置，不读取 Secret |
 | `POST /admin/api/settings` | 管理员更新 retention 设置并写审计 | 写操作要求 `admin` 和同源校验 |

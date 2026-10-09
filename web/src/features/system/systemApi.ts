@@ -3,9 +3,9 @@ import { apiClient } from "../../api/client";
 export type SystemInfo = {
   service: string;
   version: string;
-  python_version: string;
+  go_version: string;
   platform: string;
-  python_implementation: string;
+  implementation: string;
   schema_version: number;
   database: { present: boolean; bytes: number };
   runtime_state: { present: boolean; status: "ok" | "not_initialized" | "invalid" | "unreadable"; error?: string };

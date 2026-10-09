@@ -1,0 +1,36 @@
+{
+  "format": "all2api-go-supply-chain-v1",
+  "checked_at": "2026-10-09T05:24:19Z",
+  "secrets_logged": false,
+  "go_mod_verify": {
+    "status": "ok",
+    "result": "all modules verified"
+  },
+  "local_module_audit": {
+    "status": "partial",
+    "locked_dependencies": 11,
+    "module_cache_complete": true,
+    "dependency_license_files_complete": true,
+    "root_license_declared": false,
+    "script": "scripts/verify-go-supply-chain.py"
+  },
+  "govulncheck": {
+    "version": "v1.1.4",
+    "status": "unverified",
+    "reason": "golang.org/x/vuln could not be fetched from the network"
+  },
+  "go_licenses": {
+    "version": "v1.3.0",
+    "status": "unverified",
+    "reason": "download did not complete because the external Go network was unavailable"
+  },
+  "root_license": {
+    "status": "missing",
+    "required_decision": true
+  },
+  "ci_jobs_declared": [
+    "go-vulnerability-scan",
+    "go-license-scan"
+  ],
+  "conclusion": "Module integrity and local dependency license-file audit passed; vulnerability database scan and external license report remain unverified, and repository licensing is undecided."
+}

@@ -1,0 +1,19 @@
+{
+  "format": "all2api-chatgpt-web-transport-fix-v1",
+  "checked_at": "2026-10-09T23:22:32+08:00",
+  "reference_project_same_account": {
+    "models": "ok",
+    "conversation_first_chunk": "ok"
+  },
+  "go_deterministic": {
+    "tls_client": "github.com/bogdanfinn/tls-client Chrome_110",
+    "proof_config_json": "ok",
+    "chatgpt_contract_tests": "ok",
+    "gateway_model_catalog_cache": "ok"
+  },
+  "go_direct_adapter_live_observation": "ok after TLS/HTTP2 and PoW fixes",
+  "gateway_import_retest": "blocked because local proxy 127.0.0.1:7892 stopped listening",
+  "secrets_logged": false,
+  "codex_endpoint_used": false,
+  "conclusion": "The Go Web transport and Sentinel proof defects were fixed. A final gateway-level live retest requires the configured proxy listener to be available again."
+}

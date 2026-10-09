@@ -67,8 +67,8 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 | 渠道 | 标识 | 协议 | 当前能力 | 账号新增方式 |
 | --- | --- | --- | --- | --- |
 | WorkBuddy | `wb` | OpenAI、Anthropic、Responses | 文本聊天 | Token 导入、二维码 OAuth（`cn`/`global`） |
-| Doubao | `doubao` | OpenAI、Anthropic、Responses | 文本聊天、图片生成、视频生成 | 本地 profile、二维码登录；默认使用 native HTTP QR worker，可选 Playwright |
-| ChatGPT | `chatgpt` | OpenAI、Anthropic、Responses | 文本聊天、图片生成 | Token 导入、OAuth PKCE；支持凭据刷新 |
+| Doubao | `doubao` | OpenAI、Anthropic、Responses | 文本聊天 | Cookie 导入、二维码登录；默认使用 native HTTP QR worker，浏览器 profile worker 仍需单独启用 |
+| ChatGPT | `chatgpt` | OpenAI、Anthropic、Responses | 文本聊天 | Token 导入、OAuth PKCE；真实 refresh/platform E2E 仍待验收 |
 
 ### 协议接口
 
@@ -79,16 +79,18 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 | `POST` | `/v1/messages` | 支持 | Anthropic Messages 文本协议，支持 `x-api-key` 或 Bearer 认证 |
 | `POST` | `/v1/responses` | 支持 | OpenAI Responses 文本协议，支持流式转换 |
 
-WorkBuddy 只声明 `chat`；Doubao 声明 `chat`、`image`、`video`；ChatGPT 声明 `chat`、`image`。以下接口虽然保留了统一路由入口，但不是当前产品能力：
+三个内置渠道当前只声明已验证的 `chat` 能力。图片/视频 adapter contract、生成结果
+media store 和本地文件 URL 已实现，但在真实 provider E2E 通过前仍由 manifest gate 保护：
 
 协议转换以文本输入为主；Anthropic Messages 包含已实现的 tool use/tool result 映射，Responses 当前只接受文本或文本消息输入。
 
 | 路径 | 当前行为 |
 | --- | --- |
-| `/v1/images/generations` | 仅接受对应渠道实时模型目录返回的生图模型 |
-| `/v1/video/generations` | 仅接受对应渠道实时模型目录返回的生视频模型 |
+| `/v1/images/generations` | manifest 声明并通过真实 E2E 后接受生图模型；成功结果落入 Go media store |
+| `/v1/video/generations` | manifest 声明并通过真实 E2E 后接受生视频模型；成功结果落入 Go media store |
 | `/v1/audio/generations`、`/v1/search` | 能力路由已存在，但当前版本不在调试台开放 |
-| `/v1/images/edits`、`/v1/files`、`/v1/files/download` | 返回 `capability_not_supported` |
+| `/v1/files`、`/v1/files/{id}`、`/v1/files/{id}/content` | Go 本地文件上传、列表、元数据、删除和下载；按网关 Key 隔离 |
+| `/v1/images/edits`、`/v1/files/download` | 返回 `capability_not_supported` |
 | `/v1/ppt/generations`、`/v1/psd/generations`、`/v1/editable-file-tasks` | 返回 `capability_not_supported` |
 | `/v1/messages/count_tokens` | 当前未实现，返回 `capability_not_supported` |
 
@@ -127,7 +129,7 @@ WorkBuddy 只声明 `chat`；Doubao 声明 `chat`、`image`、`video`；ChatGPT 
 - 本地开发：Python `3.13.x`、[uv](https://docs.astral.sh/uv/)、Node.js `20.19+`、pnpm `10`。
 - 真实账号新增和调用还需要目标平台可访问，并由管理员在控制台完成渠道配置和账号授权。
 
-### 方式一：Docker Compose
+### 方式一：Docker Compose（当前兼容运行时）
 
 在仓库根目录执行：
 
@@ -138,6 +140,7 @@ Copy-Item .env.example .env
 编辑 `.env`，至少设置以下值：
 
 - `A2A_SESSION_SECRET`：随机高熵会话密钥。
+- `A2A_ENV`：开发环境使用 `development`；生产必须设置为 `production`，启用生产安全配置硬门禁。
 - `A2A_ADMIN_PASSWORD`：长度至少 12 个字符的管理员密码。
 - `A2A_CREDENTIAL_MASTER_KEY`：生产环境使用随机 Fernet key 或高熵密钥。
 
@@ -146,6 +149,39 @@ Copy-Item .env.example .env
 ```powershell
 docker compose up --build
 ```
+
+迁移中的 Go-only 拓扑使用单独的 Compose 文件，避免在真实切换门槛满足前误替换现有运行时：
+
+```powershell
+docker compose -f docker-compose.go.yml up --build
+```
+
+Go 运行时的本地无 Docker 验证：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-go-build.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-go-clean-build.ps1
+```
+
+停服备份和隔离恢复演练：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\backup-go-state.ps1 `
+  -DatabasePath .\services\api\data\all2api.db `
+  -MediaRoot .\services\api\data\media-assets `
+  -OutputRoot C:\secure-backups\all2api\latest `
+  -ServiceStopped
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-go-backup-restore.ps1 `
+  -BackupRoot C:\secure-backups\all2api\latest
+```
+
+备份 manifest 不包含 `.env` 或 `A2A_CREDENTIAL_MASTER_KEY`；恢复时必须从外部
+Secret Manager 注入同一主密钥。
+
+回滚演练必须传入归档的上一版 Go binary；`verify-go-rollback.ps1` 不会把当前开发
+binary 当作上一版伪造回滚证据。
+
+`docker-compose.go.yml` 不启动 Python；它是 G6 切换前的隔离验证拓扑。当前默认 Compose 仍保留 Python，直到三渠道真实 E2E、浏览器/媒体能力和备份回滚演练完成。
 
 服务地址：
 
@@ -197,10 +233,10 @@ pnpm exec vite --host 127.0.0.1 --port 5555
 | 网关引导 | `A2A_BOOTSTRAP_API_KEY`、`A2A_BOOTSTRAP_RPM` | 可选的配置注入型初始网关 Key 和速率限制 |
 | 原生渠道 | `A2A_WB_PLATFORM_BASE`、`A2A_DOUBAO_PLATFORM_BASE`、`A2A_CHATGPT_PLATFORM_BASE`、`A2A_CHATGPT_PROXY` | native adapter 使用的官方平台端点和网络代理；账号凭据来自本地账号池 |
 | 账号 session | `A2A_PROVISION_SESSION_TTL_SECONDS` | QR/OAuth provision session 的持久化 TTL |
-| Doubao worker | `A2A_DOUBAO_PROFILE_ROOT`、`A2A_DOUBAO_BROWSER_ENABLED` 及 `A2A_DOUBAO_BROWSER_*` | 本项目管理的 profile 和可选 Playwright worker |
+| Doubao worker | `A2A_DOUBAO_PROFILE_ROOT`、`A2A_DOUBAO_BROWSER_ENABLED`、`A2A_DOUBAO_BROWSER_WORKER_BASE`、`A2A_DOUBAO_BROWSER_WORKER_TOKEN` 及 `A2A_DOUBAO_BROWSER_*` | 本项目管理的 profile 和可选 Go CDP/Chromium worker；启用时必须配置 worker token |
 | 保留与跨域 | `A2A_LOG_RETENTION_DAYS`、`A2A_USAGE_RETENTION_DAYS`、`A2A_CORS_ORIGINS` | 日志/用量保留周期和浏览器来源 |
 
-生产环境还应设置 `A2A_SECURE_COOKIE`、`A2A_TRUST_PROXY`、`A2A_TRUSTED_PROXIES`，并通过 Secret Manager 注入密码、session secret、加密主密钥和 bootstrap Key。`A2A_LEGACY_BRIDGE_ENABLED` 默认必须为 `false`；`A2A_LEGACY_*` 变量仅用于迁移对照，不是 native 运行所需配置。
+生产环境必须设置 `A2A_ENV=production`，并设置 `A2A_SECURE_COOKIE`、`A2A_TRUST_PROXY`、`A2A_TRUSTED_PROXIES`，通过 Secret Manager 注入密码、session secret、加密主密钥和 bootstrap Key。Go 会拒绝默认 session secret、空/弱 credential master key、弱管理员密码、legacy bridge/upstream 配置以及启用但无 token 的 browser worker。`A2A_LEGACY_*` 变量仅用于迁移对照，不是 native 运行所需配置。
 
 ## 使用统一网关
 
@@ -317,7 +353,7 @@ curl "$A2A_BASE_URL/responses" \
 | WorkBuddy | `token-import` | 管理员提交 token bundle；只保存加密凭据和脱敏账号信息 |
 | WorkBuddy | `qr-oauth` | 生成二维码并轮询授权，支持 `cn`/`global` realm |
 | Doubao | `create-profile` | 创建由 All2API 管理的本地 profile |
-| Doubao | `qr-login` | 默认使用本项目的 HTTP QR worker 获取和轮询二维码；必要时可启用 Playwright |
+| Doubao | `qr-login` | 默认使用本项目的 HTTP QR worker；显式启用后由 Go CDP/Chromium worker 管理 profile 和浏览器 QR 会话 |
 | ChatGPT | `token-import` | 导入 access/refresh/id token 等 token bundle |
 | ChatGPT | `oauth-pkce` | 发起 OAuth PKCE，完成 callback 后交换并加密保存 token |
 
@@ -369,6 +405,15 @@ python scripts/verify-clean-build.py
 python scripts/verify-clean-build.py --docker
 ```
 
+Go-only 源依赖门禁：
+
+```powershell
+python scripts/verify_no_source_deps.py
+```
+
+该门禁的 clean-build 部分只构建/测试 Go runtime；Docker daemon 不可用时以退出码 `2`
+报告 `UNVERIFIED`，不会把跳过的镜像构建标记为通过。
+
 CI 还会执行 backend lint/test、frontend lint/typecheck/build、legacy 扫描、Docker Compose 验证和 API 镜像构建。真实平台 E2E 测试默认不会在普通单测中自动运行，需要单独准备平台账号和环境变量。
 
 ## 仓库结构
@@ -399,6 +444,7 @@ CI 还会执行 backend lint/test、frontend lint/typecheck/build、legacy 扫�
 | [账号新增流程](docs/账号新增流程.md) | 三渠道 provision flow、状态机和凭据边界 |
 | [密钥与渠道授权规范](docs/密钥与渠道授权规范.md) | Key scope、渠道/模型授权和审计要求 |
 | [部署运维与验收](docs/部署运维与验收.md) | 配置、备份、健康检查、clean build 和发布门槛 |
+| [Python 到 Go 后端直接重写迁移实施文档](docs/Python到Go后端直接重写迁移实施文档.md) | Python 后端全量直接重写为 Go 的架构、阶段、测试和删除门槛 |
 | [系统设计与实现文档](docs/系统设计与实现文档.md) | 模块边界、数据结构和实现细节 |
 | [项目开发基线](docs/项目开发基线.md) | 需求追踪、阶段 DoD、测试分层和当前状态 |
 | [企业开发规范](docs/企业开发规范.md) | 目录、依赖、迁移、测试和安全门禁 |

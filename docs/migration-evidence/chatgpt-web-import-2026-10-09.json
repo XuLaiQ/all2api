@@ -1,0 +1,23 @@
+{
+  "format": "all2api-chatgpt-web-import-v1",
+  "phase": "pre-transport-and-pow-fix historical measurement",
+  "checked_at": "2026-10-09",
+  "source_file": "sub2api-account-20261009203027.json",
+  "source_account_count": 1,
+  "source_web_entries": 1,
+  "import_status": 200,
+  "imported_added": 1,
+  "imported_skipped": 0,
+  "refresh_status": 502,
+  "refresh_error_code": "credential_refresh_failed",
+  "models_status": 200,
+  "model_count": 13,
+  "chat_status": 503,
+  "chat_error_code": "adapter_unavailable",
+  "direct_web_status": 403,
+  "direct_web_server": "cloudflare",
+  "proxy_configured": true,
+  "database": "disposable SQLite copy",
+  "secrets_logged": false,
+  "conclusion": "The Web account import and local encrypted credential path passed. Live ChatGPT Web validation remains blocked by Cloudflare access through the configured proxy; no Codex endpoint was used."
+}

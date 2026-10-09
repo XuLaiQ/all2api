@@ -1,0 +1,11 @@
+{
+  "format": "all2api-go-browser-worker-smoke-v1",
+  "date": "2026-10-09",
+  "secrets_logged": false,
+  "container_image_build": true,
+  "chromium_image_version": "142.0.7444.59",
+  "health_status": "not_configured",
+  "unauthorized_status": "unauthorized",
+  "enabled_without_browser_status": "worker_capability_pending",
+  "real_platform_browser_e2e": false
+}

@@ -1,6 +1,6 @@
 """CI script to verify no legacy code in production."""
-import sys
 import re
+import sys
 from pathlib import Path
 
 
@@ -34,7 +34,9 @@ def check_legacy_imports():
                     )
 
                     if not is_allowed:
-                        violations.append(f"{py_file.relative_to(app_dir.parent)}:{line_num}: {line.strip()}")
+                        violations.append(
+                            f"{py_file.relative_to(app_dir.parent)}:{line_num}: {line.strip()}"
+                        )
         except Exception as e:
             print(f"Warning: Could not read {py_file}: {e}")
 
@@ -63,7 +65,9 @@ def check_source_project_refs():
                 content = py_file.read_text(encoding="utf-8")
                 for line_num, line in enumerate(content.splitlines(), 1):
                     if pattern.search(line):
-                        violations.append(f"{py_file.relative_to(app_dir.parent)}:{line_num}: {line.strip()}")
+                        violations.append(
+                            f"{py_file.relative_to(app_dir.parent)}:{line_num}: {line.strip()}"
+                        )
             except Exception as e:
                 print(f"Warning: Could not read {py_file}: {e}")
 

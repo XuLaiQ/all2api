@@ -1,0 +1,21 @@
+﻿{
+    "format":  "all2api-go-browser-profiles-e2e-v1",
+    "checked_at":  "2026-10-08T21:35:10.1007524Z",
+    "secrets_logged":  false,
+    "profile_count":  1,
+    "profiles":  [
+                     {
+                         "account_id":  "redacted",
+                         "account_id_sha256":  "8a899288b26b7e2651b3b0ace30b92abb189a2ecaa0465181983b2d50804ccde",
+                         "browser":  "chrome.exe",
+                         "worker_status":  "ready",
+                         "session_status":  "scanned",
+                         "authenticated":  false,
+                         "page_url":  "https://www.doubao.com/chat/",
+                         "page_title":  "豆包 - 字节跳动旗下 AI 智能助手",
+                         "status":  "failed",
+                         "error":  "Doubao browser profile was not authenticated"
+                     }
+                 ],
+    "status":  "failed"
+}

@@ -51,10 +51,15 @@ Doubao 默认使用本项目内置的 HTTP QR worker，不需要安装 Chromium�
 `new/scanned/confirmed` 状态，跟随登录回调收集真实 Cookie，并交给加密
 `CredentialStore`；Cookie 不会出现在管理接口响应中。
 
-如部署场景确实需要浏览器 profile 或页面级能力，仍可执行 `uv sync --extra browser`，
-设置 `A2A_DOUBAO_BROWSER_ENABLED=true` 和可选的
-`A2A_DOUBAO_BROWSER_EXECUTABLE`，此时才切换到 Playwright worker。Fake/Null worker
-只用于单元测试或明确禁用账号授权的环境。
+如部署场景确实需要浏览器 profile 或页面级能力，应启用本仓库的 Go
+`doubao-browser-worker`，设置 `A2A_DOUBAO_BROWSER_ENABLED=true`、同一份
+`A2A_DOUBAO_BROWSER_WORKER_BASE`/`A2A_DOUBAO_BROWSER_WORKER_TOKEN` 和可选的
+`A2A_DOUBAO_BROWSER_EXECUTABLE`。当前机器没有 Chromium 时，worker 会保持
+`not_configured`，不会回退到 Python/Playwright。
+
+Go media worker 的资产写入和去水印接口要求配置 `A2A_MEDIA_WORKER_TOKEN`；只读
+`/healthz` 探针不需要 token。生产环境必须通过 Secret Manager 注入该 token，不能
+把空 token 作为启用配置。
 
 ## 目标开发规则
 
@@ -94,7 +99,7 @@ rg -n "F:\\token-p|wb2api|doubao2api|chatgpt2api|:7863|:7864|:9090|:8000" app te
 | WorkBuddy native client + QR provisioner | 已接入；本地 session、账号池和 refresh 已接入，真实平台账号和数据面 E2E 待验收 |
 | Doubao native HTTP QR + 可选 browser/profile provisioner | HTTP QR、Cookie 加密存储、本地 session 和 profile 生命周期已接入；Playwright 仅用于可选浏览器能力 |
 | ChatGPT native OAuth/token provisioner | 已接入；本地 session、账号池和 OAuth refresh 已接入，真实平台 E2E 待验收 |
-| 管理面 Settings/Users/Playground/渠道覆盖 | 已接入；Playground 流式、真实用户凭据和动态 provider 注册仍未实现 |
+| 管理面 Settings/Users/Playground/渠道覆盖 | 已接入；Playground 文本流式和非文本本地 asset 边界已实现，真实 provider 凭据 E2E 与动态 provider 注册仍未完成 |
 | 本地账号目录和同步接口边界 | provision 成功后写入本地 `accounts`；旧 `/accounts/sync` 已删除 |
 | 源项目断开后 clean build/run | clean gate 已具备；正式发布仍需在隔离 checkout 执行并留存证据 |
 

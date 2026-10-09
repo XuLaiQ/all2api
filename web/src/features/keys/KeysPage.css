@@ -19,6 +19,19 @@
   align-items: center;
   gap: 7px;
 }
+.key-url-cell{
+  display: inline-flex;
+  max-width: 270px;
+  align-items: center;
+  gap: 7px;
+}
+.key-url-cell code{
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .key-value-cell code{
   overflow: hidden;
   color: var(--text-secondary);
@@ -104,6 +117,14 @@
   overflow-wrap: anywhere;
   color: #203c35;
   font-size: 12px;
+}
+.one-time-key-url{
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
 }
 .key-modal-backdrop{
   position: fixed;

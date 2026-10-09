@@ -1,0 +1,28 @@
+{
+  "format": "all2api-go-media-contract-v1",
+  "checked_at": "2026-10-09T02:25:15+08:00",
+  "secrets_logged": false,
+  "tests": {
+    "generation_url_download_and_transform": "passed",
+    "generation_remote_fallback": "passed",
+    "public_file_content_url_rewrite": "passed",
+    "watermark_worker_contract": "passed",
+    "admin_batch_delete_and_log_clear": "passed",
+    "channel_override_crud": "passed",
+    "disabled_channel_data_plane_guard": "passed",
+    "route_alias_priority_target": "passed",
+    "route_priority_fallback": "passed",
+    "request_log_extended_filters": "passed",
+    "openai_stream_interruption_sse": "passed",
+    "anthropic_responses_incremental_sse": "passed",
+    "native_credential_delete": "passed",
+    "sysinfo_go_fields": "passed",
+    "go_race": "passed",
+    "go_vet_build": "passed",
+    "go_clean_build": "passed",
+    "go_only_compose_smoke": "passed"
+  },
+  "scope": "deterministic Go contract and local storage only",
+  "real_provider_e2e": "not_verified",
+  "status": "contract_passed_provider_e2e_pending"
+}

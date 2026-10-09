@@ -1,0 +1,68 @@
+{
+  "format": "all2api-go-cutover-readiness-v1",
+  "checked_at": "2026-10-09T12:28:34.3957219Z",
+  "ready": false,
+  "checks": {
+    "docker_daemon": {
+      "passed": true,
+      "detail": "server=29.4.0"
+    },
+    "go_compose_config": {
+      "passed": true,
+      "detail": "valid"
+    },
+    "ci_release_gates": {
+      "passed": true,
+      "detail": "Docker, artifact/SBOM, vulnerability, license and local supply-chain jobs are present"
+    },
+    "supply_chain_verification": {
+      "passed": false,
+      "detail": "module integrity passed but vulnerability/license evidence is unverified"
+    },
+    "root_license_declared": {
+      "passed": false,
+      "detail": "root LICENSE/COPYING is missing; public release requires an explicit licensing decision"
+    },
+    "production_environment": {
+      "passed": true,
+      "detail": "A2A_ENV=production"
+    },
+    "default_compose_is_go": {
+      "passed": false,
+      "detail": "default docker-compose.yml still contains Python runtime"
+    },
+    "python_runtime_removed": {
+      "passed": false,
+      "detail": "services/api/pyproject.toml still exists"
+    },
+    "legacy_bridge_removed": {
+      "passed": false,
+      "detail": "services/api/app/compat still exists"
+    },
+    "backup_restore_scripts": {
+      "passed": true,
+      "detail": "present"
+    },
+    "previous_go_binary": {
+      "passed": true,
+      "detail": "C:\\secure-backups\\all2api\\previous-go-20261009\\all2api.exe"
+    },
+    "real_platform_e2e": {
+      "passed": false,
+      "detail": "failed channels: chatgpt:credential_rejected"
+    },
+    "browser_e2e": {
+      "passed": false,
+      "detail": "failed profiles: 8a899288b26b7e2651b3b0ace30b92abb189a2ecaa0465181983b2d50804ccde:Doubao browser profile was not authenticated"
+    }
+  },
+  "blockers": [
+    "supply_chain_verification: module integrity passed but vulnerability/license evidence is unverified",
+    "root_license_declared: root LICENSE/COPYING is missing; public release requires an explicit licensing decision",
+    "default_compose_is_go: default docker-compose.yml still contains Python runtime",
+    "python_runtime_removed: services/api/pyproject.toml still exists",
+    "legacy_bridge_removed: services/api/app/compat still exists",
+    "real_platform_e2e: failed channels: chatgpt:credential_rejected",
+    "browser_e2e: failed profiles: 8a899288b26b7e2651b3b0ace30b92abb189a2ecaa0465181983b2d50804ccde:Doubao browser profile was not authenticated"
+  ]
+}

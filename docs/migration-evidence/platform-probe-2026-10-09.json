@@ -1,0 +1,38 @@
+{
+  "format": "all2api-go-platform-probe-v1",
+  "checked_at": "2026-10-09T12:27:01.2528678Z",
+  "database": "disposable SQLite copy",
+  "secrets_logged": false,
+  "chatgpt_proxy_configured": true,
+  "health": {
+    "status": 200,
+    "schema_version": 11
+  },
+  "channels": [
+    {
+      "channel": "wb",
+      "models_status": 200,
+      "model_count": 22,
+      "chat_status": 200,
+      "chat_text_length": 3,
+      "status": "ok"
+    },
+    {
+      "channel": "doubao",
+      "models_status": 200,
+      "model_count": 8,
+      "chat_status": 200,
+      "chat_text_length": 114,
+      "status": "ok"
+    },
+    {
+      "channel": "chatgpt",
+      "models_status": 401,
+      "model_count": 0,
+      "chat_status": 0,
+      "chat_text_length": 0,
+      "status": "failed",
+      "error_code": "credential_rejected"
+    }
+  ]
+}

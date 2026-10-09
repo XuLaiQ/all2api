@@ -1,0 +1,659 @@
+[
+  {
+    "method": "GET",
+    "path": "/admin/api/accounts",
+    "operation_id": "list_accounts_admin_api_accounts_get",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/accounts/batch-delete",
+    "operation_id": "batch_delete_accounts_admin_api_accounts_batch_delete_post",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/api/accounts/{account_id}",
+    "operation_id": "delete_account_admin_api_accounts__account_id__delete",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/api/accounts/{account_id}",
+    "operation_id": "update_account_state_admin_api_accounts__account_id__patch",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/accounts/{account_id}/refresh",
+    "operation_id": "refresh_account_credential_admin_api_accounts__account_id__refresh_post",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/accounts/{channel}/onboarding/finish",
+    "operation_id": "finish_account_onboarding_admin_api_accounts__channel__onboarding_finish_post",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/accounts/{channel}/onboarding/poll",
+    "operation_id": "poll_account_onboarding_admin_api_accounts__channel__onboarding_poll_get",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/accounts/{channel}/onboarding/start",
+    "operation_id": "start_account_onboarding_admin_api_accounts__channel__onboarding_start_post",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/audit-logs",
+    "operation_id": "list_audit_logs_admin_api_audit_logs_get",
+    "tags": [
+      "audit"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/auth/login",
+    "operation_id": "login_admin_api_auth_login_post",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/auth/logout",
+    "operation_id": "logout_admin_api_auth_logout_post",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/auth/session",
+    "operation_id": "session_admin_api_auth_session_get",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/channels",
+    "operation_id": "list_channels_admin_api_channels_get",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/channels",
+    "operation_id": "create_channel_override_admin_api_channels_post",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/channels/adapters",
+    "operation_id": "list_adapters_admin_api_channels_adapters_get",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/api/channels/{slug}",
+    "operation_id": "delete_channel_override_admin_api_channels__slug__delete",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/api/channels/{slug}",
+    "operation_id": "patch_channel_override_admin_api_channels__slug__patch",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/channels/{slug}/accounts/provision/import",
+    "operation_id": "provision_import_admin_api_channels__slug__accounts_provision_import_post",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/channels/{slug}/accounts/provision/start",
+    "operation_id": "provision_start_admin_api_channels__slug__accounts_provision_start_post",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/channels/{slug}/accounts/provision/{session_id}",
+    "operation_id": "provision_poll_admin_api_channels__slug__accounts_provision__session_id__get",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/channels/{slug}/accounts/provision/{session_id}/cancel",
+    "operation_id": "provision_cancel_admin_api_channels__slug__accounts_provision__session_id__cancel_post",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/channels/{slug}/accounts/provision/{session_id}/complete",
+    "operation_id": "provision_complete_admin_api_channels__slug__accounts_provision__session_id__complete_post",
+    "tags": [
+      "accounts"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/channels/{slug}/provision-schema",
+    "operation_id": "get_provision_schema_admin_api_channels__slug__provision_schema_get",
+    "tags": [
+      "channels",
+      "accounts"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/channels/{slug}/runtime",
+    "operation_id": "get_channel_runtime_admin_api_channels__slug__runtime_get",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/channels/{slug}/test",
+    "operation_id": "test_channel_admin_api_channels__slug__test_post",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/healthz",
+    "operation_id": "healthz_admin_api_healthz_get",
+    "tags": [
+      "system"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/keys",
+    "operation_id": "list_api_keys_admin_api_keys_get",
+    "tags": [
+      "keys"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/keys",
+    "operation_id": "create_api_key_admin_api_keys_post",
+    "tags": [
+      "keys"
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/api/keys/{key_id}",
+    "operation_id": "revoke_api_key_admin_api_keys__key_id__delete",
+    "tags": [
+      "keys"
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/api/keys/{key_id}",
+    "operation_id": "patch_api_key_admin_api_keys__key_id__patch",
+    "tags": [
+      "keys"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/keys/{key_id}/rotate",
+    "operation_id": "rotate_api_key_admin_api_keys__key_id__rotate_post",
+    "tags": [
+      "keys"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/logs",
+    "operation_id": "list_request_logs_admin_api_logs_get",
+    "tags": [
+      "logs"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/logs/clear",
+    "operation_id": "clear_request_logs_admin_api_logs_clear_post",
+    "tags": [
+      "logs"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/media/assets",
+    "operation_id": "list_media_assets_admin_api_media_assets_get",
+    "tags": [
+      "media"
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/api/media/assets/{asset_id}",
+    "operation_id": "delete_media_asset_admin_api_media_assets__asset_id__delete",
+    "tags": [
+      "media"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/media/assets/{asset_id}/content",
+    "operation_id": "media_asset_content_admin_api_media_assets__asset_id__content_get",
+    "tags": [
+      "media"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/media/assets/{asset_id}/remove-watermark",
+    "operation_id": "remove_media_watermark_admin_api_media_assets__asset_id__remove_watermark_post",
+    "tags": [
+      "media"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/metrics",
+    "operation_id": "get_metrics_admin_api_metrics_get",
+    "tags": [
+      "system"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/models",
+    "operation_id": "list_models_admin_api_models_get",
+    "tags": [
+      "models"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/models/refresh",
+    "operation_id": "refresh_models_admin_api_models_refresh_post",
+    "tags": [
+      "models"
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/api/models/{model_id}",
+    "operation_id": "patch_model_admin_api_models__model_id__patch",
+    "tags": [
+      "models"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/overview",
+    "operation_id": "get_overview_admin_api_overview_get",
+    "tags": [
+      "overview"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/playground/chat",
+    "operation_id": "playground_chat_admin_api_playground_chat_post",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/playground/conversations",
+    "operation_id": "list_playground_conversations_admin_api_playground_conversations_get",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/api/playground/conversations/{conversation_id}",
+    "operation_id": "delete_playground_conversation_admin_api_playground_conversations__conversation_id__delete",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/playground/conversations/{conversation_id}",
+    "operation_id": "get_playground_conversation_admin_api_playground_conversations__conversation_id__get",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/playground/editable-file",
+    "operation_id": "playground_editable_file_admin_api_playground_editable_file_post",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/playground/files/{task_id}/{filename}",
+    "operation_id": "download_playground_file_admin_api_playground_files__task_id___filename__get",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/playground/generations",
+    "operation_id": "playground_generation_admin_api_playground_generations_post",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/playground/runs",
+    "operation_id": "list_playground_runs_admin_api_playground_runs_get",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/playground/search",
+    "operation_id": "playground_search_admin_api_playground_search_post",
+    "tags": [
+      "playground"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/routes",
+    "operation_id": "list_routes_admin_api_routes_get",
+    "tags": [
+      "routes"
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/api/routes/{alias}",
+    "operation_id": "delete_route_admin_api_routes__alias__delete",
+    "tags": [
+      "routes"
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/api/routes/{alias}",
+    "operation_id": "put_route_admin_api_routes__alias__put",
+    "tags": [
+      "routes"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/settings",
+    "operation_id": "get_admin_settings_admin_api_settings_get",
+    "tags": [
+      "settings"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/settings",
+    "operation_id": "update_admin_settings_admin_api_settings_post",
+    "tags": [
+      "settings"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/stats/by-channel",
+    "operation_id": "get_usage_by_channel_admin_api_stats_by_channel_get",
+    "tags": [
+      "stats"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/stats/by-key",
+    "operation_id": "get_usage_by_key_admin_api_stats_by_key_get",
+    "tags": [
+      "stats"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/stats/by-model",
+    "operation_id": "get_usage_by_model_admin_api_stats_by_model_get",
+    "tags": [
+      "stats"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/stats/daily",
+    "operation_id": "get_usage_daily_admin_api_stats_daily_get",
+    "tags": [
+      "stats"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/stats/summary",
+    "operation_id": "get_usage_summary_admin_api_stats_summary_get",
+    "tags": [
+      "stats"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/storage/health",
+    "operation_id": "get_storage_health_admin_api_storage_health_get",
+    "tags": [
+      "system"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/sysinfo",
+    "operation_id": "get_sysinfo_admin_api_sysinfo_get",
+    "tags": [
+      "system"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/admin/api/users",
+    "operation_id": "list_users_admin_api_users_get",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/admin/api/users",
+    "operation_id": "create_user_admin_api_users_post",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/api/users/{username}",
+    "operation_id": "delete_user_admin_api_users__username__delete",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/api/users/{username}",
+    "operation_id": "patch_user_admin_api_users__username__patch",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/audio/generations",
+    "operation_id": "audio_generations_v1_audio_generations_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "operation_id": "chat_completions_v1_chat_completions_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/editable-file-tasks",
+    "operation_id": "editable_file_tasks_v1_editable_file_tasks_get",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/files",
+    "operation_id": "file_upload_v1_files_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/files/download",
+    "operation_id": "file_download_v1_files_download_get",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/images/edits",
+    "operation_id": "image_edits_v1_images_edits_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/images/generations",
+    "operation_id": "image_generations_v1_images_generations_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/messages",
+    "operation_id": "anthropic_messages_v1_messages_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/messages/count_tokens",
+    "operation_id": "count_tokens_v1_messages_count_tokens_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/models",
+    "operation_id": "list_models_v1_models_get",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/ppt/generations",
+    "operation_id": "ppt_generations_v1_ppt_generations_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/psd/generations",
+    "operation_id": "psd_generations_v1_psd_generations_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/responses",
+    "operation_id": "openai_responses_v1_responses_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/search",
+    "operation_id": "search_v1_search_post",
+    "tags": [
+      "gateway"
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/video/generations",
+    "operation_id": "video_generations_v1_video_generations_post",
+    "tags": [
+      "gateway"
+    ]
+  }
+]

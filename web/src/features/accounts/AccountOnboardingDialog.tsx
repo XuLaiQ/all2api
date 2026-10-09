@@ -428,7 +428,7 @@ export function AccountOnboardingDialog({
       pollProvision(channel, session.session_id as string)
         .then((next) => {
           if (!active) return;
-          if (channel === "wb" && next.status === "ready" && next.next_step === "complete") {
+          if (next.next_step === "complete") {
             void completeReadyWorkBuddySession(next);
             return;
           }
@@ -668,7 +668,7 @@ export function AccountOnboardingDialog({
       ? qrCode
       : "";
   const qrValue = qrImage ? "" : authUrl || qrCode;
-  const flowNeedsCompletion = Boolean(session && activeFlow?.supports?.complete);
+  const flowNeedsCompletion = Boolean(session && channel === "chatgpt" && activeFlow?.supports?.complete);
   const isChatGptTokenImport = channel === "chatgpt" && selectedFlow?.id === "token-import";
 
   return (

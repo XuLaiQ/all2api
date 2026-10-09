@@ -1,0 +1,17 @@
+{
+  "format": "all2api-chatgpt-browser-proxy-v1",
+  "checked_at": "2026-10-09T11:22:53Z",
+  "secrets_logged": false,
+  "browser_page": {
+    "url": "https://chatgpt.com/",
+    "title": "ChatGPT: Chat, Work, Create & Code with AI",
+    "status": "reachable"
+  },
+  "web_endpoint_navigation": {
+    "target": "https://chatgpt.com/backend-api/models",
+    "status": "blocked_by_browser_client"
+  },
+  "authenticated": false,
+  "login_action": "not_performed",
+  "conclusion": "The in-app browser can reach the public ChatGPT Web page through its connected network, but the Go process has no inherited proxy endpoint and no authenticated browser session was used. This does not prove ChatGPT Web API E2E."
+}

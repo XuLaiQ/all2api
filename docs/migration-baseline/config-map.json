@@ -1,0 +1,394 @@
+[
+  {
+    "python_field": "admin_password",
+    "environment": "A2A_ADMIN_PASSWORD",
+    "type": "pydantic.types.SecretStr | None",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "admin_token",
+    "environment": "A2A_ADMIN_TOKEN",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "admin_username",
+    "environment": "A2A_ADMIN_USERNAME",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "allow_weak_admin_password",
+    "environment": "A2A_ALLOW_WEAK_ADMIN_PASSWORD",
+    "type": "bool",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "base_path",
+    "environment": "A2A_BASE_PATH",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "bootstrap_api_key",
+    "environment": "A2A_BOOTSTRAP_API_KEY",
+    "type": "pydantic.types.SecretStr | None",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "bootstrap_rpm",
+    "environment": "A2A_BOOTSTRAP_RPM",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "chatgpt_auth_key",
+    "environment": "A2A_CHATGPT_AUTH_KEY",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "chatgpt_platform_base",
+    "environment": "A2A_CHATGPT_PLATFORM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "chatgpt_proxy",
+    "environment": "A2A_CHATGPT_PROXY",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "chatgpt_upstream_base",
+    "environment": "A2A_CHATGPT_UPSTREAM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "cors_origins",
+    "environment": "A2A_CORS_ORIGINS",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "credential_master_key",
+    "environment": "A2A_CREDENTIAL_MASTER_KEY",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "db_path",
+    "environment": "A2A_DB_PATH",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_api_key",
+    "environment": "A2A_DOUBAO_API_KEY",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "doubao_browser_authenticated_selector",
+    "environment": "A2A_DOUBAO_BROWSER_AUTHENTICATED_SELECTOR",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_enabled",
+    "environment": "A2A_DOUBAO_BROWSER_ENABLED",
+    "type": "bool",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_executable",
+    "environment": "A2A_DOUBAO_BROWSER_EXECUTABLE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_headless",
+    "environment": "A2A_DOUBAO_BROWSER_HEADLESS",
+    "type": "bool",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_launch_timeout_seconds",
+    "environment": "A2A_DOUBAO_BROWSER_LAUNCH_TIMEOUT_SECONDS",
+    "type": "float",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_login_path",
+    "environment": "A2A_DOUBAO_BROWSER_LOGIN_PATH",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_max_contexts",
+    "environment": "A2A_DOUBAO_BROWSER_MAX_CONTEXTS",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_max_pages_per_context",
+    "environment": "A2A_DOUBAO_BROWSER_MAX_PAGES_PER_CONTEXT",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_operation_timeout_seconds",
+    "environment": "A2A_DOUBAO_BROWSER_OPERATION_TIMEOUT_SECONDS",
+    "type": "float",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_qr_code_attribute",
+    "environment": "A2A_DOUBAO_BROWSER_QR_CODE_ATTRIBUTE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_qr_selector",
+    "environment": "A2A_DOUBAO_BROWSER_QR_SELECTOR",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_browser_session_ttl_seconds",
+    "environment": "A2A_DOUBAO_BROWSER_SESSION_TTL_SECONDS",
+    "type": "float",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_platform_base",
+    "environment": "A2A_DOUBAO_PLATFORM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_profile_root",
+    "environment": "A2A_DOUBAO_PROFILE_ROOT",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "doubao_upstream_base",
+    "environment": "A2A_DOUBAO_UPSTREAM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "host",
+    "environment": "A2A_HOST",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "legacy_bridge_enabled",
+    "environment": "A2A_LEGACY_BRIDGE_ENABLED",
+    "type": "bool",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "legacy_chatgpt_auth_key",
+    "environment": "A2A_LEGACY_CHATGPT_AUTH_KEY",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "legacy_chatgpt_upstream_base",
+    "environment": "A2A_LEGACY_CHATGPT_UPSTREAM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "legacy_doubao_api_key",
+    "environment": "A2A_LEGACY_DOUBAO_API_KEY",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "legacy_doubao_upstream_base",
+    "environment": "A2A_LEGACY_DOUBAO_UPSTREAM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "legacy_wb_admin_token",
+    "environment": "A2A_LEGACY_WB_ADMIN_TOKEN",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "legacy_wb_data_key",
+    "environment": "A2A_LEGACY_WB_DATA_KEY",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "legacy_wb_upstream_base",
+    "environment": "A2A_LEGACY_WB_UPSTREAM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "log_retention_days",
+    "environment": "A2A_LOG_RETENTION_DAYS",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "login_max_fails",
+    "environment": "A2A_LOGIN_MAX_FAILS",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "port",
+    "environment": "A2A_PORT",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "provision_session_ttl_seconds",
+    "environment": "A2A_PROVISION_SESSION_TTL_SECONDS",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "secure_cookie",
+    "environment": "A2A_SECURE_COOKIE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "session_days",
+    "environment": "A2A_SESSION_DAYS",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "session_idle_hours",
+    "environment": "A2A_SESSION_IDLE_HOURS",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "session_secret",
+    "environment": "A2A_SESSION_SECRET",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "state_path",
+    "environment": "A2A_STATE_PATH",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "trust_proxy",
+    "environment": "A2A_TRUST_PROXY",
+    "type": "bool",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "trusted_proxies",
+    "environment": "A2A_TRUSTED_PROXIES",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "usage_retention_days",
+    "environment": "A2A_USAGE_RETENTION_DAYS",
+    "type": "int",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "wb_admin_token",
+    "environment": "A2A_WB_ADMIN_TOKEN",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "wb_data_key",
+    "environment": "A2A_WB_DATA_KEY",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "wb_platform_base",
+    "environment": "A2A_WB_PLATFORM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  },
+  {
+    "python_field": "wb_trace_secret",
+    "environment": "A2A_WB_TRACE_SECRET",
+    "type": "pydantic.types.SecretStr",
+    "required": false,
+    "secret": true
+  },
+  {
+    "python_field": "wb_upstream_base",
+    "environment": "A2A_WB_UPSTREAM_BASE",
+    "type": "str",
+    "required": false,
+    "secret": false
+  }
+]

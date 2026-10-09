@@ -1,0 +1,22 @@
+{
+  "format": "all2api-go-rollback-rehearsal-v1",
+  "checked_at": "2026-10-09T01:46:13+08:00",
+  "secrets_logged": false,
+  "backup": {
+    "database_files": 1,
+    "media_files": 5,
+    "restore_schema_version": 11
+  },
+  "rollback": {
+    "runtime": "docker-alpine-artifact",
+    "image": "alpine:3.22",
+    "image_digest": "sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8",
+    "binary_path": "C:/secure-backups/all2api/previous-go-20261009/all2api.exe",
+    "binary_sha256": "2c30c7f12f2ed0703b6c368027ec31c2467c9953651e480d1153212548095108",
+    "health_status": "ok",
+    "database_status": "ok",
+    "schema_version": 11,
+    "container_removed": true
+  },
+  "status": "ok"
+}
