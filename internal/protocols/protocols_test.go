@@ -36,9 +36,16 @@ func TestNormalizeResponsesAndConversions(t *testing.T) {
 		"instructions":      "be concise",
 		"input":             []any{map[string]any{"type": "message", "role": "developer", "content": []any{map[string]any{"type": "input_text", "text": "hello"}}}},
 		"max_output_tokens": float64(20),
+		"reasoning":         map[string]any{"effort": "high"},
 	})
 	if err != nil {
 		t.Fatalf("NormalizeResponses() error = %v", err)
+	}
+	if request.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort = %q", request.ReasoningEffort)
+	}
+	if _, err := NormalizeResponses(map[string]any{"model": "m", "input": "x", "reasoning": "high"}); err == nil {
+		t.Fatal("non-object reasoning must be rejected")
 	}
 	if len(request.Messages) != 2 || request.Messages[1].Role != "system" {
 		t.Fatalf("unexpected response messages: %#v", request.Messages)

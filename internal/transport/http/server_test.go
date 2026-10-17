@@ -108,40 +108,6 @@ func TestDoubaoAccountRefreshReturnsExplicitUnsupportedCapability(t *testing.T) 
 	}
 }
 
-func TestLegacyOnboardingReturnsGoneInsteadOfNotFound(t *testing.T) {
-	store, err := persistence.Open(context.Background(), t.TempDir()+"/legacy-onboarding-http.db")
-	if err != nil {
-		t.Fatalf("persistence.Open() error = %v", err)
-	}
-	defer store.Close()
-	cfg := config.Config{
-		AdminUsername: "admin", AdminPassword: "correct horse battery staple",
-		AdminToken:    "wbt_legacy_onboarding_management_token_20261009_long",
-		SessionSecret: "0123456789abcdef0123456789abcdef", SessionDays: 1, SessionIdleHours: 1, LoginMaxFails: 3,
-	}
-	server, err := NewServer(cfg, store, log.New(io.Discard, "", 0))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-	testServer := httptest.NewServer(server.Handler())
-	defer testServer.Close()
-	request, err := http.NewRequest(http.MethodPost, testServer.URL+"/admin/api/accounts/doubao/onboarding/start", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatalf("NewRequest() error = %v", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+cfg.AdminToken)
-	request.Header.Set("Origin", testServer.URL)
-	response, err := testServer.Client().Do(request)
-	if err != nil {
-		t.Fatalf("legacy onboarding request error = %v", err)
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusGone || !strings.Contains(string(body), "legacy_bridge_disabled") {
-		t.Fatalf("legacy onboarding status=%d body=%s", response.StatusCode, body)
-	}
-}
-
 func TestGeneratedMediaRewritesToGatewayFileURL(t *testing.T) {
 	store, err := persistence.Open(context.Background(), t.TempDir()+"/generated-http.db")
 	if err != nil {
@@ -995,5 +961,98 @@ func TestAdminKeyRoutesReturnPlaintextOnlyOnCreateAndRotate(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(rotateBody), `"key":"sk-a2a-`) {
 		t.Fatalf("rotate key = %d %s", response.StatusCode, rotateBody)
+	}
+}
+
+type reasoningFixtureAdapter struct{}
+
+func (reasoningFixtureAdapter) Channel() string { return "wb" }
+func (reasoningFixtureAdapter) Models(context.Context) ([]ports.ModelDescriptor, error) {
+	return []ports.ModelDescriptor{{UpstreamID: "model-a", Capabilities: []string{"chat"}}}, nil
+}
+func (reasoningFixtureAdapter) Chat(context.Context, ports.ChatInput) (ports.ChatResult, error) {
+	return ports.ChatResult{Text: "answer", Reasoning: "think"}, nil
+}
+func (a reasoningFixtureAdapter) ChatWithAccount(ctx context.Context, input ports.ChatInput, _ string) (ports.ChatResult, error) {
+	return a.Chat(ctx, input)
+}
+func (reasoningFixtureAdapter) ChatStreamWithAccount(_ context.Context, _ ports.ChatInput, _ string, emit func(ports.StreamChunk) error) error {
+	for _, chunk := range []ports.StreamChunk{{ID: "r1", Reasoning: "thi"}, {ID: "r1", Reasoning: "nk"}, {ID: "r1", Text: "ans"}, {ID: "r1", Text: "wer"}, {ID: "r1", FinishReason: "stop"}} {
+		if err := emit(chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestChatCompletionsExposeReasoningContent(t *testing.T) {
+	ctx := context.Background()
+	store, err := persistence.Open(ctx, t.TempDir()+"/reasoning-http.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	box := cryptoinfra.NewFernet("reasoning-http-fixture-key")
+	if _, err := store.ImportAccounts(ctx, []ports.AccountImport{{Channel: "wb", ID: "wb:cn:r", NativeID: "cn:r", Name: "r", Kind: "token", Credentials: map[string]string{"access_token": "fixture"}}}, box, ports.AuditEvent{Actor: "admin", Action: "fixture_import"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		AdminUsername: "admin", AdminPassword: "correct horse battery staple",
+		AdminToken: "wbt_reasoning_http_management_token_20261013_long", SessionSecret: "0123456789abcdef0123456789abcdef",
+		SessionDays: 1, SessionIdleHours: 1, LoginMaxFails: 1,
+	}
+	server, err := NewServerWithAdapters(cfg, store, log.New(io.Discard, "", 0), map[string]ports.Adapter{"wb": reasoningFixtureAdapter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer := httptest.NewServer(server.Handler())
+	defer testServer.Close()
+	keyRequest, _ := http.NewRequest(http.MethodPost, testServer.URL+"/admin/api/keys", strings.NewReader(`{"name":"reasoning-key","channels":["wb"],"models":["wb/*"],"limit_rpm":60}`))
+	keyRequest.Header.Set("Authorization", "Bearer "+cfg.AdminToken)
+	keyRequest.Header.Set("Origin", testServer.URL)
+	keyRequest.Header.Set("Content-Type", "application/json")
+	keyResponse, err := testServer.Client().Do(keyRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		Key string `json:"key"`
+	}
+	_ = json.NewDecoder(keyResponse.Body).Decode(&created)
+	keyResponse.Body.Close()
+	if created.Key == "" {
+		t.Fatalf("key status=%d", keyResponse.StatusCode)
+	}
+	call := func(stream bool) string {
+		body := fmt.Sprintf(`{"model":"wb/model-a","stream":%t,"messages":[{"role":"user","content":"hi"}]}`, stream)
+		request, _ := http.NewRequest(http.MethodPost, testServer.URL+"/v1/chat/completions", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+created.Key)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := testServer.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, _ := io.ReadAll(response.Body)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("stream=%t status=%d body=%s", stream, response.StatusCode, data)
+		}
+		return string(data)
+	}
+	plain := call(false)
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(plain), &parsed); err != nil || len(parsed.Choices) != 1 || parsed.Choices[0].Message.Content != "answer" || parsed.Choices[0].Message.ReasoningContent != "think" {
+		t.Fatalf("non-stream body=%s err=%v", plain, err)
+	}
+	streamed := call(true)
+	if !strings.Contains(streamed, `"reasoning_content":"thi"`) || !strings.Contains(streamed, `"content":"ans"`) || strings.Contains(streamed, `"content":""`) || !strings.Contains(streamed, "[DONE]") {
+		t.Fatalf("stream body=%s", streamed)
 	}
 }

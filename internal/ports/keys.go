@@ -77,6 +77,13 @@ type KeyRepository interface {
 	AuthenticateKey(context.Context, string, time.Time) (APIKey, error)
 }
 
+// BootstrapKeyRepository manages the single configuration-owned "bootstrap"
+// key row. It is separate from KeyRepository because admins cannot edit it.
+type BootstrapKeyRepository interface {
+	UpsertBootstrapKey(ctx context.Context, keyHash, encrypted, prefix string, limitRPM int, now int64) error
+	DisableBootstrapKey(ctx context.Context) error
+}
+
 type SecretBox interface {
 	Encrypt(string) (string, error)
 	Decrypt(string) (string, error)

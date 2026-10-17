@@ -97,3 +97,46 @@ func TestKeyLifecyclePersistsOnlyHashAndEncryptedSecret(t *testing.T) {
 }
 
 func ptr[T any](value T) *T { return &value }
+
+func TestSyncBootstrapCreatesReplacesAndDisablesConfiguredKey(t *testing.T) {
+	ctx := context.Background()
+	store, err := persistence.Open(ctx, t.TempDir()+"/bootstrap.db")
+	if err != nil {
+		t.Fatalf("persistence.Open() error = %v", err)
+	}
+	defer store.Close()
+	service := keyapp.NewService(store, cryptoinfra.NewFernet("fixture-master-key"), security.NewKeyMaterial(), func() []string { return []string{"wb"} })
+
+	if err := service.SyncBootstrap(ctx, store, "sk-a2a-short", 60); err != keyapp.ErrBootstrapKeyFormat {
+		t.Fatalf("short key error = %v, want ErrBootstrapKeyFormat", err)
+	}
+	first := "sk-a2a-" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	second := "sk-a2a-" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if err := service.SyncBootstrap(ctx, store, first, 60); err != nil {
+		t.Fatalf("SyncBootstrap(first) error = %v", err)
+	}
+	if _, err := service.Authenticate(ctx, "Bearer "+first, ""); err != nil {
+		t.Fatalf("bootstrap key should authenticate: %v", err)
+	}
+	// Re-running with a new value replaces the same row instead of adding one.
+	if err := service.SyncBootstrap(ctx, store, second, 60); err != nil {
+		t.Fatalf("SyncBootstrap(second) error = %v", err)
+	}
+	if _, err := service.Authenticate(ctx, "Bearer "+first, ""); err != ports.ErrInvalidKey {
+		t.Fatalf("replaced bootstrap key error = %v, want ErrInvalidKey", err)
+	}
+	if _, err := service.Authenticate(ctx, "Bearer "+second, ""); err != nil {
+		t.Fatalf("new bootstrap key should authenticate: %v", err)
+	}
+	rows, total, err := service.List(ctx, ports.KeyListFilter{Page: 1, PageSize: 50})
+	if err != nil || total != 1 || rows[0].Name != "bootstrap" || rows[0].LimitRPM != 60 {
+		t.Fatalf("List() = %#v, %d, %v", rows, total, err)
+	}
+	// Removing the configuration disables the key.
+	if err := service.SyncBootstrap(ctx, store, "", 60); err != nil {
+		t.Fatalf("SyncBootstrap(empty) error = %v", err)
+	}
+	if _, err := service.Authenticate(ctx, "Bearer "+second, ""); err != ports.ErrInvalidKey {
+		t.Fatalf("disabled bootstrap key error = %v, want ErrInvalidKey", err)
+	}
+}

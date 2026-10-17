@@ -18,7 +18,7 @@ func (c *Client) CapabilityWithAccount(ctx context.Context, input ports.Capabili
 	if c.ResolveCredential == nil {
 		return ports.CapabilityResult{}, fmt.Errorf("ChatGPT credential is unavailable")
 	}
-	credentials, err := c.ResolveCredential(ctx, accountID)
+	credentials, err := c.credentialsFor(ctx, accountID)
 	if err != nil {
 		return ports.CapabilityResult{}, err
 	}

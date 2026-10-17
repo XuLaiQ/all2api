@@ -40,30 +40,6 @@
     ]
   },
   {
-    "method": "POST",
-    "path": "/admin/api/accounts/{channel}/onboarding/finish",
-    "operation_id": "finish_account_onboarding_admin_api_accounts__channel__onboarding_finish_post",
-    "tags": [
-      "accounts"
-    ]
-  },
-  {
-    "method": "GET",
-    "path": "/admin/api/accounts/{channel}/onboarding/poll",
-    "operation_id": "poll_account_onboarding_admin_api_accounts__channel__onboarding_poll_get",
-    "tags": [
-      "accounts"
-    ]
-  },
-  {
-    "method": "POST",
-    "path": "/admin/api/accounts/{channel}/onboarding/start",
-    "operation_id": "start_account_onboarding_admin_api_accounts__channel__onboarding_start_post",
-    "tags": [
-      "accounts"
-    ]
-  },
-  {
     "method": "GET",
     "path": "/admin/api/audit-logs",
     "operation_id": "list_audit_logs_admin_api_audit_logs_get",

@@ -131,4 +131,31 @@ func TestPlaygroundChatPersistsConversationHistory(t *testing.T) {
 	if list.StatusCode != 200 || !strings.Contains(string(listBody), "conv_") {
 		t.Fatalf("list=%d %s", list.StatusCode, listBody)
 	}
+	// Debug runs are recorded in the shared request log and daily usage
+	// (key_id 0). The fake adapter reports usage, so it is kept as reported.
+	var kind string
+	var prompt, completion, reported int
+	if err := store.SQLDB().QueryRow(`SELECT usage_kind, prompt_tokens, completion_tokens FROM request_logs WHERE request_id LIKE 'pg_%'`).Scan(&kind, &prompt, &completion); err != nil {
+		t.Fatalf("playground request log: %v", err)
+	}
+	if kind != "reported" || prompt != 1 || completion != 1 {
+		t.Fatalf("playground usage kind=%s prompt=%d completion=%d", kind, prompt, completion)
+	}
+	if err := store.SQLDB().QueryRow(`SELECT usage_reported_requests FROM usage_daily WHERE channel = 'wb' AND key_id = 0`).Scan(&reported); err != nil || reported != 1 {
+		t.Fatalf("usage_daily reported=%d err=%v", reported, err)
+	}
+}
+
+func TestApplyUsageEstimatesWhenUpstreamDoesNotReport(t *testing.T) {
+	messages := []ports.ChatMessage{{Role: "user", Content: "hello world"}}
+	var record ports.RequestRecord
+	applyUsage(&record, messages, ports.ChatResult{Text: "hello world", UpstreamModel: "gpt-4o"}, "chatgpt/gpt-4o")
+	if record.UsageKind != "estimated" || record.UsageReported || record.PromptTokens != 9 || record.CompletionTokens != 2 {
+		t.Fatalf("estimated record = %+v", record)
+	}
+	record = ports.RequestRecord{}
+	applyUsage(&record, messages, ports.ChatResult{Text: "ignored", Usage: &ports.Usage{PromptTokens: 7, CompletionTokens: 5}}, "chatgpt/gpt-4o")
+	if record.UsageKind != "reported" || !record.UsageReported || record.PromptTokens != 7 || record.CompletionTokens != 5 {
+		t.Fatalf("reported record = %+v", record)
+	}
 }

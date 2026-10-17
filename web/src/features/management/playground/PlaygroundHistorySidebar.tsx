@@ -2,7 +2,7 @@ import { Check, Copy, MessageCircle, Plus, RefreshCw, Trash2 } from "lucide-reac
 import { Button } from "../../../app/controls/Button";
 import { Pagination } from "../../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../../app/data/pagination.constants";
-import type { PlaygroundConversationSummary, PlaygroundRun } from "../managementApi";
+import { isPlaygroundSuccess, type PlaygroundConversationSummary, type PlaygroundRun } from "../managementApi";
 import type { PlaygroundSidebarTab } from "./types";
 
 type PlaygroundHistorySidebarProps = {
@@ -35,7 +35,7 @@ type PlaygroundHistorySidebarProps = {
 };
 
 function runStatusLabel(run: PlaygroundRun): string {
-  if (run.status === "ok" && (run.response_status ?? 500) < 400) return "已完成";
+  if (isPlaygroundSuccess(run.status, run.response_status ?? undefined)) return "已完成";
   if (run.status === "running") return "处理中";
   return "失败";
 }

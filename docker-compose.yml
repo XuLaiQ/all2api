@@ -1,16 +1,24 @@
+# Local development topology: Go API + Doubao browser worker + media worker +
+# Vite dev server. Values come from ./.env (see .env.example).
+x-go-image: &go-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+
 services:
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile.golang
+    <<: *go-image
     ports:
       - "${API_PORT:-8888}:8888"
     environment:
       A2A_HOST: 0.0.0.0
-      A2A_ENV: ${A2A_ENV:-development}
       A2A_PORT: "8888"
+      A2A_ENV: ${A2A_ENV:-development}
       A2A_DB_PATH: /app/data/all2api.db
       A2A_STATE_PATH: /app/data/gateway/state.json
+      A2A_LOG_RETENTION_DAYS: ${A2A_LOG_RETENTION_DAYS:-30}
+      A2A_USAGE_RETENTION_DAYS: ${A2A_USAGE_RETENTION_DAYS:-365}
+      A2A_PROVISION_SESSION_TTL_SECONDS: ${A2A_PROVISION_SESSION_TTL_SECONDS:-600}
       A2A_SESSION_SECRET: ${A2A_SESSION_SECRET:-dev-only-change-me}
       A2A_CREDENTIAL_MASTER_KEY: ${A2A_CREDENTIAL_MASTER_KEY:-}
       A2A_ADMIN_USERNAME: ${A2A_ADMIN_USERNAME:-admin}
@@ -21,17 +29,19 @@ services:
       A2A_BOOTSTRAP_RPM: ${A2A_BOOTSTRAP_RPM:-60}
       A2A_TRUST_PROXY: ${A2A_TRUST_PROXY:-true}
       A2A_TRUSTED_PROXIES: ${A2A_TRUSTED_PROXIES:-127.0.0.1,::1}
+      A2A_CORS_ORIGINS: http://localhost:${WEB_PORT:-5555},http://127.0.0.1:${WEB_PORT:-5555}
       A2A_WB_PLATFORM_BASE: ${A2A_WB_PLATFORM_BASE:-https://copilot.tencent.com}
       A2A_DOUBAO_PLATFORM_BASE: ${A2A_DOUBAO_PLATFORM_BASE:-https://www.doubao.com}
       A2A_CHATGPT_PLATFORM_BASE: ${A2A_CHATGPT_PLATFORM_BASE:-https://auth.openai.com}
       A2A_CHATGPT_WEB_BASE: ${A2A_CHATGPT_WEB_BASE:-https://chatgpt.com}
       A2A_CHATGPT_PROXY: ${A2A_CHATGPT_PROXY:-}
-      A2A_CORS_ORIGINS: http://localhost:${WEB_PORT:-5555},http://127.0.0.1:${WEB_PORT:-5555}
+      A2A_GROK_PLATFORM_BASE: ${A2A_GROK_PLATFORM_BASE:-https://grok.com}
+      A2A_GROK_BUILD_BASE: ${A2A_GROK_BUILD_BASE:-https://cli-chat-proxy.grok.com/v1}
       A2A_DOUBAO_BROWSER_ENABLED: ${A2A_DOUBAO_BROWSER_ENABLED:-false}
       A2A_DOUBAO_BROWSER_WORKER_BASE: ${A2A_DOUBAO_BROWSER_WORKER_BASE:-http://browser-worker:8891}
       A2A_DOUBAO_BROWSER_WORKER_TOKEN: ${A2A_DOUBAO_BROWSER_WORKER_TOKEN:-}
     volumes:
-      - go_api_data:/app/data
+      - api_data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8888/admin/api/healthz"]
       interval: 10s
@@ -39,9 +49,7 @@ services:
       retries: 5
 
   browser-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.golang
+    <<: *go-image
     entrypoint: ["/usr/local/bin/doubao-browser-worker"]
     environment:
       A2A_DOUBAO_BROWSER_WORKER_PORT: "8891"
@@ -52,7 +60,7 @@ services:
       A2A_DOUBAO_BROWSER_HEADLESS: ${A2A_DOUBAO_BROWSER_HEADLESS:-true}
       A2A_DOUBAO_BROWSER_WORKER_TOKEN: ${A2A_DOUBAO_BROWSER_WORKER_TOKEN:-}
     volumes:
-      - go_browser_data:/app/data
+      - browser_data:/app/data
     expose:
       - "8891"
     healthcheck:
@@ -62,16 +70,14 @@ services:
       retries: 5
 
   media-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.golang
+    <<: *go-image
     entrypoint: ["/usr/local/bin/media-worker"]
     environment:
       A2A_MEDIA_WORKER_PORT: "8892"
       A2A_MEDIA_WORKER_ROOT: /app/data/media-worker
       A2A_MEDIA_WORKER_TOKEN: ${A2A_MEDIA_WORKER_TOKEN:-}
     volumes:
-      - go_media_worker_data:/app/data
+      - media_worker_data:/app/data
     expose:
       - "8892"
     healthcheck:
@@ -82,29 +88,23 @@ services:
 
   web:
     image: node:24-bookworm-slim
-    working_dir: /workspace
+    working_dir: /workspace/web
     command: >-
-      sh -lc "corepack enable && cd web && pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0 --port 5555"
+      sh -lc "corepack enable && pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0 --port 5555"
     ports:
       - "${WEB_PORT:-5555}:5555"
     environment:
       VITE_PROXY_TARGET: http://api:8888
     volumes:
-      - .:/workspace
-      - go_workspace_node_modules:/workspace/node_modules
-      - go_web_node_modules:/workspace/web/node_modules
+      - ./web:/workspace/web
+      - web_node_modules:/workspace/web/node_modules
     init: true
     depends_on:
       api:
         condition: service_healthy
-      browser-worker:
-        condition: service_healthy
-      media-worker:
-        condition: service_healthy
 
 volumes:
-  go_api_data:
-  go_browser_data:
-  go_workspace_node_modules:
-  go_web_node_modules:
-  go_media_worker_data:
+  api_data:
+  browser_data:
+  media_worker_data:
+  web_node_modules:

@@ -420,18 +420,18 @@ G3/G5 基础边界已继续建立：
 - Go-only Compose 已把 gateway、browser-worker、media-worker 和 web 纳入同一健康检查/依赖拓扑；browser/media worker 默认关闭资产操作且要求显式 token，media provider-specific 操作仍明确返回 pending。
 - browser/media worker 已完成本机无 Chromium/无 token 条件下的协议 smoke：health 返回 `not_configured`，未带 token 返回 `unauthorized`/`worker_token_not_configured`，启用但未配置浏览器时返回 `worker_capability_pending`；CDP handshake、命令响应、profile 边界和 Doubao worker client 均有 contract test。
 - Go clean build/run gate 已通过：临时 SQLite、临时端口和构建产物启动后，详细 healthz 返回 schema 11；gate 使用 curl 绕过本机代理并不污染仓库根目录。
-- 已加入 `scripts/backup-go-state.ps1` 和 `scripts/verify-go-backup-restore.ps1`；在停止写入的临时演练中完成 SQLite/WAL sidecar、媒体文件 SHA-256 校验、Go clean build/restore 启动和 schema 11 health 验收。备份 manifest 不包含配置文件或加密主密钥，主密钥必须由外部 Secret Manager 单独恢复。
-- 已加入 `scripts/verify-go-rollback.ps1`；另从已构建的 Go-only API 镜像归档了 Linux/amd64 上一版 binary，并完成挂载备份副本的 Docker 回滚演练，healthz 返回 schema 11。Windows `Start-Process` 不能直接执行 Linux binary，生产镜像回滚应使用同平台容器演练；artifact/hash 和结果已归档到 `docs/migration-evidence/`。
-- 已加入 `scripts/check-go-cutover.ps1`；该脚本逐项检查 Docker daemon、Go-only 默认 Compose、`A2A_ENV=production`、CI image/artifact gate、Python/legacy runtime 删除、上一版 Go binary、备份脚本和脱敏真实 E2E JSON 证据，缺项时以非零状态和 JSON blocker 列表拒绝切换。
-- 已加入 `scripts/probe-go-platforms.ps1`，按隔离 SQLite 副本执行脱敏真实探针并自动写 JSON，只输出 health、状态码、错误 code、模型数量和文本长度；最新代理重试结果为 WorkBuddy `models=200/22`、chat `200/text_length=3`，Doubao `models=200/8`、chat `200/text_length=114`，ChatGPT `401/credential_rejected`。代理已打通 Go 进程到 ChatGPT Web 的网络路径，但隔离数据库中的现有凭据被上游拒绝；此前曾观察到 Doubao 的短暂 404/502，状态以最新归档 JSON 为准。
+- 已加入 `scripts/ops/backup-go-state.ps1` 和 `scripts/verify/verify-go-backup-restore.ps1`；在停止写入的临时演练中完成 SQLite/WAL sidecar、媒体文件 SHA-256 校验、Go clean build/restore 启动和 schema 11 health 验收。备份 manifest 不包含配置文件或加密主密钥，主密钥必须由外部 Secret Manager 单独恢复。
+- 已加入 `scripts/verify/verify-go-rollback.ps1`；另从已构建的 Go-only API 镜像归档了 Linux/amd64 上一版 binary，并完成挂载备份副本的 Docker 回滚演练，healthz 返回 schema 11。Windows `Start-Process` 不能直接执行 Linux binary，生产镜像回滚应使用同平台容器演练；artifact/hash 和结果已归档到 `docs/migration-evidence/`。
+- 已加入 `scripts/verify/check-go-cutover.ps1`；该脚本逐项检查 Docker daemon、Go-only 默认 Compose、`A2A_ENV=production`、CI image/artifact gate、Python/legacy runtime 删除、上一版 Go binary、备份脚本和脱敏真实 E2E JSON 证据，缺项时以非零状态和 JSON blocker 列表拒绝切换。
+- 已加入 `scripts/probe/probe-go-platforms.ps1`，按隔离 SQLite 副本执行脱敏真实探针并自动写 JSON，只输出 health、状态码、错误 code、模型数量和文本长度；最新代理重试结果为 WorkBuddy `models=200/22`、chat `200/text_length=3`，Doubao `models=200/8`、chat `200/text_length=114`，ChatGPT `401/credential_rejected`。代理已打通 Go 进程到 ChatGPT Web 的网络路径，但隔离数据库中的现有凭据被上游拒绝；此前曾观察到 Doubao 的短暂 404/502，状态以最新归档 JSON 为准。
 - 脱敏探针 JSON 已归档至 `docs/migration-evidence/platform-probe-2026-10-09.json`；browser worker container smoke 和本机 Go CDP 浏览器 E2E 已分别归档至 `docs/migration-evidence/browser-worker-smoke-2026-10-09.json`、`docs/migration-evidence/browser-worker-e2e-2026-10-09.json`。最新重跑发现当前可用 profile 数为 1，真实打开 `https://www.doubao.com/chat/` 并取得页面标题，但 `authenticated=false`；证据明确标记真实三渠道/browser E2E 未通过。
 - 额外无凭据浏览器检查已归档至 `docs/migration-evidence/doubao-browser-region-2026-10-09.json`：公开访问被重定向到 `security/doubao-region-ban`，页面提示区域限制并要求登录；未点击登录、未输入凭据、未读取 Cookie。
-- 已加入 `scripts/generate-go-sbom.ps1`；在临时目录生成 gateway、browser-worker、media-worker 的 CGO=0 release binary、依赖模块清单和 SHA-256 manifest，避免把未执行 Docker image build 误记为完整发布证据。
+- 已加入 `scripts/ops/generate-go-sbom.ps1`；在临时目录生成 gateway、browser-worker、media-worker 的 CGO=0 release binary、依赖模块清单和 SHA-256 manifest，避免把未执行 Docker image build 误记为完整发布证据。
 - 已加入 `.github/workflows/go-migration.yml`，在 CI 中分离执行 Go race/vet/build、Python regression、Web lint/typecheck/build 和 Go-only Compose config gate。
 - CI 已增加 Linux Dockerfile.golang 实构建 job 和 Windows Go release/SBOM artifact job；本机 Docker daemon 不可用时仍只记录为本地阻断，不降低 CI 门禁。
-- `verify_no_source_deps.py` 已修正为检查 Go-only Dockerfile；Docker daemon 缺失时输出 `UNVERIFIED` 并退出码 2，不再把跳过的镜像构建打印为 PASS。
-- `verify_no_source_deps.py` 的 clean-build 分支已改为 Go test/vet 和三枚 Go binary 构建，不再通过 `uv`/Python 编译作为 Go 运行时证据；Python regression 仍由独立 CI job 负责。
-- `verify_no_legacy_in_prod.py` 已改为构建/检查 `Dockerfile.golang`，验证三枚 Go binary 且拒绝 `/app/app` Python runtime；Docker daemon 不可用时返回 `UNVERIFIED`/退出码 2。
+- `verify-no-source-deps.py` 已修正为检查 Go-only Dockerfile；Docker daemon 缺失时输出 `UNVERIFIED` 并退出码 2，不再把跳过的镜像构建打印为 PASS。
+- `verify-no-source-deps.py` 的 clean-build 分支已改为 Go test/vet 和三枚 Go binary 构建，不再通过 `uv`/Python 编译作为 Go 运行时证据；Python regression 仍由独立 CI job 负责。
+- `verify-no-legacy-in-prod.py` 已改为构建/检查 `Dockerfile.golang`，验证三枚 Go binary 且拒绝 `/app/app` Python runtime；Docker daemon 不可用时返回 `UNVERIFIED`/退出码 2。
 - Go release artifact/SBOM smoke 已通过：`generate-go-sbom.ps1` 在临时目录生成 3 个 CGO=0 binary、11 条 go.sum 依赖记录和 SHA-256 manifest；该结果不替代 Docker image build。
 - Responses 增量 SSE 的终止阶段已改为显式生成四个 terminal event（`response.output_text.done`、`response.content_part.done`、`response.output_item.done`、`response.completed`），协议测试覆盖非空/空文本并禁止重复 delta 或 setup event；真实 HTTP stream gate 继续通过。
 - Doubao Go client 已对齐已审计原生 transport：模型目录使用带设备参数的 POST，补齐 Cookie/CSRF/Origin/Referer headers，并在目录接口 404/空结果时解析 `/chat/` 路由目录；新增 fixture 后真实隔离探针恢复为 models/chat HTTP 200。
@@ -455,10 +455,10 @@ G3/G5 基础边界已继续建立：
 - Go 系统页和账号页基础 API 已接入：`sysinfo`、`storage/health`、`metrics`、`overview`、账号安全列表、启停、单删和批量删除；批量删除会在事务内按 native credential id 清理凭据并返回逐项结果；系统信息已使用 `go_version`/`implementation`，不再暴露 Python runtime 字段；未实现的账号 provision 能力会显式返回 `capability_not_supported`。
 - 已补齐前端使用的 `POST /admin/api/accounts/{account_id}/refresh` Go 路由；WorkBuddy/ChatGPT 走 token refresh，Doubao Cookie/browser session 返回明确 `capability_not_supported`，并由 HTTP 回归测试锁定，避免 404 或伪造刷新成功。
 - 已为 Go 运行时注册迁移期旧 onboarding 三条路径并统一返回 `410 legacy_bridge_disabled`，同时保留 native provision API；HTTP 回归测试确认旧客户端不会收到含糊的 404。
-- 已加入 `scripts/verify-go-route-coverage.py` 和 CI gate，读取冻结 `routes.json` 与 Go `ServeMux` 注册表，当前覆盖 72 条 baseline path，防止新增接口再次出现文档/路由遗漏。
+- 已加入 `scripts/verify/verify-go-route-coverage.py` 和 CI gate，读取冻结 `routes.json` 与 Go `ServeMux` 注册表，当前覆盖 72 条 baseline path，防止新增接口再次出现文档/路由遗漏。
 - CI 已补充独立 `go-vulnerability-scan` job，使用固定版本 `govulncheck@v1.1.4` 扫描 Go runtime，以及 `go-license-scan` job，使用固定版本 `go-licenses@v1.3.0` 扫描 Go 依赖许可证；本机执行因 `proxy.golang.org` 网络不可达而记为未验证，不把它误报为通过。仓库根 `LICENSE` 仍未声明，公开发布前需要明确许可证决策，当前不能把许可证门禁标为通过。
 - 供应链实测摘要已归档至 `docs/migration-evidence/supply-chain-2026-10-09.json`：`go mod verify` 通过，漏洞/依赖许可证工具因外部 Go 网络不可达未验证，根许可证仍缺失。
-- 已加入 `scripts/verify-go-supply-chain.py` 与 `go-supply-chain-local` CI gate：在模块已下载时验证 `go mod verify`、模块 cache 完整性、常见依赖许可证文件和根许可证存在；当前根许可证缺失时返回未验证退出码。该审计仍不是法务结论，也不能替代 govulncheck/go-licenses。
+- 已加入 `scripts/verify/verify-go-supply-chain.py` 与 `go-supply-chain-local` CI gate：在模块已下载时验证 `go mod verify`、模块 cache 完整性、常见依赖许可证文件和根许可证存在；当前根许可证缺失时返回未验证退出码。该审计仍不是法务结论，也不能替代 govulncheck/go-licenses。
 - `check-go-cutover.ps1` 已修复为在 Docker daemon 不可用时输出结构化 `docker_daemon=false` blocker，而不是因 PowerShell 外部命令异常直接中止；当前实测 readiness 能完整保留 Docker、供应链、许可证和真实平台阻断项。
 - Go 渠道管理响应已根据本地 provisioner/账号池真实状态填充 `provision_configured`、`accounts_configured`；WB `qr-oauth`、Doubao `qr-login`、ChatGPT `oauth-pkce` 均通过动态 schema 暴露，前端会在 `next_step=complete` 时自动完成 QR 流程。
 - Go media store 已接入素材安全文件落库、100 MB 大小限制、路径穿越保护、列表、内容读取和删除；生成结果已支持 base64/远程 URL 归一化、失败时 remote metadata fallback、`/v1/files/{id}/content` 本地 URL 重写，以及 Doubao 图片的 Go watermark transformer。真实 provider 生成、CDN 下载成功率和视觉质量仍需平台 E2E。

@@ -187,12 +187,14 @@ func (s *Service) storeGeneratedURL(ctx context.Context, options GenerationStore
 
 func (s *Service) storeGeneratedBytes(ctx context.Context, options GenerationStoreOptions, kind, mimeType, filename, sourceURL string, data []byte, metadata map[string]any) (ports.MediaAsset, error) {
 	metadata = cloneMetadata(metadata)
-	if options.Channel == "doubao" && kind == "image" && s.transform != nil {
+	// Upstream raw originals (image_ori_raw) carry no mark; inpainting them
+	// would only damage the corner, so repair just the watermarked variants.
+	if options.Channel == "doubao" && kind == "image" && s.transform != nil && metadata["watermark_free"] != true {
 		if repaired, err := s.transform(data); err == nil && len(repaired) > 0 {
 			data = repaired
 			mimeType = "image/png"
 			metadata["watermark_free"] = true
-			metadata["watermark_method"] = "go_region_repair"
+			metadata["watermark_method"] = "telea_inpaint"
 		}
 	}
 	asset := ports.MediaAsset{

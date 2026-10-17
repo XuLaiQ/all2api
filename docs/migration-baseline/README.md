@@ -1,37 +1,22 @@
-# Go migration baseline
+# Contract baseline
 
-This directory contains migration-time snapshots generated from the current
-Python implementation. The snapshots are inputs to Go contract tests; they do
-not make the Python service part of the Go runtime.
+Frozen snapshots exported from the original Python implementation before it was
+removed. They are now the contract inputs for the Go backend and are not
+regenerated (the exporter was deleted together with the Python service).
 
-Generate the contract and configuration snapshots from the repository root:
+| File | Used by |
+| --- | --- |
+| `routes.json` | `internal/transport/http/route_coverage_test.go` — every listed method + path must be registered in the Go `ServeMux`. Add new public routes here when you add them. |
+| `database-schema.sql`, `database-snapshot.json` | Reference for `internal/infrastructure/persistence/migrations/0011_baseline.sql` (schema version 11). The snapshot holds only DDL, table names and row counts — no credentials or account payloads. |
+| `security-golden-vectors.json` | Public fixture values for the Fernet reader, API key hash and session-cookie signing shape. |
+| `config-map.json`, `openapi.json`, `metadata.json` | Historical reference for environment variables and the original OpenAPI surface. |
 
-```powershell
-uv run --directory services/api --no-sync python ../../scripts/freeze_go_baseline.py
-```
-
-To collect a database snapshot, pass a disposable copy explicitly:
-
-```powershell
-uv run --directory services/api --no-sync python ../../scripts/freeze_go_baseline.py --database .\data\all2api-copy.db
-```
-
-The collector opens the database in read-only mode and writes only schema DDL,
-schema version, table names, and row counts. It never writes credentials or
-account payloads. `security-golden-vectors.json` contains public fixture values
-for the Go Fernet reader, API Key hash, and session-cookie signing shape. The
-three channel adapter fixtures remain pending.
-
-Go build gate:
+Go build gates:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-go-build.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-go-clean-build.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\verify\verify-go-build.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\verify\verify-go-clean-build.ps1
 ```
 
-The current Python Compose deployment is intentionally unchanged until the G6
-switch criteria are met.
-
-The Go production image definition is [Dockerfile.golang](../../Dockerfile.golang);
-it builds the gateway and both worker binaries without copying Python sources.
-The Go-only Compose topology is [docker-compose.go.yml](../../docker-compose.go.yml).
+The production image is defined by [Dockerfile](../../Dockerfile) and the local
+topology by [docker-compose.yml](../../docker-compose.yml).

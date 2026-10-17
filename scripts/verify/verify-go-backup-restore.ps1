@@ -69,7 +69,7 @@ try {
         Restore-Entry -Entry $entry -DestinationRoot $restore
     }
 
-    $workspace = Split-Path -Parent $PSScriptRoot
+    $workspace = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     $binary = Join-Path $restore "all2api.exe"
     & go build -mod=readonly -trimpath -o $binary (Join-Path $workspace "cmd\all2api")
     if ($LASTEXITCODE -ne 0) {

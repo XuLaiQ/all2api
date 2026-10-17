@@ -45,6 +45,10 @@ func TestChatGPTClientParsesCatalogueAndWebSSE(t *testing.T) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			if payload["thinking_effort"] != "extended" {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				return
+			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte("data: {\"p\":\"/message/content/parts/0\",\"o\":\"append\",\"v\":\"hel\"}\n\ndata: {\"p\":\"/message/content/parts/0\",\"o\":\"append\",\"v\":\"lo\"}\n\ndata: [DONE]\n\n"))
 			return
@@ -60,7 +64,7 @@ func TestChatGPTClientParsesCatalogueAndWebSSE(t *testing.T) {
 	if err != nil || len(models) != 1 || models[0].UpstreamID != "gpt-test" {
 		t.Fatalf("Models() = %#v, %v", models, err)
 	}
-	result, err := client.Chat(context.Background(), ports.ChatInput{Model: "gpt-test", Messages: []ports.ChatMessage{{Role: "user", Content: "hi"}}}, "account")
+	result, err := client.Chat(context.Background(), ports.ChatInput{Model: "gpt-test", ReasoningEffort: "xhigh", Messages: []ports.ChatMessage{{Role: "user", Content: "hi"}}}, "account")
 	if err != nil || result.Text != "hello" {
 		t.Fatalf("Chat() = %#v, %v", result, err)
 	}

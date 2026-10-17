@@ -13,6 +13,7 @@ import {
   runPlaygroundFileTask,
   runPlaygroundSearch,
   runPlaygroundStream,
+  isPlaygroundSuccess,
   type PlaygroundConversationSummary,
   type PlaygroundResult,
   type PlaygroundRun,
@@ -145,7 +146,7 @@ function ratioToSize(ratio: string): string {
 }
 
 function playgroundFailureMessage(result: PlaygroundResult): string {
-  if (result.status === "ok" && result.response_status < 400) return "";
+  if (isPlaygroundSuccess(result.status, result.response_status)) return "";
   const status = result.response_status ? `上游 HTTP ${result.response_status}` : "上游未返回有效状态";
   const detail = responseError(result.response);
   return detail ? `调试请求失败（${status}）：${detail}` : `调试请求失败（${status}）`;
@@ -432,7 +433,7 @@ export function PlaygroundPage() {
           duration: generationSettings.videoDuration,
           base64_images: images,
         });
-        const failed = result.status !== "ok" || result.response_status >= 400;
+        const failed = !isPlaygroundSuccess(result.status, result.response_status);
         const content = failed
           ? responseError(result.response) || `生成失败（上游 HTTP ${result.response_status}）`
           : generationSummary(result.response, composerMode);

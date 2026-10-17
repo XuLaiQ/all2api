@@ -64,6 +64,14 @@ export type PlaygroundResult = {
   response: unknown;
 };
 
+/**
+ * The Go backend marks finished runs as "success"; "ok" is still accepted for
+ * runs recorded by older builds.
+ */
+export function isPlaygroundSuccess(status: string | undefined, responseStatus: number | undefined): boolean {
+  return (status === "success" || status === "ok") && (responseStatus ?? 500) < 400;
+}
+
 export type PlaygroundStreamEvent =
   | { type: "delta"; content: string }
   | { type: "error"; message: string; response_status?: number; error_code?: string }

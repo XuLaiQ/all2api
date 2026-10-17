@@ -1,7 +1,6 @@
 package chatgpt
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -26,6 +25,18 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("ChatGPT %s endpoint returned HTTP %d", e.Operation, e.Status)
 }
 func (e *HTTPError) StatusCode() int { return e.Status }
+
+// PublicMessage explains credential failures the operator must act on.
+func (e *HTTPError) PublicMessage() string {
+	if e.Status == 401 && e.Operation == "oauth token refresh" {
+		return "ChatGPT 账号访问令牌已过期且刷新失败，请重新登录或重新导入该账号"
+	}
+	if e.Status == 401 {
+		return "ChatGPT 账号凭据已失效，请重新登录或重新导入该账号"
+	}
+	return ""
+}
+
 func (e *HTTPError) Kind() string {
 	if e.Status == 401 {
 		return "credential_rejected"
@@ -52,6 +63,11 @@ type Client struct {
 	ChatGPTAccountID  string
 	Fingerprint       map[string]string
 	Timeout           time.Duration
+	// StreamHTTPClient carries /backend-api/conversation streams with the
+	// longer conversationStreamTimeout; nil falls back to HTTPClient.
+	StreamHTTPClient HTTPDoer
+	streamProxy      string
+	refresher        *tokenRefresher
 }
 
 const (
@@ -75,7 +91,8 @@ func NewClientWithProxy(baseURL, proxy string, resolver CredentialResolver) *Cli
 		httpClient = fallback
 	}
 	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"), HTTPClient: httpClient, ResolveCredential: resolver,
+		BaseURL: strings.TrimRight(baseURL, "/"), HTTPClient: httpClient,
+		StreamHTTPClient: newStreamHTTPClient(baseURL, proxy, httpClient), ResolveCredential: resolver,
 		SentinelEnabled: true,
 		AuthMode:        "web",
 		UserAgent:       chatGPTDefaultUserAgent,
@@ -83,6 +100,20 @@ func NewClientWithProxy(baseURL, proxy string, resolver CredentialResolver) *Cli
 		DeviceID:        uuid.NewString(), SessionID: uuid.NewString(),
 		Fingerprint: defaultWebFingerprint(), Timeout: 60 * time.Second,
 	}
+}
+
+// newStreamHTTPClient builds the conversation client. Browser TLS clients
+// apply their timeout to the whole body, so streams need their own client.
+func newStreamHTTPClient(baseURL, proxy string, fallback HTTPDoer) HTTPDoer {
+	if client, err := newChatGPTHTTPClient(baseURL, proxy, conversationStreamTimeout); err == nil {
+		return client
+	}
+	if standard, ok := fallback.(*http.Client); ok {
+		copied := *standard
+		copied.Timeout = conversationStreamTimeout
+		return &copied
+	}
+	return fallback
 }
 
 func (c *Client) Models(ctx context.Context) ([]ports.ModelDescriptor, error) {
@@ -93,7 +124,7 @@ func (c *Client) ModelsWithAccount(ctx context.Context, accountID string) ([]por
 	if c.ResolveCredential == nil {
 		return nil, fmt.Errorf("ChatGPT credential is unavailable")
 	}
-	credentials, err := c.ResolveCredential(ctx, accountID)
+	credentials, err := c.credentialsFor(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +166,7 @@ func (c *Client) Chat(ctx context.Context, input ports.ChatInput, accountID stri
 			result.CreatedAt = chunk.CreatedAt
 		}
 		result.Text += chunk.Text
+		result.Reasoning += chunk.Reasoning
 		if chunk.FinishReason != "" {
 			result.FinishReason = chunk.FinishReason
 		}
@@ -156,7 +188,7 @@ func (c *Client) ChatStream(ctx context.Context, input ports.ChatInput, accountI
 	if c.ResolveCredential == nil {
 		return fmt.Errorf("ChatGPT credential is unavailable")
 	}
-	credentials, err := c.ResolveCredential(ctx, accountID)
+	credentials, err := c.credentialsFor(ctx, accountID)
 	if err != nil {
 		return err
 	}
@@ -176,8 +208,14 @@ func (c *Client) ChatStream(ctx context.Context, input ports.ChatInput, accountI
 		}
 	}
 	messages := make([]map[string]any, 0, len(input.Messages))
+	// Assistant turns sent as history may be replayed by the upstream stream;
+	// the parser strips them (chatgpt2api strip_history / history_messages).
+	historyMessages := make([]string, 0)
 	for _, message := range input.Messages {
 		messages = append(messages, map[string]any{"id": uuid.NewString(), "author": map[string]any{"role": message.Role}, "content": map[string]any{"content_type": "text", "parts": []string{message.Content}}})
+		if message.Role == "assistant" && message.Content != "" {
+			historyMessages = append(historyMessages, message.Content)
+		}
 	}
 	payload := map[string]any{
 		"action": "next", "messages": messages, "model": input.Model, "parent_message_id": uuid.NewString(),
@@ -191,6 +229,9 @@ func (c *Client) ChatStream(ctx context.Context, input ports.ChatInput, accountI
 			"is_dark_mode": false, "time_since_loaded": 120, "page_height": 900, "page_width": 1400,
 			"pixel_ratio": 2, "screen_height": 1440, "screen_width": 2560,
 		},
+	}
+	if effort := normalizeThinkingEffort(input.ReasoningEffort); effort != "" {
+		payload["thinking_effort"] = effort
 	}
 	encoded, _ := json.Marshal(payload)
 	extra := map[string]string{}
@@ -206,14 +247,8 @@ func (c *Client) ChatStream(ctx context.Context, input ports.ChatInput, accountI
 	if requirements.SOToken != "" {
 		extra["OpenAI-Sentinel-SO-Token"] = requirements.SOToken
 	}
-	body, status, err := client.requestWithHeaders(ctx, http.MethodPost, "/backend-api/conversation", encoded, token, extra)
-	if err != nil {
-		return err
-	}
-	if status < 200 || status >= 300 {
-		return &HTTPError{Status: status, Operation: "conversation"}
-	}
-	return parseSSE(body, emit)
+	parser := newConversationParser(historyMessages)
+	return client.streamConversation(ctx, encoded, token, extra, parser, emit)
 }
 
 func (c *Client) withCredentials(credentials map[string]string) *Client {
@@ -243,6 +278,10 @@ func (c *Client) withCredentials(credentials map[string]string) *Client {
 	applyCredentialFingerprint(&clone, credentials)
 	if proxy := strings.TrimSpace(credentials["proxy"]); proxy != "" {
 		clone.HTTPClient = cloneHTTPClient(c.HTTPClient, c.BaseURL, proxy, c.Timeout)
+		// The stream client is built lazily so plain chat-less calls (models,
+		// sentinel) do not pay for a second TLS client.
+		clone.StreamHTTPClient = nil
+		clone.streamProxy = proxy
 	}
 	return &clone
 }
@@ -338,9 +377,25 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 }
 
 func (c *Client) requestWithHeaders(ctx context.Context, method, path string, body []byte, token string, extra map[string]string) ([]byte, int, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(body))
+	req, err := c.buildRequest(ctx, method, path, body, token, extra)
 	if err != nil {
 		return nil, 0, err
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, 0, ports.NewTransportError(method+" "+path, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	return data, resp.StatusCode, err
+}
+
+// buildRequest applies the browser fingerprint headers shared by every Web
+// backend request.
+func (c *Client) buildRequest(ctx context.Context, method, path string, body []byte, token string, extra map[string]string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
 	c.setWebHeaders(req, path)
 	req.Header.Set("Accept", "application/json")
@@ -354,13 +409,7 @@ func (c *Client) requestWithHeaders(ctx context.Context, method, path string, bo
 	for key, value := range extra {
 		req.Header.Set(key, value)
 	}
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, 0, ports.NewTransportError(method+" "+path, err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	return data, resp.StatusCode, err
+	return req, nil
 }
 
 func (c *Client) setWebHeaders(req *http.Request, path string) {
@@ -422,159 +471,4 @@ func parseModels(value any) []ports.ModelDescriptor {
 		result = append(result, ports.ModelDescriptor{UpstreamID: id, DisplayName: name, Capabilities: []string{"chat"}})
 	}
 	return result
-}
-
-func parseSSE(body []byte, emit func(ports.StreamChunk) error) error {
-	scanner := bufio.NewScanner(bytes.NewReader(body))
-	scanner.Buffer(make([]byte, 4096), 8<<20)
-	var id string
-	created := time.Now().Unix()
-	var snapshots string
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if raw == "" || raw == "[DONE]" {
-			continue
-		}
-		if raw == "v1" {
-			continue
-		}
-		var generic any
-		if json.Unmarshal([]byte(raw), &generic) != nil {
-			continue
-		}
-		if text, ok := generic.(string); ok {
-			if text != "" {
-				snapshots += text
-				if err := emit(ports.StreamChunk{ID: id, Text: text, CreatedAt: created}); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-		event, ok := generic.(map[string]any)
-		if !ok {
-			continue
-		}
-		if value := visibleAssistantMessage(event); value != nil {
-			if valueID, ok := value["id"].(string); ok && valueID != "" {
-				id = valueID
-			}
-			if next := messageText(value); next != "" && len(next) >= len(snapshots) {
-				delta := next[len(snapshots):]
-				snapshots = next
-				if delta != "" {
-					if err := emit(ports.StreamChunk{ID: id, Text: delta, CreatedAt: created}); err != nil {
-						return err
-					}
-				}
-			}
-		}
-		if next, ok := applyWebTextPatch(event, snapshots); ok {
-			delta := next
-			if len(next) >= len(snapshots) {
-				delta = next[len(snapshots):]
-			}
-			snapshots = next
-			if delta != "" {
-				if err := emit(ports.StreamChunk{ID: id, Text: delta, CreatedAt: created}); err != nil {
-					return err
-				}
-			}
-		}
-		if delta, ok := event["delta"].(string); ok && delta != "" {
-			if err := emit(ports.StreamChunk{ID: id, Text: delta, CreatedAt: created}); err != nil {
-				return err
-			}
-		}
-	}
-	return scanner.Err()
-}
-
-func visibleAssistantMessage(event map[string]any) map[string]any {
-	candidates := []any{event}
-	if nested, ok := event["v"].(map[string]any); ok {
-		candidates = append(candidates, nested)
-	}
-	for _, raw := range candidates {
-		message, ok := raw.(map[string]any)["message"].(map[string]any)
-		if !ok {
-			continue
-		}
-		author, _ := message["author"].(map[string]any)
-		role, _ := author["role"].(string)
-		if strings.ToLower(role) != "assistant" {
-			continue
-		}
-		metadata, _ := message["metadata"].(map[string]any)
-		if hidden, _ := metadata["is_visually_hidden_from_conversation"].(bool); hidden {
-			continue
-		}
-		if recipient, _ := message["recipient"].(string); recipient != "" && recipient != "all" {
-			continue
-		}
-		if channel, _ := message["channel"].(string); channel != "" && channel != "final" {
-			continue
-		}
-		return message
-	}
-	return nil
-}
-
-func messageText(message map[string]any) string {
-	content, _ := message["content"].(map[string]any)
-	parts, _ := content["parts"].([]any)
-	var builder strings.Builder
-	for _, part := range parts {
-		if text, ok := part.(string); ok {
-			builder.WriteString(text)
-		}
-	}
-	if builder.Len() == 0 {
-		if text, ok := content["text"].(string); ok {
-			return text
-		}
-	}
-	return builder.String()
-}
-
-func applyWebTextPatch(event map[string]any, current string) (string, bool) {
-	if event["p"] == "/message/content/parts/0" {
-		return applyWebPatchOperation(event, current), true
-	}
-	operations, hasValue := event["v"]
-	if !hasValue {
-		return current, false
-	}
-	if text, ok := operations.(string); ok && event["p"] == nil && event["o"] == nil {
-		return current + text, true
-	}
-	if operation, ok := event["o"].(string); ok && operation == "patch" {
-		if items, ok := operations.([]any); ok {
-			result := current
-			for _, item := range items {
-				if patch, ok := item.(map[string]any); ok {
-					result, _ = applyWebTextPatch(patch, result)
-				}
-			}
-			return result, true
-		}
-	}
-	return current, false
-}
-
-func applyWebPatchOperation(operation map[string]any, current string) string {
-	op, _ := operation["o"].(string)
-	value, _ := operation["v"].(string)
-	switch op {
-	case "append":
-		return current + value
-	case "replace":
-		return value
-	default:
-		return current
-	}
 }

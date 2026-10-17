@@ -1,10 +1,10 @@
 # All2API
 
-[![CI](https://github.com/XuLaiQ/all2api/actions/workflows/ci.yml/badge.svg)](https://github.com/XuLaiQ/all2api/actions/workflows/ci.yml)
+All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控制台。它把 WorkBuddy、Doubao、ChatGPT、Grok 的渠道适配、账号池、模型目录、访问密钥、路由、日志、审计和用量统计集中到一个项目中，对外提供一个统一的 `/v1` 地址。
 
-All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控制台。它把 WorkBuddy、Doubao、ChatGPT 的渠道适配、账号池、模型目录、访问密钥、路由、日志、审计和用量统计集中到一个项目中，对外提供一个统一的 `/v1` 地址。
+后端完全由 Go 实现（`cmd/` + `internal/`），前端是 React + TypeScript 控制台（`web/`）。
 
-> 当前状态：核心网关、管理控制台、三渠道 native adapter/provisioner、SQLite 持久化和安全边界已经具备，项目仍处于真实平台验收阶段。生产部署前必须使用目标平台账号完成 E2E 验证，并完成隔离环境下的 clean build/run 验收。
+> **当前状态**：核心网关、管理控制台、四渠道 native adapter/provision、SQLite 持久化和安全边界已经具备，项目仍处于真实平台验收阶段。生产部署前必须使用目标平台账号完成 E2E 验证，并通过 `scripts/verify/check-release-readiness.ps1` 的发布检查。
 
 ## 目录
 
@@ -31,16 +31,17 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 - 一个网关 API Key 可按渠道和模型授权，调用不同渠道的模型。
 - 支持 OpenAI Chat Completions、Anthropic Messages 和 OpenAI Responses 三种文本协议。
 - 支持非流式和流式文本对话；流式响应会转换为对应协议的 SSE 格式。
-- 模型 ID 使用 `渠道/上游模型 ID` 形式，例如 `wb/example-model`、`doubao/example-model`、`chatgpt/example-model`。
+- 模型 ID 使用 `渠道/上游模型 ID` 形式，例如 `wb/example-model`、`doubao/example-model`、`chatgpt/example-model`、`grok/grok-chat-fast`。
 - 支持按模型或路由别名选择目标，并记录实际渠道、账号、回退层级、延迟和错误类型。
+- 上游未返回 usage 时，网关用内置的 tiktoken 词表在本地估算 Token，并在用量中标记为“估算”。
 - 统一返回请求 ID 和协议对应的错误结构，便于排查请求日志。
 
 ### 渠道与账号池
 
-- 内置 `wb`（WorkBuddy）、`doubao`（Doubao）、`chatgpt`（ChatGPT）三个渠道。
+- 内置 `wb`（WorkBuddy）、`doubao`（Doubao）、`chatgpt`（ChatGPT）、`grok`（Grok Web/Build）四个渠道。
 - 通过 registry 和 manifest 描述渠道协议、能力、配置和账号新增流程。
-- 账号只写入本项目自己的 SQLite 目录，不读取源项目数据库、账号文件或管理端口。
-- 支持账号启用/停用、状态覆盖、优先级、过期时间、刷新和删除。
+- 账号只写入本项目自己的 SQLite 数据库，不读取任何外部项目的数据库、账号文件或管理端口。
+- 支持账号启用/停用、刷新凭据（WorkBuddy、ChatGPT）、批量删除。
 - 数据面使用本地账号池和租约；渠道/账号支持冷却、熔断和失败状态记录。
 - 账号新增使用持久化 session、幂等键和统一的 start/poll/complete/cancel/import 生命周期。
 
@@ -54,11 +55,11 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 - 网关密钥：创建、编辑、轮换和撤销 `sk-a2a-*` Key，设置渠道、模型、过期时间和 RPM 限制。
 - 请求日志：按请求 ID、渠道、模型、状态和时间筛选，分页查看并清理过期数据。
 - 审计日志：记录登录、Key、账号、渠道、路由、模型、用户和保留策略等管理写操作。
-- 用量统计：按天、渠道、模型或 Key 汇总请求和 Token，并区分已报告/未知用量。
-- 素材库：持久化保存各渠道生成的图片、视频、PPT、PSD 和素材包，支持筛选、回显、播放、下载和删除；豆包生图默认返回无水印原图（`image_ori_raw`），对未拿到原图而带水印的图片可在素材库一键像素级去水印并保存 `_clean` 副本。
+- 用量统计：按天、渠道、模型或 Key 汇总请求和 Token，区分上游报告、本地估算和未知用量；调试台请求也计入统计（`key_id=0`）。
+- 素材库：保存生成的图片、视频等素材，支持筛选、预览、下载和删除；带水印的图片可用 Telea 修补算法去除右下角水印，并另存为 `_clean` 副本。
 - 系统健康：查看服务信息、存储检查、指标、保留策略和渠道运行状态。
-- 调试台：管理员对已配置 native runtime 发起聊天、图片和视频调试请求，支持媒体结果预览、会话历史和请求记录管理。
-- 用户管理：维护 viewer/admin 角色和启用状态；当前登录凭据仍由环境变量提供。
+- 调试台：管理员直接对已配置渠道发起聊天请求，保存会话历史和调用记录。
+- 用户管理：维护 viewer/admin 角色和启用状态；登录凭据仍由环境变量提供。
 
 ## 支持范围
 
@@ -67,32 +68,28 @@ All2API 是一个面向多渠道大模型服务的统一 API 网关和管理控�
 | 渠道 | 标识 | 协议 | 当前能力 | 账号新增方式 |
 | --- | --- | --- | --- | --- |
 | WorkBuddy | `wb` | OpenAI、Anthropic、Responses | 文本聊天 | Token 导入、二维码 OAuth（`cn`/`global`） |
-| Doubao | `doubao` | OpenAI、Anthropic、Responses | 文本聊天 | Cookie 导入、二维码登录；默认使用 native HTTP QR worker，浏览器 profile worker 仍需单独启用 |
+| Doubao | `doubao` | OpenAI、Anthropic、Responses | 文本聊天 | Cookie 导入、二维码登录（默认 HTTP QR；可选 Chromium browser worker） |
 | ChatGPT | `chatgpt` | OpenAI、Anthropic、Responses | 文本聊天 | Token 导入、OAuth PKCE；真实 refresh/platform E2E 仍待验收 |
+| Grok Web/Build | `grok` | OpenAI、Anthropic、Responses | 文本聊天 | Web SSO 或 Build OAuth Token 导入；真实平台 E2E 仍待验收 |
 
 ### 协议接口
 
-| 方法 | 路径 | 状态 | 说明 |
-| --- | --- | --- | --- |
-| `GET` | `/v1/models` | 支持 | 返回当前 Key 可见且已缓存/可用的模型 |
-| `POST` | `/v1/chat/completions` | 支持 | OpenAI Chat Completions，支持流式文本响应 |
-| `POST` | `/v1/messages` | 支持 | Anthropic Messages 文本协议，支持 `x-api-key` 或 Bearer 认证 |
-| `POST` | `/v1/responses` | 支持 | OpenAI Responses 文本协议，支持流式转换 |
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/v1/models` | 返回当前 Key 可见且已缓存/可用的模型 |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions，支持流式 |
+| `POST` | `/v1/messages` | Anthropic Messages，支持 `x-api-key` 或 Bearer 认证，含 tool use/tool result 映射 |
+| `POST` | `/v1/responses` | OpenAI Responses，接受文本或文本消息输入，支持流式 |
+| `GET/POST/DELETE` | `/v1/files`、`/v1/files/{id}`、`/v1/files/{id}/content` | 本地文件上传、列表、元数据、删除和下载；按网关 Key 隔离 |
 
-三个内置渠道当前只声明已验证的 `chat` 能力。图片/视频 adapter contract、生成结果
-media store 和本地文件 URL 已实现，但在真实 provider E2E 通过前仍由 manifest gate 保护：
-
-协议转换以文本输入为主；Anthropic Messages 包含已实现的 tool use/tool result 映射，Responses 当前只接受文本或文本消息输入。
+四个内置渠道当前只声明已验证的 `chat` 能力。以下路径已路由，但由 manifest 能力门禁保护：
 
 | 路径 | 当前行为 |
 | --- | --- |
-| `/v1/images/generations` | manifest 声明并通过真实 E2E 后接受生图模型；成功结果落入 Go media store |
-| `/v1/video/generations` | manifest 声明并通过真实 E2E 后接受生视频模型；成功结果落入 Go media store |
-| `/v1/audio/generations`、`/v1/search` | 能力路由已存在，但当前版本不在调试台开放 |
-| `/v1/files`、`/v1/files/{id}`、`/v1/files/{id}/content` | Go 本地文件上传、列表、元数据、删除和下载；按网关 Key 隔离 |
-| `/v1/images/edits`、`/v1/files/download` | 返回 `capability_not_supported` |
+| `/v1/images/generations`、`/v1/video/generations`、`/v1/search` | 渠道 manifest 声明对应能力并通过真实 E2E 后才接受请求；结果写入媒体存储 |
+| `/v1/images/edits`、`/v1/audio/generations`、`/v1/files/download` | 返回 `capability_not_supported` |
 | `/v1/ppt/generations`、`/v1/psd/generations`、`/v1/editable-file-tasks` | 返回 `capability_not_supported` |
-| `/v1/messages/count_tokens` | 当前未实现，返回 `capability_not_supported` |
+| `/v1/messages/count_tokens` | 返回 `capability_not_supported` |
 
 ## 系统架构
 
@@ -105,13 +102,15 @@ media store 和本地文件 URL 已实现，但在真实 provider E2E 通过前�
   └── OpenAI / Anthropic / Responses 客户端
           └── /v1/*         API Key、scope 和协议转换
                                   │
-                          FastAPI 网关服务
+                       all2api（Go，cmd/all2api）
                                   │
                  registry → 路由/账号池 → native adapter
                                   │
-             WorkBuddy / Doubao / ChatGPT 官方平台
+             WorkBuddy / Doubao / ChatGPT / Grok 官方平台
 
-                         SQLite + WAL
+   可选 worker：doubao-browser-worker（Chromium/CDP）、media-worker（去水印）
+
+                         SQLite + WAL（data/all2api.db）
               账号、模型、Key、日志、用量、审计、session、素材元数据
                          │
                  data/media-assets/ 素材文件
@@ -119,124 +118,71 @@ media store 和本地文件 URL 已实现，但在真实 provider E2E 通过前�
                  Fernet 加密的渠道凭据
 ```
 
-三个源项目只作为一次性迁移和行为审计输入，不是运行时依赖。native adapter、provisioner、账号状态和数据存储都由本仓库管理。迁移期兼容 bridge 默认关闭，生产部署不需要它。
-
 ## 快速开始
 
 ### 环境要求
 
-- Docker Desktop（使用 Compose 时）。
-- 本地开发：Python `3.13.x`、[uv](https://docs.astral.sh/uv/)、Node.js `20.19+`、pnpm `10`。
-- 真实账号新增和调用还需要目标平台可访问，并由管理员在控制台完成渠道配置和账号授权。
+- Go `1.27+`
+- Node.js `20.19+`、pnpm `10`（控制台）
+- Docker Desktop（可选，使用 Compose 时）
+- 真实账号新增和调用还需要目标平台可访问。
 
-### 方式一：Docker Compose（当前兼容运行时）
-
-在仓库根目录执行：
+### 准备配置
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-编辑 `.env`，至少设置以下值：
+编辑 `.env`，至少设置：
 
 - `A2A_SESSION_SECRET`：随机高熵会话密钥。
-- `A2A_ENV`：开发环境使用 `development`；生产必须设置为 `production`，启用生产安全配置硬门禁。
-- `A2A_ADMIN_PASSWORD`：长度至少 12 个字符的管理员密码。
-- `A2A_CREDENTIAL_MASTER_KEY`：生产环境使用随机 Fernet key 或高熵密钥。
+- `A2A_ADMIN_PASSWORD`：长度至少 12 个字符的管理员密码。未设置时登录接口返回未配置错误，不会创建默认密码。
+- `A2A_CREDENTIAL_MASTER_KEY`：Fernet key 或高熵密钥。
+- `A2A_ENV`：开发用 `development`；生产必须为 `production`，启用生产安全硬门禁。
 
-然后启动：
+### 方式一：本地运行
+
+```powershell
+# 后端：自动读取 ./.env，数据默认写入 ./data/
+go run ./cmd/all2api
+
+# 另开终端启动控制台
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web dev
+```
+
+打开 <http://localhost:5555>。Vite 会把 `/admin/api` 和 `/v1` 代理到 `VITE_PROXY_TARGET`（默认 `http://127.0.0.1:8888`）。
+
+### 方式二：Docker Compose
 
 ```powershell
 docker compose up --build
 ```
 
-迁移中的 Go-only 拓扑使用单独的 Compose 文件，避免在真实切换门槛满足前误替换现有运行时：
-
-```powershell
-docker compose -f docker-compose.go.yml up --build
-```
-
-Go 运行时的本地无 Docker 验证：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-go-build.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-go-clean-build.ps1
-```
-
-停服备份和隔离恢复演练：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\backup-go-state.ps1 `
-  -DatabasePath .\services\api\data\all2api.db `
-  -MediaRoot .\services\api\data\media-assets `
-  -OutputRoot C:\secure-backups\all2api\latest `
-  -ServiceStopped
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-go-backup-restore.ps1 `
-  -BackupRoot C:\secure-backups\all2api\latest
-```
-
-备份 manifest 不包含 `.env` 或 `A2A_CREDENTIAL_MASTER_KEY`；恢复时必须从外部
-Secret Manager 注入同一主密钥。
-
-回滚演练必须传入归档的上一版 Go binary；`verify-go-rollback.ps1` 不会把当前开发
-binary 当作上一版伪造回滚证据。
-
-`docker-compose.go.yml` 不启动 Python；它是 G6 切换前的隔离验证拓扑。当前默认 Compose 仍保留 Python，直到三渠道真实 E2E、浏览器/媒体能力和备份回滚演练完成。
+Compose 启动 `api`、`browser-worker`、`media-worker` 和 `web` 四个服务，运行数据保存在 `api_data` 等命名卷中。不要使用 `docker compose down -v`，除非确认要删除数据库、账号和加密凭据。
 
 服务地址：
 
 - 控制台：<http://localhost:5555>
 - API：<http://localhost:8888>
-- OpenAPI：<http://localhost:8888/docs>
 - 健康检查：<http://localhost:8888/admin/api/healthz>
-
-停止服务：
-
-```powershell
-docker compose down
-```
-
-Compose 使用 `api_data` 等命名卷保存运行数据。不要使用 `docker compose down -v`，除非确认要删除本地数据库、账号元数据和加密凭据。
-
-### 方式二：本地开发
-
-启动后端：
-
-```powershell
-Copy-Item services/api/.env.example services/api/.env
-Set-Location services/api
-uv sync --extra dev
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8888 --reload
-```
-
-另开终端启动前端：
-
-```powershell
-Set-Location web
-pnpm install --frozen-lockfile
-pnpm exec vite --host 127.0.0.1 --port 5555
-```
-
-打开 <http://localhost:5555>。Vite 会将 `/admin/api` 和 `/v1` 代理到 `http://127.0.0.1:8888`；如需修改代理目标，复制 `web/.env.example` 为 `web/.env.local` 并调整 `VITE_PROXY_TARGET`。
-
-首次登录使用 `services/api/.env` 中的 `A2A_ADMIN_USERNAME` 和 `A2A_ADMIN_PASSWORD`。未配置强密码时，管理登录接口会返回未配置错误，不会创建默认可用密码。
 
 ## 配置
 
-后端使用 `A2A_` 前缀的环境变量，完整模板见 [`services/api/.env.example`](services/api/.env.example)。Docker Compose 的根模板见 [`.env.example`](.env.example)。
+所有配置使用 `A2A_` 前缀的环境变量，完整模板和说明见 [`.env.example`](.env.example)。`all2api` 启动时读取 `./.env`（或 `A2A_ENV_FILE` 指定的文件），进程中已存在的环境变量优先。
 
 | 配置组 | 主要变量 | 作用 |
 | --- | --- | --- |
 | 服务与存储 | `A2A_HOST`、`A2A_PORT`、`A2A_DB_PATH`、`A2A_STATE_PATH` | 监听地址、SQLite 路径和运行状态路径 |
-| 管理安全 | `A2A_SESSION_SECRET`、`A2A_ADMIN_USERNAME`、`A2A_ADMIN_PASSWORD`、`A2A_ADMIN_TOKEN` | 管理会话、初始管理员登录和自动化管理认证 |
-| 凭据安全 | `A2A_CREDENTIAL_MASTER_KEY` | 加密本地账号凭据；数据库恢复必须同时恢复此密钥 |
-| 网关引导 | `A2A_BOOTSTRAP_API_KEY`、`A2A_BOOTSTRAP_RPM` | 可选的配置注入型初始网关 Key 和速率限制 |
-| 原生渠道 | `A2A_WB_PLATFORM_BASE`、`A2A_DOUBAO_PLATFORM_BASE`、`A2A_CHATGPT_PLATFORM_BASE`、`A2A_CHATGPT_PROXY` | native adapter 使用的官方平台端点和网络代理；账号凭据来自本地账号池 |
-| 账号 session | `A2A_PROVISION_SESSION_TTL_SECONDS` | QR/OAuth provision session 的持久化 TTL |
-| Doubao worker | `A2A_DOUBAO_PROFILE_ROOT`、`A2A_DOUBAO_BROWSER_ENABLED`、`A2A_DOUBAO_BROWSER_WORKER_BASE`、`A2A_DOUBAO_BROWSER_WORKER_TOKEN` 及 `A2A_DOUBAO_BROWSER_*` | 本项目管理的 profile 和可选 Go CDP/Chromium worker；启用时必须配置 worker token |
+| 管理安全 | `A2A_SESSION_SECRET`、`A2A_ADMIN_USERNAME`、`A2A_ADMIN_PASSWORD`、`A2A_ADMIN_TOKEN` | 管理会话、管理员登录和自动化管理认证 |
+| 凭据安全 | `A2A_CREDENTIAL_MASTER_KEY` | 加密本地账号凭据；恢复数据库必须同时恢复此密钥 |
+| 网关引导 | `A2A_BOOTSTRAP_API_KEY`、`A2A_BOOTSTRAP_RPM` | 启动时同步名为 `bootstrap` 的网关 Key；清空变量即禁用 |
+| 渠道端点 | `A2A_WB_PLATFORM_BASE`、`A2A_DOUBAO_PLATFORM_BASE`、`A2A_CHATGPT_*`、`A2A_GROK_*` | 官方平台端点和 ChatGPT 网络代理 |
+| 账号 session | `A2A_PROVISION_SESSION_TTL_SECONDS` | QR/OAuth provision session TTL；启动时清理过期的终态 session |
+| Doubao worker | `A2A_DOUBAO_PROFILE_ROOT`、`A2A_DOUBAO_BROWSER_*` | 可选的 Chromium/CDP worker；启用时必须配置 worker token |
 | 保留与跨域 | `A2A_LOG_RETENTION_DAYS`、`A2A_USAGE_RETENTION_DAYS`、`A2A_CORS_ORIGINS` | 日志/用量保留周期和浏览器来源 |
 
-生产环境必须设置 `A2A_ENV=production`，并设置 `A2A_SECURE_COOKIE`、`A2A_TRUST_PROXY`、`A2A_TRUSTED_PROXIES`，通过 Secret Manager 注入密码、session secret、加密主密钥和 bootstrap Key。Go 会拒绝默认 session secret、空/弱 credential master key、弱管理员密码、legacy bridge/upstream 配置以及启用但无 token 的 browser worker。`A2A_LEGACY_*` 变量仅用于迁移对照，不是 native 运行所需配置。
+生产环境（`A2A_ENV=production`）会拒绝默认 session secret、弱 credential master key、弱管理员密码、启用但无 token 的 browser worker，以及仍然设置的已删除 legacy bridge 变量（`A2A_LEGACY_*`、`A2A_*_UPSTREAM_BASE` 等）。同时应按反向代理拓扑设置 `A2A_SECURE_COOKIE`、`A2A_TRUST_PROXY`、`A2A_TRUSTED_PROXIES`，并通过 Secret Manager 注入密钥。
 
 ## 使用统一网关
 
@@ -247,7 +193,7 @@ pnpm exec vite --host 127.0.0.1 --port 5555
 - `channels`：允许访问的渠道；空列表表示所有已注册且可用渠道。
 - `models`：允许访问的模型 ID；默认 `[*]`。
 - `expires_at`：过期时间。
-- `limit_rpm`：每分钟请求上限，`0` 表示不设置该 Key 的 RPM 限制。
+- `limit_rpm`：每分钟请求上限，`0` 表示不限制。
 
 ### 2. 查看模型
 
@@ -259,7 +205,7 @@ curl "$A2A_BASE_URL/models" \
   -H "Authorization: Bearer $A2A_API_KEY"
 ```
 
-`/v1/models` 只返回当前 Key 有权访问且网关已观察到的模型，不会返回全量模型再交给客户端过滤。
+`/v1/models` 只返回当前 Key 有权访问且网关已观察到的模型。
 
 ### 3. OpenAI Chat Completions
 
@@ -274,7 +220,7 @@ curl "$A2A_BASE_URL/chat/completions" \
   }'
 ```
 
-流式请求只需将 `stream` 改为 `true`。也可以使用 `route alias` 作为模型值，让网关按照管理面配置的 priority 目标链进行回退。
+流式请求只需将 `stream` 改为 `true`。也可以使用路由别名作为模型值，让网关按照管理面配置的 priority 目标链回退。
 
 ### 4. Anthropic Messages
 
@@ -303,20 +249,20 @@ curl "$A2A_BASE_URL/responses" \
   }'
 ```
 
-调用方不需要知道渠道内部地址、上游管理令牌、Cookie、OAuth token 或浏览器 profile。请求日志会保留脱敏后的请求元数据和运行结果。
+调用方不需要知道渠道内部地址、Cookie、OAuth token 或浏览器 profile。请求日志只保留脱敏后的请求元数据和运行结果。
 
 ## 管理控制台
 
-控制台使用管理会话 Cookie，API 路径以 `/admin/api` 为前缀。管理登录接口为 `POST /admin/api/auth/login`，会话接口为 `GET /admin/api/auth/session`，退出接口为 `POST /admin/api/auth/logout`。
+控制台使用管理会话 Cookie，API 路径以 `/admin/api` 为前缀：登录 `POST /admin/api/auth/login`、会话 `GET /admin/api/auth/session`、退出 `POST /admin/api/auth/logout`。
 
-自动化客户端可以配置格式为 `wbt_*` 的 `A2A_ADMIN_TOKEN`，并使用 `Authorization: Bearer <management-token>` 访问管理 API；该方式直接使用 `admin` 角色，不会创建浏览器 session。
+自动化客户端可以配置 `wbt_*` 格式的 `A2A_ADMIN_TOKEN`，用 `Authorization: Bearer <management-token>` 访问管理 API；该方式直接使用 `admin` 角色，不创建浏览器 session。
 
 权限规则：
 
 - `admin`：可以写入 Key、模型、路由、渠道、账号、设置和用户，并可以使用调试台。
-- `viewer`：只能读取管理数据，不能执行管理写操作。
-- 浏览器 session 的管理写请求要求同源校验；使用 `A2A_ADMIN_TOKEN` 的自动化调用通过 Bearer token 认证。登录失败会记录审计并触发限流。
-- `GET /admin/api/healthz` 不要求管理登录，可用于容器探针；`?detail=true` 会返回渠道配置状态，但不会主动请求上游平台。
+- `viewer`：只能读取管理数据。
+- 浏览器 session 的管理写请求要求同源；登录失败会记录审计并触发限流。
+- `GET /admin/api/healthz` 不要求登录，可用于容器探针；`?detail=true` 返回存储和渠道配置状态，不会请求上游平台。
 
 主要管理 API：
 
@@ -324,15 +270,16 @@ curl "$A2A_BASE_URL/responses" \
 | --- | --- |
 | 总览、系统和用量 | `/admin/api/overview`、`/admin/api/sysinfo`、`/admin/api/storage/health`、`/admin/api/metrics`、`/admin/api/stats/*` |
 | 渠道 | `/admin/api/channels`、`/admin/api/channels/{slug}/test`、`/admin/api/channels/{slug}/runtime` |
-| 账号 | `/admin/api/accounts`、`/admin/api/channels/{slug}/provision/*` |
+| 账号 | `/admin/api/accounts`、`/admin/api/channels/{channel}/provision-schema`、`/admin/api/channels/{channel}/accounts/provision/*` |
 | 模型 | `/admin/api/models`、`/admin/api/models/refresh` |
 | Key | `/admin/api/keys` |
 | 路由 | `/admin/api/routes` |
 | 日志与审计 | `/admin/api/logs`、`/admin/api/audit-logs` |
 | 设置与用户 | `/admin/api/settings`、`/admin/api/users` |
+| 素材 | `/admin/api/media/assets`、`/admin/api/media/assets/{id}/remove-watermark` |
 | 调试台 | `/admin/api/playground/conversations`、`/admin/api/playground/runs`、`/admin/api/playground/chat` |
 
-完整请求字段、状态码和错误契约以 [API 契约](docs/API契约.md) 及运行中的 OpenAPI 为准。
+完整请求字段、状态码和错误契约见 [API 契约](docs/API契约.md)。所有公开路由登记在 [`docs/migration-baseline/routes.json`](docs/migration-baseline/routes.json)，`go test` 会校验每一条都已注册。
 
 ## 账号新增流程
 
@@ -352,112 +299,112 @@ curl "$A2A_BASE_URL/responses" \
 | --- | --- | --- |
 | WorkBuddy | `token-import` | 管理员提交 token bundle；只保存加密凭据和脱敏账号信息 |
 | WorkBuddy | `qr-oauth` | 生成二维码并轮询授权，支持 `cn`/`global` realm |
-| Doubao | `create-profile` | 创建由 All2API 管理的本地 profile |
-| Doubao | `qr-login` | 默认使用本项目的 HTTP QR worker；显式启用后由 Go CDP/Chromium worker 管理 profile 和浏览器 QR 会话 |
+| Doubao | `token-import` | 导入 Cookie |
+| Doubao | `qr-login` | 默认使用 HTTP QR 登录；启用 browser worker 后由 Chromium profile 完成 |
 | ChatGPT | `token-import` | 导入 access/refresh/id token 等 token bundle |
 | ChatGPT | `oauth-pkce` | 发起 OAuth PKCE，完成 callback 后交换并加密保存 token |
+| Grok | `token-import` | 导入 Web SSO token 或 Build OAuth token |
 
-账号 provision 写接口要求管理员角色和 `Idempotency-Key`。过期 session 会被清理，凭据不会出现在账号列表、错误响应、审计日志或前端 DTO 中。旧的 `/admin/api/accounts/sync` 不属于当前接口。
+provision 写接口要求管理员角色和幂等键（`idempotency_key`）。凭据不会出现在账号列表、错误响应、审计日志或前端 DTO 中。
 
 ## 数据与安全
 
-- SQLite 默认开启 WAL，并保存渠道覆盖、账号安全快照、加密凭据引用、模型缓存、路由、Key、请求日志、用量、审计和 provision session。
-- `A2A_CREDENTIAL_MASTER_KEY` 用于 Fernet 加密账号凭据；数据库本身不保存明文 token、Cookie 或 OAuth secret。
-- API Key 只以 hash 形式保存；创建和轮换后的明文只通过一次响应返回。
-- 管理面使用签名 session Cookie，支持 idle/absolute session 过期、登录失败限流、Secure/HttpOnly/SameSite Cookie 和同源写保护。
+- SQLite 开启 WAL，保存渠道覆盖、账号安全快照、加密凭据、模型缓存、路由、Key、请求日志、用量、审计和 provision session。
+- `A2A_CREDENTIAL_MASTER_KEY` 用于 Fernet 加密账号凭据；数据库不保存明文 token、Cookie 或 OAuth secret。
+- API Key 只以 hash 保存；创建和轮换后的明文只返回一次。
+- 管理面使用签名 session Cookie，支持 idle/absolute 过期、登录失败限流、Secure/HttpOnly/SameSite Cookie 和同源写保护。
 - 渠道配置写接口拒绝 token、password、cookie、authorization、api key 等敏感字段。
 - 请求日志和用量支持独立保留周期，清理操作会写入审计日志。
-- CORS、可信代理和安全 Cookie 需按实际反向代理拓扑配置，不应直接复制开发环境默认值到公网。
+- `data/` 和 `.env` 已被 `.gitignore` 和 `.dockerignore` 排除，不会进入仓库或镜像构建上下文。
 
 备份时必须同时保护 SQLite 数据和同一份加密主密钥；丢失主密钥后，数据库中的账号凭据无法恢复。
 
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\ops\backup-go-state.ps1 `
+  -DatabasePath .\data\all2api.db `
+  -MediaRoot .\data\media-assets `
+  -OutputRoot C:\secure-backups\all2api\latest `
+  -ServiceStopped
+powershell -ExecutionPolicy Bypass -File .\scripts\verify\verify-go-backup-restore.ps1 `
+  -BackupRoot C:\secure-backups\all2api\latest
+```
+
+备份 manifest 不包含 `.env` 或 `A2A_CREDENTIAL_MASTER_KEY`；恢复时必须从外部 Secret Manager 注入同一主密钥。
+
 ## 开发与测试
 
-### 前端检查
-
 ```powershell
-pnpm --dir web install --frozen-lockfile
+# Go
+gofmt -l cmd internal tools        # 无输出表示格式正确
+go vet ./...
+go test ./...                       # 含路由契约覆盖检查
+
+# 控制台
 pnpm --dir web lint
 pnpm --dir web typecheck
 pnpm --dir web build
+
+# 仓库门禁
+go run ./tools/doclinks             # Markdown 本地链接
+go run ./tools/supplychain          # 依赖完整性与许可证文件
+powershell -ExecutionPolicy Bypass -File .\scripts\verify\verify-go-build.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\verify\verify-go-clean-build.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\verify\verify-go-image.ps1   # 需要 Docker
 ```
 
-### 后端检查
-
-```powershell
-uv sync --project services/api --extra dev
-Set-Location services/api
-uv run ruff check app tests
-uv run pytest -q
-Set-Location ..\..
-```
-
-### 仓库门禁
-
-```powershell
-python scripts/check-doc-links.py
-python scripts/verify-clean-build.py
-```
-
-`verify-clean-build.py` 会使用随机端口和临时 SQLite，检查运行时代码、配置模板和 Compose 默认值，确认项目不需要源项目目录、源项目端口或默认开启的 legacy bridge。安装 Docker 后可以额外运行：
-
-```powershell
-python scripts/verify-clean-build.py --docker
-```
-
-Go-only 源依赖门禁：
-
-```powershell
-python scripts/verify_no_source_deps.py
-```
-
-该门禁的 clean-build 部分只构建/测试 Go runtime；Docker daemon 不可用时以退出码 `2`
-报告 `UNVERIFIED`，不会把跳过的镜像构建标记为通过。
-
-CI 还会执行 backend lint/test、frontend lint/typecheck/build、legacy 扫描、Docker Compose 验证和 API 镜像构建。真实平台 E2E 测试默认不会在普通单测中自动运行，需要单独准备平台账号和环境变量。
+仓库当前没有配置 CI，以上检查需要本地执行。真实平台探针需要单独准备账号，见 [scripts/README.md](scripts/README.md) 的 `probe/` 部分。
 
 ## 仓库结构
 
 ```text
 .
-├── services/api/              FastAPI 网关、native adapter、SQLite、测试
-│   ├── app/adapters/          WorkBuddy、Doubao、ChatGPT 和 registry
-│   ├── app/application/       账号和渠道用例服务
-│   ├── app/domain/            渠道、scope 等领域规则
-│   ├── app/infrastructure/    数据库、凭据、session 和安全实现
-│   ├── app/protocols/         Anthropic/Responses 协议转换
-│   ├── app/routers/            管理面、Key、模型、路由和网关 API
-│   └── tests/                 单元、集成、契约和 E2E 测试
-├── web/                       React + TypeScript + Vite 管理控制台
-├── scripts/                   文档链接、clean build 和隔离检查
-├── docs/                      架构、API、部署、账号和安全文档
-├── design/                    UI 参考稿，不是业务事实来源
-├── docker-compose.yml         本地 API + Web Compose 拓扑
-└── .github/workflows/ci.yml  GitHub Actions 质量门禁
+├── cmd/                         可执行入口
+│   ├── all2api/                 网关 + 管理面主服务
+│   ├── doubao-browser-worker/   Doubao Chromium/CDP worker
+│   └── media-worker/            媒体处理 worker
+├── internal/                    Go 实现
+│   ├── adapters/                WorkBuddy、Doubao、ChatGPT、Grok 和 registry
+│   ├── application/             账号、网关、Key、媒体、调试台等用例服务
+│   ├── browser/                 浏览器 worker 与 CDP 客户端
+│   ├── config/                  A2A_* 环境变量与 .env 加载、校验
+│   ├── domain/                  scope 等领域规则
+│   ├── infrastructure/          SQLite、加密、媒体存储/去水印、Token 估算和安全实现
+│   ├── ports/                   应用层与基础设施之间的接口
+│   ├── protocols/               Anthropic/Responses 协议转换
+│   ├── scheduler/               账号池和租约
+│   └── transport/http/          HTTP 路由与 handler（按领域拆分）
+├── tools/                       仓库维护工具（doclinks、supplychain）
+├── web/                         React + TypeScript + Vite 管理控制台（pnpm）
+├── scripts/                     verify/、probe/、ops/ 脚本
+├── docs/                        需求、架构、API、运维文档；archive/ 为历史留存
+├── design/                      UI 参考稿，不是业务事实来源
+├── data/                        本地运行数据（不入库）
+├── Dockerfile                   三个 Go 二进制的镜像
+├── docker-compose.yml           本地开发拓扑
+└── go.mod / go.sum
 ```
 
 ## 文档
 
+完整索引见 [docs/README.md](docs/README.md)，脚本说明见 [scripts/README.md](scripts/README.md)。
+
 | 文档 | 用途 |
 | --- | --- |
 | [API 契约](docs/API契约.md) | 数据面、管理面、认证、错误和分页约定 |
-| [账号新增流程](docs/账号新增流程.md) | 三渠道 provision flow、状态机和凭据边界 |
+| [账号新增流程](docs/账号新增流程.md) | provision flow、状态机和凭据边界 |
+| [Grok 渠道接入说明](docs/grok渠道接入说明.md) | Grok Web SSO 导入、模型 tier 和验收边界 |
 | [密钥与渠道授权规范](docs/密钥与渠道授权规范.md) | Key scope、渠道/模型授权和审计要求 |
-| [部署运维与验收](docs/部署运维与验收.md) | 配置、备份、健康检查、clean build 和发布门槛 |
-| [Python 到 Go 后端直接重写迁移实施文档](docs/Python到Go后端直接重写迁移实施文档.md) | Python 后端全量直接重写为 Go 的架构、阶段、测试和删除门槛 |
-| [系统设计与实现文档](docs/系统设计与实现文档.md) | 模块边界、数据结构和实现细节 |
-| [项目开发基线](docs/项目开发基线.md) | 需求追踪、阶段 DoD、测试分层和当前状态 |
-| [企业开发规范](docs/企业开发规范.md) | 目录、依赖、迁移、测试和安全门禁 |
-| [后端说明](services/api/README.md) | 后端本地启动、native worker 和后端开发规则 |
+| [部署运维与验收](docs/部署运维与验收.md) | 配置、备份、健康检查和发布门槛 |
+| [企业开发规范](docs/企业开发规范.md) | 目录、依赖、测试和安全门禁 |
 
 ## 当前限制
 
-1. 三渠道的 native 代码、mock/契约测试和本地状态机已存在，但真实平台网络、账号授权、凭据轮换和平台行为会受官方服务、地区、风控和账号状态影响；本地健康检查不会替代真实平台探测。
-2. 当前内置渠道只承诺文本聊天。多媒体路由骨架不等于多媒体功能已经可用，详见[支持范围](#支持范围)。
-3. 调试台只允许管理员发起文本请求；未配置 native runtime 时不会回退到 legacy bridge。
-4. 用户管理目前维护角色和启用状态，实际登录凭据仍来自 `A2A_ADMIN_USERNAME` / `A2A_ADMIN_PASSWORD`，不是独立的用户密码系统。
-5. 项目根目录当前未包含 `LICENSE` 文件，公开发布前请补充明确的许可证和贡献指南。
+1. 各渠道的 native 代码、契约测试和本地状态机已存在，但真实平台网络、账号授权、凭据轮换和平台行为会受官方服务、地区、风控和账号状态影响；本地健康检查不会替代真实平台探测。
+2. 当前内置渠道只承诺文本聊天。多媒体路由存在不等于多媒体功能可用，详见[支持范围](#支持范围)。
+3. 凭据刷新目前只支持 WorkBuddy 和 ChatGPT 账号。
+4. 用户管理只维护角色和启用状态，登录凭据仍来自 `A2A_ADMIN_USERNAME` / `A2A_ADMIN_PASSWORD`。
+5. 仓库根目录未包含 `LICENSE`，公开发布前需要补充许可证。
 
 ## 许可证
 
-当前仓库尚未声明开源许可证。除非仓库后续补充 `LICENSE` 并明确授权，否则不要假定代码可以按任意开源许可证使用、修改或再分发。
+当前仓库尚未声明开源许可证。除非后续补充 `LICENSE` 并明确授权，否则不要假定代码可以按任意开源许可证使用、修改或再分发。

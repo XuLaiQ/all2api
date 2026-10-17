@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/XuLaiQ/all2api/internal/ports"
@@ -19,6 +20,76 @@ func TestBuildProviderImportsNormalizesDoubaoCookieAndChatGPTToken(t *testing.T)
 	}
 	if chatgpt[0].NativeID == "token-demo" {
 		t.Fatal("ChatGPT native id leaked token")
+	}
+}
+
+func TestBuildProviderImportsAcceptsSub2APINestedCredentials(t *testing.T) {
+	imports, err := buildProviderImports("chatgpt", map[string]any{"accounts": []any{map[string]any{
+		"name": "gpt-1", "platform": "openai", "type": "oauth",
+		"credentials": map[string]any{
+			"access_token": "access-1", "refresh_token": "refresh-1", "id_token": "id-1",
+			"client_id": "app_client", "chatgpt_account_id": "acct-1", "expires_at": "2026-10-21T21:11:17+08:00",
+		},
+	}}})
+	if err != nil || len(imports) != 1 {
+		t.Fatalf("imports = %#v/%v", imports, err)
+	}
+	credentials := imports[0].Credentials
+	if credentials["access_token"] != "access-1" || credentials["refresh_token"] != "refresh-1" || credentials["client_id"] != "app_client" ||
+		credentials["chatgpt_account_id"] != "acct-1" || credentials["expires_at"] == "" || imports[0].Name != "gpt-1" {
+		t.Fatalf("credentials = %#v name=%q", credentials, imports[0].Name)
+	}
+}
+
+func TestBuildProviderImportsNormalizesGrokSSOMetadata(t *testing.T) {
+	imports, err := buildProviderImports("grok", map[string]any{
+		"tokens": []any{map[string]any{
+			"sso_token":          "sso=grok-token; ignored=value",
+			"user_id":            "497f19f8-49d4-458a-bee4-43ec3dcaf8ca",
+			"tier":               "super",
+			"cloudflare_cookies": "cf_clearance=fixture",
+			"name":               "primary",
+		}},
+	})
+	if err != nil || len(imports) != 1 {
+		t.Fatalf("Grok imports = %#v/%v", imports, err)
+	}
+	item := imports[0]
+	if item.Kind != "sso" || item.NativeID == "" || strings.Contains(item.NativeID, "grok-token") {
+		t.Fatalf("Grok account identity = %#v", item)
+	}
+	for key, expected := range map[string]string{
+		"access_token": "grok-token", "user_id": "497f19f8-49d4-458a-bee4-43ec3dcaf8ca",
+		"tier": "super", "cloudflare_cookies": "cf_clearance=fixture", "auth_mode": "sso",
+	} {
+		if item.Credentials[key] != expected {
+			t.Fatalf("credential %s = %q, want %q", key, item.Credentials[key], expected)
+		}
+	}
+}
+
+func TestBuildProviderImportsPreservesGrokBuildOAuthMaterial(t *testing.T) {
+	imports, err := buildProviderImports("grok", map[string]any{
+		"accounts": []any{map[string]any{
+			"provider": "grok_build", "name": "build-account", "access_token": "access-token",
+			"refresh_token": "refresh-token", "client_id": "client-id",
+			"user_id": "497f19f8-49d4-458a-bee4-43ec3dcaf8ca", "email": "build@example.com",
+		}},
+	})
+	if err != nil || len(imports) != 1 {
+		t.Fatalf("Grok Build imports = %#v/%v", imports, err)
+	}
+	item := imports[0]
+	if item.Kind != "oauth" || item.NativeID != "build:497f19f8-49d4-458a-bee4-43ec3dcaf8ca" {
+		t.Fatalf("Grok Build account = %#v", item)
+	}
+	for key, expected := range map[string]string{
+		"access_token": "access-token", "refresh_token": "refresh-token", "client_id": "client-id",
+		"auth_mode": "build", "provider": "grok_build", "user_id": "497f19f8-49d4-458a-bee4-43ec3dcaf8ca",
+	} {
+		if item.Credentials[key] != expected {
+			t.Fatalf("credential %s = %q, want %q", key, item.Credentials[key], expected)
+		}
 	}
 }
 

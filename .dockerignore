@@ -1,0 +1,25 @@
+# The image only needs the Go module (see Dockerfile). Keep runtime data,
+# secrets and unrelated trees out of the build context.
+.git
+.backup
+.env
+.env.*
+!.env.example
+data
+web
+docs
+design
+scripts
+tools
+**/node_modules
+**/dist
+*.exe
+*.log
+*.db
+*.db-wal
+*.db-shm
+*-export-*.json
+.workbuddy
+.mimosa
+.idea
+.vscode

@@ -51,7 +51,7 @@ try {
     $env:A2A_ADMIN_TOKEN = "wbt_rollback_verification_token_20261008_long"
     $stdout = Join-Path $restore "stdout.log"
     $stderr = Join-Path $restore "stderr.log"
-    $process = Start-Process -FilePath $binary -WorkingDirectory (Split-Path -Parent $PSScriptRoot) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+    $process = Start-Process -FilePath $binary -WorkingDirectory (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
     $health = $null
     for ($attempt = 0; $attempt -lt 80; $attempt++) {
         if ($process.HasExited) { throw "Rollback binary exited with code $($process.ExitCode)" }

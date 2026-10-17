@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$ProfileRoot = ".\services\api\data\doubao\profiles",
+    [string]$ProfileRoot = ".\data\doubao\profiles",
     [string]$AccountId = "",
     [string]$BrowserExecutable = "",
     [string]$EvidencePath = ""
 )
 
 $ErrorActionPreference = "Stop"
-$workspace = Split-Path -Parent $PSScriptRoot
+$workspace = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $sourceRoot = if ([IO.Path]::IsPathRooted($ProfileRoot)) {
     [IO.Path]::GetFullPath($ProfileRoot)
 } else {

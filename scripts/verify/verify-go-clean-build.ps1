@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$workspace = Split-Path -Parent $PSScriptRoot
+$workspace = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("all2api-go-clean-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
 
@@ -13,8 +13,8 @@ $forbidden = @("F:\token-p", "wb2api", "doubao2api", "chatgpt2api", ":7863", ":7
 $runtimeFiles = @(
     (Join-Path $workspace "cmd"),
     (Join-Path $workspace "internal"),
-    (Join-Path $workspace "Dockerfile.golang"),
-    (Join-Path $workspace "docker-compose.go.yml")
+    (Join-Path $workspace "Dockerfile"),
+    (Join-Path $workspace "docker-compose.yml")
 )
 foreach ($path in $runtimeFiles) {
     $files = if (Test-Path -LiteralPath $path -PathType Container) { Get-ChildItem -LiteralPath $path -Recurse -File } else { Get-Item -LiteralPath $path }

@@ -9,9 +9,17 @@ import (
 	"image/png"
 )
 
-// RemoveWatermark applies a deterministic lower-right region repair for
-// provider images. It deliberately returns PNG so the result is lossless and
-// does not depend on Python/OpenCV at runtime.
+// WatermarkMethod identifies the repair algorithm in asset metadata and API
+// responses.
+const WatermarkMethod = "telea_inpaint"
+
+// watermarkInpaintRadius matches the radius used with cv2.INPAINT_TELEA.
+const watermarkInpaintRadius = 7
+
+// RemoveWatermark repairs the fixed lower-right watermark region of provider
+// images with Telea inpainting and returns a lossless PNG of the same size.
+// Images smaller than 512x512, or too short to have clean pixels above the
+// region, are returned unchanged.
 func RemoveWatermark(data []byte) ([]byte, int, int, error) {
 	source, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
@@ -22,33 +30,33 @@ func RemoveWatermark(data []byte) ([]byte, int, int, error) {
 	if width < 512 || height < 512 {
 		return append([]byte(nil), data...), width, height, nil
 	}
-	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
-	draw.Draw(canvas, canvas.Bounds(), source, bounds.Min, draw.Src)
-	x1 := int(float64(width) * 0.655)
-	y1 := height - maxInt(64, int(float64(height)*0.165))
-	y2 := height - maxInt(12, int(float64(height)*0.01))
-	if x1 < 1 {
-		x1 = 1
-	}
-	if y1 < 1 {
-		y1 = 1
-	}
-	if y2 <= y1 {
+	x1, y1, y2 := watermarkRegion(width, height)
+	if regionHeight := y2 - y1; regionHeight <= 0 || y1-regionHeight < 0 {
 		return append([]byte(nil), data...), width, height, nil
 	}
-	// Copy the nearest clean vertical strip into the masked region. This is a
-	// conservative deterministic fallback; provider-specific masks remain an
-	// E2E concern and are never claimed from this local operation alone.
+	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(canvas, canvas.Bounds(), source, bounds.Min, draw.Src)
+	mask := make([]bool, width*height)
 	for y := y1; y < y2; y++ {
 		for x := x1; x < width; x++ {
-			canvas.Set(x, y, canvas.At(x1-1, y))
+			mask[y*width+x] = true
 		}
 	}
+	inpaintTelea(canvas, mask, watermarkInpaintRadius)
 	var output bytes.Buffer
 	if err := png.Encode(&output, canvas); err != nil {
 		return nil, 0, 0, fmt.Errorf("encode repaired image: %w", err)
 	}
 	return output.Bytes(), width, height, nil
+}
+
+// watermarkRegion returns the masked rectangle [x1,width) x [y1,y2). The
+// bottom margin below y2 stays untouched so the image edge remains stable.
+func watermarkRegion(width, height int) (x1, y1, y2 int) {
+	x1 = maxInt(0, int(float64(width)*0.655))
+	y2 = maxInt(1, height-maxInt(12, int(float64(height)*0.01)))
+	y1 = maxInt(0, height-maxInt(64, int(float64(height)*0.165)))
+	return x1, y1, y2
 }
 
 func DecodeAndEncodePNG(data []byte, mimeType string) ([]byte, error) {

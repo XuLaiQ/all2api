@@ -202,3 +202,111 @@ func TestRequestLogFiltersAndExtendedFields(t *testing.T) {
 		t.Fatalf("extended log fields = %#v", row)
 	}
 }
+
+func TestPurgeExpiredProvisionStateKeepsActiveSessions(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir()+"/purge.db")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	now := time.Unix(1_800_000_000, 0)
+	past, future := float64(now.Add(-time.Hour).Unix()), float64(now.Add(time.Hour).Unix())
+	for _, row := range []struct {
+		id      string
+		status  string
+		expires float64
+	}{
+		{"done-expired", "succeeded", past},
+		{"failed-expired", "failed_terminal", past},
+		{"pending-expired", "pending", past},
+		{"done-live", "succeeded", future},
+	} {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO provision_sessions
+			(channel, session_id, flow, status, created_at, expires_at, state, updated_at)
+			VALUES ('wb', ?, 'qr-oauth', ?, ?, ?, 'x', ?)`, row.id, row.status, past, row.expires, past); err != nil {
+			t.Fatalf("insert session %s: %v", row.id, err)
+		}
+	}
+	for _, row := range []struct {
+		key     string
+		expires any
+	}{{"old", past}, {"live", future}, {"forever", nil}} {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO provision_idempotency
+			(channel, operation, idempotency_key, session_id, expires_at, response, created_at, updated_at)
+			VALUES ('wb', 'import', ?, '', ?, 'x', 0, 0)`, row.key, row.expires); err != nil {
+			t.Fatalf("insert idempotency %s: %v", row.key, err)
+		}
+	}
+
+	removed, err := store.PurgeExpiredProvisionState(ctx, now)
+	if err != nil {
+		t.Fatalf("PurgeExpiredProvisionState() error = %v", err)
+	}
+	if removed != 3 {
+		t.Fatalf("removed = %d, want 3 (2 terminal sessions + 1 idempotency row)", removed)
+	}
+	var sessions, idempotency int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM provision_sessions").Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM provision_idempotency").Scan(&idempotency); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 2 || idempotency != 2 {
+		t.Fatalf("remaining sessions=%d idempotency=%d, want 2 and 2", sessions, idempotency)
+	}
+}
+
+func TestListRequestLogsAcceptsNullableColumns(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir()+"/nullable-logs.db")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	// Rows written by earlier versions leave channel/model/error_kind NULL.
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO request_logs(ts, request_id, status) VALUES (unixepoch(), 'legacy-row', 200)`); err != nil {
+		t.Fatal(err)
+	}
+	rows, total, err := store.ListRequestLogs(ctx, ports.LogQuery{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListRequestLogs() error = %v", err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].RequestID != "legacy-row" || rows[0].ErrorKind != "" || rows[0].Channel != "" {
+		t.Fatalf("ListRequestLogs() = %#v, %d", rows, total)
+	}
+}
+
+// plainBox is a test SecretBox that stores plaintext.
+type plainBox struct{}
+
+func (plainBox) Encrypt(value string) (string, error) { return "plain:" + value, nil }
+func (plainBox) Decrypt(value string) (string, error) { return value[len("plain:"):], nil }
+
+func TestImportAccountsRenewsExistingCredential(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir()+"/import.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	item := ports.AccountImport{Channel: "grok", ID: "grok:build:u1", NativeID: "build:u1", Name: "u1", Kind: "oauth", Credentials: map[string]string{"access_token": "old"}}
+	first, err := store.ImportAccounts(ctx, []ports.AccountImport{item}, plainBox{}, ports.AuditEvent{})
+	if err != nil || first.Added != 1 {
+		t.Fatalf("first import = %#v/%v", first, err)
+	}
+	same, err := store.ImportAccounts(ctx, []ports.AccountImport{item}, plainBox{}, ports.AuditEvent{})
+	if err != nil || same.Skipped != 1 || same.Updated != 0 {
+		t.Fatalf("identical import = %#v/%v", same, err)
+	}
+	item.Credentials = map[string]string{"access_token": "new"}
+	renewed, err := store.ImportAccounts(ctx, []ports.AccountImport{item}, plainBox{}, ports.AuditEvent{})
+	if err != nil || renewed.Updated != 1 || renewed.Added != 0 {
+		t.Fatalf("renewed import = %#v/%v", renewed, err)
+	}
+	credentials, err := store.ReadCredential(ctx, "grok", "build:u1", plainBox{})
+	if err != nil || credentials["access_token"] != "new" {
+		t.Fatalf("credential after renew = %#v/%v", credentials, err)
+	}
+}

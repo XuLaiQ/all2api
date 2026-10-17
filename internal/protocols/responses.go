@@ -11,6 +11,7 @@ func NormalizeResponses(payload map[string]any) (ports.ChatInput, error) {
 	allowed := map[string]bool{
 		"model": true, "input": true, "instructions": true, "max_output_tokens": true,
 		"temperature": true, "top_p": true, "stream": true, "metadata": true, "store": true,
+		"reasoning": true,
 	}
 	for field := range payload {
 		if !allowed[field] {
@@ -32,6 +33,19 @@ func NormalizeResponses(payload map[string]any) (ports.ChatInput, error) {
 		}
 	}
 	result := ports.ChatInput{Model: model, Stream: stream}
+	if reasoning, exists := payload["reasoning"]; exists && reasoning != nil {
+		object, ok := reasoning.(map[string]any)
+		if !ok {
+			return ports.ChatInput{}, &RequestError{Message: "reasoning must be an object"}
+		}
+		if effort, exists := object["effort"]; exists && effort != nil {
+			text, ok := effort.(string)
+			if !ok {
+				return ports.ChatInput{}, &RequestError{Message: "reasoning.effort must be a string"}
+			}
+			result.ReasoningEffort = strings.TrimSpace(text)
+		}
+	}
 	if instructions, exists := payload["instructions"]; exists {
 		text, ok := instructions.(string)
 		if !ok {

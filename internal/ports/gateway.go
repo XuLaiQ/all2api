@@ -38,6 +38,9 @@ type ChatInput struct {
 	Tools       []ToolDefinition
 	ToolChoice  any
 	Stream      bool
+	// ReasoningEffort is the client-requested thinking depth (OpenAI
+	// reasoning_effort / reasoning.effort); adapters map or ignore it.
+	ReasoningEffort string
 }
 
 type Usage struct {
@@ -46,8 +49,11 @@ type Usage struct {
 }
 
 type ChatResult struct {
-	ID            string
-	Text          string
+	ID   string
+	Text string
+	// Reasoning is the upstream "thinking" text (OpenAI reasoning_content). It is
+	// never mixed into Text.
+	Reasoning     string
 	FinishReason  string
 	CreatedAt     int64
 	Usage         *Usage
@@ -94,6 +100,7 @@ type AccountModelAdapter interface {
 type StreamChunk struct {
 	ID            string
 	Text          string
+	Reasoning     string
 	FinishReason  string
 	CreatedAt     int64
 	Usage         *Usage

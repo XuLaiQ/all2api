@@ -74,7 +74,7 @@ func (w *worker) removeWatermark(writer http.ResponseWriter, request *http.Reque
 		writeJSON(writer, http.StatusUnprocessableEntity, errorBody("invalid_image", "image could not be decoded"))
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"data_base64": base64.StdEncoding.EncodeToString(repaired), "mime_type": "image/png", "width": width, "height": height, "method": "go_region_repair"})
+	writeJSON(writer, http.StatusOK, map[string]any{"data_base64": base64.StdEncoding.EncodeToString(repaired), "mime_type": "image/png", "width": width, "height": height, "method": "telea_inpaint"})
 }
 
 func (w *worker) health(writer http.ResponseWriter, _ *http.Request) {

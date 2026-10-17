@@ -227,6 +227,7 @@ func (c *Client) Chat(ctx context.Context, input ports.ChatInput, accountID stri
 			result.CreatedAt = chunk.CreatedAt
 		}
 		result.Text += chunk.Text
+		result.Reasoning += chunk.Reasoning
 		if chunk.FinishReason != "" {
 			result.FinishReason = chunk.FinishReason
 		}

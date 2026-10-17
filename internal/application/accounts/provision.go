@@ -22,7 +22,7 @@ func NewProvisionService(repository ports.ProvisionRepository, box ports.SecretB
 }
 
 func (s *ProvisionService) Import(ctx context.Context, channel string, payload map[string]any, actor, ip, idempotency string) (ports.AccountImportResult, error) {
-	if channel != "wb" && channel != "doubao" && channel != "chatgpt" {
+	if channel != "wb" && channel != "doubao" && channel != "chatgpt" && channel != "grok" {
 		return ports.AccountImportResult{}, fmt.Errorf("channel provision is not implemented")
 	}
 	if s.repository == nil || strings.TrimSpace(idempotency) == "" {
@@ -38,7 +38,7 @@ func (s *ProvisionService) Import(ctx context.Context, channel string, payload m
 		}
 		return result, nil
 	}
-	if channel == "doubao" || channel == "chatgpt" {
+	if channel == "doubao" || channel == "chatgpt" || channel == "grok" {
 		imports, err := buildProviderImports(channel, payload)
 		if err != nil {
 			return ports.AccountImportResult{}, err
@@ -151,7 +151,7 @@ func buildProviderImports(channel string, payload map[string]any) ([]ports.Accou
 				item["access_token"] = value
 			}
 		case map[string]any:
-			item = value
+			item = flattenAccountItem(value)
 		default:
 			return nil, fmt.Errorf("account item must be a string or object")
 		}
@@ -160,10 +160,18 @@ func buildProviderImports(channel string, payload map[string]any) ([]ports.Accou
 			secretKey = "cookie"
 		}
 		secret, _ := item[secretKey].(string)
-		if secret == "" && channel == "chatgpt" {
-			secret, _ = item["token"].(string)
+		if secret == "" && (channel == "chatgpt" || channel == "grok") {
+			for _, key := range []string{"token", "sso_token", "ssoToken", "accessToken"} {
+				if value, ok := item[key].(string); ok && strings.TrimSpace(value) != "" {
+					secret = value
+					break
+				}
+			}
 		}
 		secret = strings.TrimSpace(secret)
+		if channel == "grok" {
+			secret = normalizeGrokToken(secret)
+		}
 		if secret == "" {
 			return nil, fmt.Errorf("account item has no credential")
 		}
@@ -180,6 +188,16 @@ func buildProviderImports(channel string, payload map[string]any) ([]ports.Accou
 		if channel == "chatgpt" {
 			nativeID = "token:" + accountID
 		}
+		if channel == "grok" {
+			if isGrokBuildItem(item) {
+				if value, ok := item["user_id"].(string); ok && strings.TrimSpace(value) != "" {
+					accountID = strings.TrimSpace(value)
+				}
+				nativeID = "build:" + accountID
+			} else {
+				nativeID = "sso:" + accountID
+			}
+		}
 		if seen[nativeID] {
 			continue
 		}
@@ -187,6 +205,12 @@ func buildProviderImports(channel string, payload map[string]any) ([]ports.Accou
 		credentials := map[string]string{}
 		if channel == "doubao" {
 			credentials["cookie"] = secret
+		} else if channel == "grok" {
+			if isGrokBuildItem(item) {
+				credentials = grokBuildCredentials(item, secret)
+			} else {
+				credentials = grokCredentials(item, secret)
+			}
 		} else {
 			credentials = chatGPTCredentials(item, secret)
 			if value, ok := item["account_id"].(string); ok && strings.TrimSpace(value) != "" {
@@ -197,9 +221,86 @@ func buildProviderImports(channel string, payload map[string]any) ([]ports.Accou
 		if value, ok := item["name"].(string); ok && strings.TrimSpace(value) != "" {
 			name = strings.TrimSpace(value)
 		}
-		result = append(result, ports.AccountImport{Channel: channel, ID: channel + ":" + nativeID, NativeID: nativeID, Name: name, Kind: map[string]string{"doubao": "cookie", "chatgpt": "token"}[channel], Credentials: credentials})
+		kind := map[string]string{"doubao": "cookie", "chatgpt": "token", "grok": "sso"}[channel]
+		if channel == "grok" && isGrokBuildItem(item) {
+			kind = "oauth"
+		}
+		result = append(result, ports.AccountImport{Channel: channel, ID: channel + ":" + nativeID, NativeID: nativeID, Name: name, Kind: kind, Credentials: credentials})
 	}
 	return result, nil
+}
+
+// flattenAccountItem accepts sub2api/CPA style exports where the secrets live
+// in a nested "credentials" object (accounts[].credentials.access_token).
+// Top-level fields win; nested credential fields only fill missing keys.
+func flattenAccountItem(item map[string]any) map[string]any {
+	nested, ok := item["credentials"].(map[string]any)
+	if !ok {
+		return item
+	}
+	result := make(map[string]any, len(item)+len(nested))
+	for key, value := range nested {
+		result[key] = value
+	}
+	for key, value := range item {
+		if key == "credentials" {
+			continue
+		}
+		if text, isText := value.(string); isText && strings.TrimSpace(text) == "" {
+			if _, exists := result[key]; exists {
+				continue
+			}
+		}
+		result[key] = value
+	}
+	return result
+}
+
+func normalizeGrokToken(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(strings.ToLower(value), "sso=") {
+		value = strings.TrimSpace(value[len("sso="):])
+	}
+	if token, _, found := strings.Cut(value, ";"); found {
+		value = strings.TrimSpace(token)
+	}
+	return strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(value)
+}
+
+func grokCredentials(item map[string]any, token string) map[string]string {
+	credentials := map[string]string{"access_token": token, "auth_mode": "sso"}
+	aliases := map[string]string{
+		"user_id": "user_id", "userId": "user_id", "uid": "user_id", "sub": "sub",
+		"email": "email", "tier": "tier", "cloudflare_cookies": "cloudflare_cookies", "cloudflareCookies": "cloudflare_cookies",
+		"user_agent": "user_agent", "user-agent": "user_agent",
+	}
+	for source, target := range aliases {
+		if value, ok := item[source].(string); ok && strings.TrimSpace(value) != "" {
+			credentials[target] = strings.TrimSpace(value)
+		}
+	}
+	return credentials
+}
+
+func isGrokBuildItem(item map[string]any) bool {
+	provider, _ := item["provider"].(string)
+	authMode, _ := item["auth_mode"].(string)
+	return strings.EqualFold(strings.TrimSpace(provider), "grok_build") || strings.EqualFold(strings.TrimSpace(provider), "grok-build") || strings.EqualFold(strings.TrimSpace(authMode), "build")
+}
+
+func grokBuildCredentials(item map[string]any, token string) map[string]string {
+	credentials := map[string]string{"access_token": token, "auth_mode": "build", "provider": "grok_build"}
+	aliases := map[string]string{
+		"refresh_token": "refresh_token", "refreshToken": "refresh_token", "client_id": "client_id", "clientId": "client_id",
+		"user_id": "user_id", "userId": "user_id", "email": "email", "expires_at": "expires_at", "expiresAt": "expires_at",
+		"expires_in": "expires_in", "token_type": "token_type", "tokenType": "token_type",
+	}
+	for source, target := range aliases {
+		if value, ok := item[source].(string); ok && strings.TrimSpace(value) != "" {
+			credentials[target] = strings.TrimSpace(value)
+		}
+	}
+	return credentials
 }
 
 func chatGPTCredentials(item map[string]any, accessToken string) map[string]string {
@@ -214,6 +315,7 @@ func chatGPTCredentials(item map[string]any, accessToken string) map[string]stri
 		"oai_device_id": "oai_device_id", "oai-device-id": "oai_device_id", "device_id": "oai_device_id", "deviceId": "oai_device_id",
 		"oai_session_id": "oai_session_id", "oai-session-id": "oai_session_id", "session_id": "oai_session_id", "sessionId": "oai_session_id",
 		"chatgpt_account_id": "chatgpt_account_id", "chatgpt-account-id": "chatgpt_account_id",
+		"expires_at": "expires_at", "email": "email", "plan_type": "plan_type",
 		"sec_ch_ua": "sec-ch-ua", "sec-ch-ua": "sec-ch-ua", "sec_ch_ua_arch": "sec-ch-ua-arch", "sec-ch-ua-arch": "sec-ch-ua-arch",
 		"sec_ch_ua_bitness": "sec-ch-ua-bitness", "sec-ch-ua-bitness": "sec-ch-ua-bitness",
 		"sec_ch_ua_full_version": "sec-ch-ua-full-version", "sec-ch-ua-full-version": "sec-ch-ua-full-version",

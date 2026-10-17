@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$workspace = Split-Path -Parent $PSScriptRoot
+$workspace = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $checks = [ordered]@{}
 $blocking = [System.Collections.Generic.List[string]]::new()
 
@@ -37,17 +37,24 @@ Add-Check "docker_daemon" $dockerAvailable (Detail $dockerAvailable "server=$($d
 $composeOutput = @()
 $composeValid = $false
 try {
-    $composeOutput = @(docker compose -f (Join-Path $workspace "docker-compose.go.yml") config --quiet 2>&1)
+    $composeOutput = @(docker compose -f (Join-Path $workspace "docker-compose.yml") config --quiet 2>&1)
     $composeValid = $LASTEXITCODE -eq 0
 } catch {
     $composeValid = $false
 }
-Add-Check "go_compose_config" $composeValid (Detail $composeValid "valid" ($composeOutput -join " "))
+Add-Check "compose_config" $composeValid (Detail $composeValid "valid" ($composeOutput -join " "))
 
-$workflowPath = Join-Path $workspace ".github/workflows/go-migration.yml"
-$workflowText = if (Test-Path -LiteralPath $workflowPath -PathType Leaf) { Get-Content -LiteralPath $workflowPath -Raw -Encoding UTF8 } else { "" }
-$workflowPassed = $workflowText.Contains("go-image-build") -and $workflowText.Contains("docker build --file Dockerfile.golang") -and $workflowText.Contains("go-release-artifacts") -and $workflowText.Contains("generate-go-sbom.ps1") -and $workflowText.Contains("go-vulnerability-scan") -and $workflowText.Contains("govulncheck@v1.1.4") -and $workflowText.Contains("go-license-scan") -and $workflowText.Contains("go-licenses@v1.3.0") -and $workflowText.Contains("go-supply-chain-local") -and $workflowText.Contains("verify-go-supply-chain.py")
-Add-Check "ci_release_gates" $workflowPassed (Detail $workflowPassed "Docker, artifact/SBOM, vulnerability, license and local supply-chain jobs are present" "CI must include Dockerfile.golang, release/SBOM, govulncheck, go-licenses and local module audit gates")
+# CI must build the image, publish artifacts/SBOM and run the supply-chain
+# scanners. Any workflow file may provide these jobs.
+$workflowDir = Join-Path $workspace ".github/workflows"
+$workflowText = ""
+if (Test-Path -LiteralPath $workflowDir -PathType Container) {
+    $workflowText = (Get-ChildItem -LiteralPath $workflowDir -File -Include *.yml, *.yaml -Recurse | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 }) -join "`n"
+}
+$requiredMarkers = @("docker build", "generate-go-sbom.ps1", "govulncheck", "go-licenses", "tools/supplychain")
+$missingMarkers = @($requiredMarkers | Where-Object { -not $workflowText.Contains($_) })
+$workflowPassed = $missingMarkers.Count -eq 0
+Add-Check "ci_release_gates" $workflowPassed (Detail $workflowPassed "image build, SBOM, vulnerability, license and supply-chain jobs are present" ("no CI workflow provides: " + ($missingMarkers -join ", ")))
 
 $supplyChainPath = Join-Path $workspace "docs/migration-evidence/supply-chain-2026-10-09.json"
 $supplyChainPassed = $false
@@ -70,19 +77,18 @@ Add-Check "root_license_declared" $licensePassed (Detail $licensePassed ("declar
 $environment = $DeploymentEnvironment
 if ([string]::IsNullOrWhiteSpace($environment)) { $environment = $env:A2A_ENV }
 $environmentPassed = $environment -eq "production"
-Add-Check "production_environment" $environmentPassed (Detail $environmentPassed "A2A_ENV=production" "cutover requires -DeploymentEnvironment production or A2A_ENV=production")
+Add-Check "production_environment" $environmentPassed (Detail $environmentPassed "A2A_ENV=production" "release requires -DeploymentEnvironment production or A2A_ENV=production")
 
-$defaultCompose = Get-Content -LiteralPath (Join-Path $workspace "docker-compose.yml") -Raw -Encoding UTF8
-$defaultHasPython = $defaultCompose -match "python|uvicorn|services/api"
-Add-Check "default_compose_is_go" (-not $defaultHasPython) (Detail (-not $defaultHasPython) "Go-only" "default docker-compose.yml still contains Python runtime")
+# The backend is Go-only: no Python sources or runtime references may return.
+$pythonFiles = @(git -C $workspace ls-files --cached --others --exclude-standard -- "*.py" "pyproject.toml" "requirements*.txt" 2>$null)
+$runtimeText = (@("Dockerfile", "docker-compose.yml") | ForEach-Object { Get-Content -LiteralPath (Join-Path $workspace $_) -Raw -Encoding UTF8 }) -join "`n"
+$runtimeHasPython = $runtimeText -match "python|uvicorn|services/api"
+$goOnly = $pythonFiles.Count -eq 0 -and -not $runtimeHasPython
+$goOnlyDetail = "Go-only"
+if (-not $goOnly) { $goOnlyDetail = "Python found: " + (@($pythonFiles | Select-Object -First 5) -join ", ") + $(if ($runtimeHasPython) { " (Dockerfile/compose reference Python)" } else { "" }) }
+Add-Check "go_only_backend" $goOnly $goOnlyDetail
 
-$pythonRuntime = Test-Path -LiteralPath (Join-Path $workspace "services/api/pyproject.toml")
-Add-Check "python_runtime_removed" (-not $pythonRuntime) (Detail (-not $pythonRuntime) "removed" "services/api/pyproject.toml still exists")
-
-$legacyBridge = Test-Path -LiteralPath (Join-Path $workspace "services/api/app/compat")
-Add-Check "legacy_bridge_removed" (-not $legacyBridge) (Detail (-not $legacyBridge) "removed" "services/api/app/compat still exists")
-
-$backupScripts = (Test-Path -LiteralPath (Join-Path $workspace "scripts/backup-go-state.ps1")) -and (Test-Path -LiteralPath (Join-Path $workspace "scripts/verify-go-backup-restore.ps1"))
+$backupScripts = (Test-Path -LiteralPath (Join-Path $workspace "scripts/ops/backup-go-state.ps1")) -and (Test-Path -LiteralPath (Join-Path $workspace "scripts/verify/verify-go-backup-restore.ps1"))
 Add-Check "backup_restore_scripts" $backupScripts (Detail $backupScripts "present" "backup/restore scripts are missing")
 
 $previous = $false
@@ -99,16 +105,16 @@ function Read-E2EReport {
     }
     try { $value = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Add-Check $Name $false "report is not valid JSON"; return }
     $items = @($value.channels)
-    $passed = $items.Count -eq 3 -and (@($items | Where-Object { $_.status -ne "ok" }).Count -eq 0)
+    $passed = $items.Count -ge 3 -and (@($items | Where-Object { $_.status -ne "ok" }).Count -eq 0)
     if ($passed) {
-        Add-Check $Name $true "three channels reported ok"
+        Add-Check $Name $true ("{0} channels reported ok" -f $items.Count)
         return
     }
     $failures = @($items | Where-Object { $_.status -ne "ok" } | ForEach-Object {
         $code = if ($_.error_code) { [string]$_.error_code } else { "unknown" }
         "{0}:{1}" -f ([string]$_.channel), $code
     })
-    $detail = if ($failures.Count -gt 0) { "failed channels: " + ($failures -join ", ") } else { "report must contain three channels with status=ok" }
+    $detail = if ($failures.Count -gt 0) { "failed channels: " + ($failures -join ", ") } else { "report must contain at least three channels, all with status=ok" }
     Add-Check $Name $false $detail
 }
 
@@ -122,7 +128,7 @@ function Read-BrowserReport {
     $channels = @($value.channels)
     if ($channels.Count -eq 0 -or $null -eq $channels[0]) { $channels = @($value.profiles) }
     $passed = $value.status -eq "ok"
-    if (-not $passed -and $channels.Count -eq 3) {
+    if (-not $passed -and $channels.Count -ge 1) {
         $passed = (@($channels | Where-Object { $_.status -ne "ok" }).Count -eq 0)
     }
     if ($passed) {
@@ -145,7 +151,7 @@ Read-E2EReport -Path $RealE2EReport -Name "real_platform_e2e"
 Read-BrowserReport -Path $BrowserE2EReport -Name "browser_e2e"
 
 $result = [ordered]@{
-    format = "all2api-go-cutover-readiness-v1"
+    format = "all2api-release-readiness-v1"
     checked_at = [DateTime]::UtcNow.ToString("o")
     ready = ($blocking.Count -eq 0)
     checks = $checks

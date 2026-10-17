@@ -461,7 +461,7 @@ func (s *Service) ChatStream(ctx context.Context, authorization, xAPIKey string,
 			}
 			continue
 		}
-		if err := emitChunk(ports.StreamChunk{ID: result.ID, Text: result.Text, FinishReason: result.FinishReason, CreatedAt: result.CreatedAt, Usage: result.Usage}); err != nil {
+		if err := emitChunk(ports.StreamChunk{ID: result.ID, Text: result.Text, Reasoning: result.Reasoning, FinishReason: result.FinishReason, CreatedAt: result.CreatedAt, Usage: result.Usage}); err != nil {
 			return key, err
 		}
 		return key, nil
@@ -726,7 +726,7 @@ func (s *Service) AdminChatStream(ctx context.Context, input ports.ChatInput, em
 			}
 			continue
 		}
-		if err := emitChunk(ports.StreamChunk{ID: result.ID, Text: result.Text, FinishReason: result.FinishReason, CreatedAt: result.CreatedAt, Usage: result.Usage}); err != nil {
+		if err := emitChunk(ports.StreamChunk{ID: result.ID, Text: result.Text, Reasoning: result.Reasoning, FinishReason: result.FinishReason, CreatedAt: result.CreatedAt, Usage: result.Usage}); err != nil {
 			return err
 		}
 		return nil
@@ -831,6 +831,12 @@ type classifiedAdapterError interface {
 	Kind() string
 }
 
+// publicAdapterError lets an adapter expose an operator-actionable message
+// (never containing credentials or upstream bodies), e.g. "sign in again".
+type publicAdapterError interface {
+	PublicMessage() string
+}
+
 func classifyAdapterError(err error) *Error {
 	var classified classifiedAdapterError
 	if errors.As(err, &classified) {
@@ -841,7 +847,14 @@ func classifyAdapterError(err error) *Error {
 		if status >= 500 && status != 504 {
 			status = 502
 		}
-		return &Error{Status: status, Code: classified.Kind(), Message: "adapter request failed"}
+		message := "adapter request failed"
+		var public publicAdapterError
+		if errors.As(err, &public) {
+			if text := public.PublicMessage(); text != "" {
+				message = text
+			}
+		}
+		return &Error{Status: status, Code: classified.Kind(), Message: message}
 	}
 	return &Error{Status: 502, Code: "adapter_error", Message: "adapter request failed"}
 }

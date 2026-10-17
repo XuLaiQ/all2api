@@ -84,14 +84,6 @@ export async function refreshAccount(accountId: string): Promise<void> {
   await apiClient.post(`/accounts/${encodeURIComponent(accountId)}/refresh`);
 }
 
-export type AccountOnboardingStart = {
-  realm?: "cn" | "global";
-  account_id?: string;
-  name?: string;
-  priority?: number;
-  email_hint?: string;
-};
-
 /**
  * A JSON-Schema subset returned by a channel manifest.  Account onboarding
  * deliberately keeps this type platform agnostic: adding a channel only
@@ -167,8 +159,12 @@ export type AccountOnboardingSession = {
   added?: number;
   skipped?: number;
   refreshed?: number;
+  /** Existing accounts whose credentials were replaced by this import. */
+  updated?: number;
+  /** Device-code flows: the code the user confirms on the provider page. */
+  user_code?: string;
   errors?: string[];
-  /** Target provision API may return a next action instead of a legacy flow. */
+  /** The provision API may return a next action for multi-step flows. */
   next_step?: string;
   expires_at?: string | number | null;
   poll_after_seconds?: number;
@@ -246,35 +242,3 @@ export async function cancelProvision(
   return response.data.data;
 }
 
-export async function startAccountOnboarding(
-  channel: string,
-  payload: AccountOnboardingStart,
-): Promise<AccountOnboardingSession> {
-  const response = await apiClient.post<{ data: AccountOnboardingSession }>(
-    `/accounts/${encodeURIComponent(channel)}/onboarding/start`,
-    payload,
-  );
-  return response.data.data;
-}
-
-export async function pollAccountOnboarding(
-  channel: string,
-  params: { state?: string; realm?: string; region?: string; account_id?: string },
-): Promise<AccountOnboardingSession> {
-  const response = await apiClient.get<{ data: AccountOnboardingSession }>(
-    `/accounts/${encodeURIComponent(channel)}/onboarding/poll`,
-    { params },
-  );
-  return response.data.data;
-}
-
-export async function finishAccountOnboarding(
-  channel: string,
-  payload: { session_id?: string; callback?: string; tokens?: string[]; accounts?: Record<string, unknown>[] },
-): Promise<AccountOnboardingSession> {
-  const response = await apiClient.post<{ data: AccountOnboardingSession }>(
-    `/accounts/${encodeURIComponent(channel)}/onboarding/finish`,
-    payload,
-  );
-  return response.data.data;
-}

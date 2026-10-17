@@ -50,6 +50,12 @@ POST /v1/audio/generations
 POST /v1/search
 ```
 
+思考内容与推理强度：
+
+- 上游返回的思考文本单独放在 `reasoning_content`（非流式 `message.reasoning_content`，流式 `delta.reasoning_content`），不会混入 `content`；`/v1/messages` 与 `/v1/responses` 目前只输出正文。
+- `/v1/chat/completions` 接受 `reasoning_effort`（或别名 `thinking_effort`），`/v1/responses` 接受 `reasoning.effort`。ChatGPT 映射为上游 `thinking_effort`（`low`/`medium`/`high`/`standard`/`max`，`xhigh` → `extended`），其它渠道忽略该字段。
+- 豆包用模型名选择思考深度：`doubao/doubao`、`doubao/doubao-pro`（快速）、`doubao/doubao-think`（思考）、`doubao/doubao-expert`（专家）。
+
 协议能力由渠道 manifest 声明；未声明的图像/视频/音频/文件能力必须返回明确的 `invalid_request_error` 或 `capability_not_supported`，不能静默丢弃字段。
 
 多媒体和搜索请求统一使用 JSON body，并要求 `model`（搜索可省略，由渠道使用
@@ -74,7 +80,7 @@ asset metadata 保留。图像编辑、PPT/PSD 和可编辑文件任务仍受 ma
 自动推断。
 
 Go media worker 的 `POST /v1/watermark/remove` 接受 `{ "data_base64": "..." }`，返回
-PNG base64、尺寸和 `method=go_region_repair`。该接口是本地确定性区域修复，不代表
+PNG base64、尺寸和 `method=telea_inpaint`。该接口是本地确定性区域修复，不代表
 已通过任一 provider 的真实去水印质量验收。
 
 ## 3. 通用格式
@@ -163,17 +169,9 @@ body：
 三件套）；它不从任何外部项目读取或同步账号列表。旧的 `POST /admin/api/accounts/sync` 已
 删除，客户端不得依赖该路径。
 
-### 6.2 迁移兼容路径
+### 6.2 已删除的兼容路径
 
-当前代码已有：
-
-```text
-POST /admin/api/accounts/{channel}/onboarding/start
-GET  /admin/api/accounts/{channel}/onboarding/poll
-POST /admin/api/accounts/{channel}/onboarding/finish
-```
-
-迁移期可以继续提供这些路径，但它们必须成为目标 provision API 的兼容别名，并最终由 registry dispatch；不能继续调用三个源项目的管理 HTTP 接口。字段和状态详见[账号新增流程](账号新增流程.md)。
+旧的 `/admin/api/accounts/{channel}/onboarding/{start,poll,finish}` 兼容路径已随 legacy bridge 删除，访问返回 `404`。新增账号只使用上面的 provision API，字段和状态详见[账号新增流程](账号新增流程.md)。
 
 ### 6.3 账号列表
 
@@ -183,10 +181,8 @@ POST /admin/api/accounts/{account_id}/refresh
 ```
 
 列表只返回 canonical Account 安全字段和网关运行态。账号新增由渠道 provision API 完成并直接写入本地账号表；该接口不会读取源项目数据库、文件或管理端口，也不会触发外部账号同步。
-`POST /admin/api/accounts/{account_id}/refresh` 仅允许管理员调用。支持 token 轮换的渠道调用
-对应 provisioner 的 `refresh_credential`，只返回脱敏账号摘要并写入 `refresh_account` 审计事件。
-Doubao 的 Cookie/browser session 没有独立 token refresh endpoint；该渠道返回明确的
-`capability_not_supported`，管理员应重新导入 Cookie 或重新执行 QR/profile 授权，不得伪造刷新成功。
+`POST /admin/api/accounts/{account_id}/refresh` 仅允许管理员调用。当前支持 WorkBuddy（`wb:*`）和 ChatGPT（`chatgpt:*`）账号，调用对应 provisioner 的 `Refresh`，只返回脱敏账号摘要；上游失败返回 `502 credential_refresh_failed`。
+Doubao 的 Cookie/browser session 和 Grok 的 SSO token 没有独立刷新接口，返回 `501 capability_not_supported`；管理员应重新导入或重新扫码授权，不得伪造刷新成功。
 
 ## 7. 网关 Key 管理
 
@@ -212,7 +208,9 @@ DELETE /admin/api/keys/{id}
 }
 ```
 
-验收要求：Key 只授权 `wb` 时调用 `doubao/*` 必须返回 `403 channel_not_allowed`；渠道已注册但被禁用时返回 `503 channel_disabled`；alias 展开后不能绕过这两项检查。上面的通道前缀和通配符属于目标契约；迁移期间若当前 validator 只接受 `models:["*"]`，必须先更新 OpenAPI、后端校验和前端 DTO，再启用按渠道模型列表。
+验收要求：Key 只授权 `wb` 时调用 `doubao/*` 必须返回 `403 channel_not_allowed`；渠道已注册但被禁用时返回 `503 channel_disabled`；alias 展开后不能绕过这两项检查。scope 校验实现在 `internal/domain/scope`。
+
+配置了 `A2A_BOOTSTRAP_API_KEY`（`sk-a2a-*`，至少 40 字符）时，服务启动会创建或替换名为 `bootstrap` 的 Key（全部渠道、全部模型、`A2A_BOOTSTRAP_RPM` 限速）；清空该变量后重启会禁用它。`bootstrap` Key 不能通过管理 API 编辑、轮换或撤销。
 
 ## 8. 路由、模型和日志
 
@@ -258,11 +256,14 @@ Go gateway 已支持使用不带 `/` 的 route alias 作为 `model`：启用 ali
 的 JSON 标量/对象，并写入审计；动态 provider 注册不在当前范围内。
 
 Playground 支持管理员发起的文本流式/非流式请求，以及受 manifest gate 保护的图片、视频、
-搜索和 editable-file 路由；所有请求调用 native runtime，不调用 legacy bridge。文本回答、
-生成响应和运行元数据分别持久化到会话消息、media_assets 和 `playground_runs`。
-editable-file 生成结果使用 Go media asset content URL；旧的
-`/admin/api/playground/files/{task_id}/{filename}` 下载路径明确返回
-`capability_not_supported`，不会恢复 Python 文件目录依赖。
+搜索和 editable-file 路由；所有请求调用 native adapter。文本回答、生成响应和运行元数据分别
+持久化到会话消息、media_assets 和 `playground_runs`；每次聊天调用也写入 `request_logs` 和
+`usage_daily`（`key_id=0`），因此计入用量统计。editable-file 生成结果使用 media asset content
+URL；`/admin/api/playground/files/{task_id}/{filename}` 下载路径返回 `capability_not_supported`。
+
+上游未返回 usage 时，网关用内置 tiktoken 词表本地估算 prompt/completion token，记录为
+`usage_kind=estimated` 并计入 `usage_estimated_requests`；上游报告的记为 `reported`，失败请求为
+`unknown`。
 
 ## 9. 会话、幂等和安全
 
@@ -286,16 +287,15 @@ editable-file 生成结果使用 Go media asset content URL；旧的
 | 用户管理 | `/users` |
 | 调试台 | `/playground/conversations`、`/playground/chat`、`/playground/runs` |
 
-前端类型必须从 OpenAPI 或同一变更中的 DTO 同步，不在组件中复制渠道枚举、授权规则或调度逻辑。
+前端类型必须与同一变更中的 DTO 同步，不在组件中复制渠道枚举、授权规则或调度逻辑。
 
 ## 11. 契约交付和兼容性
 
-FastAPI OpenAPI 是机器可读来源。改变字段、状态、错误码、scope 语义或 onboarding 路径时，必须同时更新：OpenAPI、本文、前端类型、适配器契约测试、迁移说明和兼容性窗口。新平台不得通过修改通用 API 增加平台专用端点，除非先记录 ADR 并证明无法用 manifest/provision schema 表达。
+公开路由清单是 [`docs/migration-baseline/routes.json`](migration-baseline/routes.json)，`go test ./internal/transport/http` 中的 `TestEveryContractRouteIsRegistered` 校验每一条都已注册。改变字段、状态、错误码、scope 语义或路由时，必须同时更新：本文、`routes.json`、前端类型、HTTP 契约测试和兼容性说明。新平台不得通过修改通用 API 增加平台专用端点，除非先记录 ADR 并证明无法用 manifest/provision schema 表达。
 
-## 12. 当前 bridge 兼容契约（迁移期间）
+## 12. 当前实现细节
 
-本节只记录当前代码已经提供的兼容行为，方便迁移时做回归测试；它不表示这些实现满足
-内置渠道目标。接口/字段以运行中的 FastAPI OpenAPI 为准。
+本节记录当前 Go 实现的具体行为，用于回归测试。
 
 ### 12.1 Messages 与 Responses
 
@@ -309,12 +309,11 @@ block 事件；断流输出 `error` 后以 `message_stop` 收尾。未报告 tok
 
 `POST /v1/responses` 当前支持纯文本 `input`（字符串或 system/developer/user/assistant
 消息数组）、`instructions`、`max_output_tokens`、`temperature`、`top_p`、`stream`、
-string-valued `metadata` 和 `store:false`。tools、previous response continuation、background、
-reasoning、自定义 text format 与图像/音频/文件输入返回 `invalid_request_error`。`stream=true`
+string-valued `metadata`、`store:false` 和 `reasoning.effort`。tools、previous response
+continuation、background、自定义 text format 与图像/音频/文件输入返回 `invalid_request_error`。`stream=true`
 通过 gateway stream port 逐步输出文本 delta；上游在首个 delta 后中断时输出协议 error
 终态，不伪造成功完成。流式输出包含 `response.created`、`response.in_progress`、文本 delta
-和完成/失败终态。上述能力需要随着
-内置 adapter 的 manifest 重新验证，而不是由 bridge 自动继承。
+和完成/失败终态。新增渠道必须在自己的 manifest 和契约测试中重新验证上述能力。
 
 ### 12.2 管理会话与安全
 
@@ -334,7 +333,7 @@ Cookie 写操作校验 `Origin` 与 `Host`；脚本 Bearer 管理令牌不进入
 
 ### 12.3 当前运维与管理接口
 
-| 接口 | 当前行为 | 迁移要求 |
+| 接口 | 当前行为 | 约束 |
 |---|---|---|
 | `GET /admin/api/accounts` | 读取本地账号快照，支持 `channel/status/search` | 账号仅由本项目的 provision 流程写入，不能读取源项目文件/DB |
 | `GET /admin/api/models` | 读取已观测模型缓存 | manifest/model mapper 持续维护缓存语义 |
@@ -348,7 +347,6 @@ Cookie 写操作校验 `Origin` 与 `Host`；脚本 Bearer 管理令牌不进入
 | `PATCH/DELETE /admin/api/users/{name}` | 修改启用/角色或删除目录项 | 环境配置管理员不可删除或停用；写审计 |
 | `GET/DELETE /admin/api/playground/conversations/{id}` | 读取或删除对话及其消息、请求记录 | 仅 admin 可删除；删除在同一事务内清理关联记录 |
 | `GET /admin/api/playground/runs` | 读取 Playground 运行元数据 | 不保存消息正文、凭据或上游原始错误体 |
-| `POST /admin/api/playground/chat` | 对已配置 native runtime 执行一次流式或非流式调试调用 | 仅 admin + 同源；未配置 runtime 返回 `501`，不会回退到源项目 bridge |
+| `POST /admin/api/playground/chat` | 对已配置 native adapter 执行一次流式或非流式调试调用 | 仅 admin + 同源；未配置 adapter 返回 `501` |
 
-管理页不能通过初次加载触发模型发现或真实平台登录。所有兼容路径都必须在 M5
-切换前迁移到目标 adapter/provisioner，或明确删除。
+管理页不能通过初次加载触发模型发现或真实平台登录。

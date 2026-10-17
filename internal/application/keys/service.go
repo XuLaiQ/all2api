@@ -219,6 +219,36 @@ func (s *Service) Revoke(ctx context.Context, id int64, actor, ip string) error 
 	return s.repository.RevokeKey(ctx, id, ports.AuditEvent{Actor: actor, Action: "key.revoked", IP: trimIP(ip)})
 }
 
+// ErrBootstrapKeyFormat is returned when A2A_BOOTSTRAP_API_KEY is not a long sk-a2a-* key.
+var ErrBootstrapKeyFormat = errors.New("A2A_BOOTSTRAP_API_KEY must be an sk-a2a-* key of at least 40 characters")
+
+// SyncBootstrap makes the "bootstrap" key row match configuration: an empty
+// rawKey disables any previously configured bootstrap key, otherwise the row is
+// created or replaced with full scope and the given RPM limit.
+func (s *Service) SyncBootstrap(ctx context.Context, repository ports.BootstrapKeyRepository, rawKey string, limitRPM int) error {
+	if repository == nil {
+		return errors.New("bootstrap key storage is unavailable")
+	}
+	rawKey = strings.TrimSpace(rawKey)
+	if rawKey == "" {
+		return repository.DisableBootstrapKey(ctx)
+	}
+	if !strings.HasPrefix(rawKey, "sk-a2a-") || len(rawKey) < 40 {
+		return ErrBootstrapKeyFormat
+	}
+	if limitRPM < 0 || limitRPM > 1_000_000 {
+		return fmt.Errorf("A2A_BOOTSTRAP_RPM is outside the allowed range")
+	}
+	if s.secretBox == nil || s.material == nil {
+		return errors.New("credential encryption is not configured")
+	}
+	encrypted, err := s.secretBox.Encrypt(rawKey)
+	if err != nil {
+		return fmt.Errorf("encrypt bootstrap key: %w", err)
+	}
+	return repository.UpsertBootstrapKey(ctx, s.material.Hash(rawKey), encrypted, rawKey[:14], limitRPM, s.now().Unix())
+}
+
 func (s *Service) Authenticate(ctx context.Context, authorization, xAPIKey string) (ports.APIKey, error) {
 	rawKey, err := parseAPIKey(authorization, xAPIKey)
 	if err != nil {

@@ -52,6 +52,7 @@ const channelLabels: Record<string, string> = {
   doubao: "豆包",
   chatgpt: "ChatGPT",
   wb: "WorkBuddy",
+  grok: "Grok",
 };
 
 const hiddenFlowIds: Record<string, Set<string>> = {
@@ -89,6 +90,14 @@ const flowCopy: Record<string, { title: string; description: string }> = {
     title: "导入访问令牌",
     description: "导入已有的 ChatGPT 访问令牌或账号凭据。",
   },
+  "grok:device-code": {
+    title: "xAI 设备码登录",
+    description: "打开 xAI 授权页登录并确认代码，完成后自动添加或续期 Grok Build 账号。",
+  },
+  "grok:token-import": {
+    title: "导入 Grok 账号",
+    description: "支持 Web SSO token，或直接导入 Grok Build OAuth 账号 JSON 文件。",
+  },
 };
 
 const fieldLabels: Record<string, string> = {
@@ -117,8 +126,8 @@ const fieldDescriptions: Record<string, string> = {
   callback: "完成网页登录后，从浏览器地址栏复制完整的回调地址粘贴到这里。",
   cookie: "从豆包浏览器开发者工具复制完整 Cookie 请求头，内容必须包含 sessionid。",
   cookies: "可粘贴浏览器导出的 Cookie 列表；单个账号直接使用上面的 Cookie 内容。",
-  accounts: "可批量导入多个账号凭据；不需要批量导入时留空即可。",
-  tokens: "每行填写一个访问令牌。",
+  accounts: "可粘贴账号 JSON 数组，或包含 accounts 数组的完整 JSON 文件内容。",
+  tokens: "每行填写一个访问令牌；文本会自动转换为令牌数组。",
 };
 
 const enumLabels: Record<string, Record<string, string>> = {
@@ -206,7 +215,7 @@ function isMultiline(field: ProvisionFieldSchema): boolean {
   return field.format === "textarea" || field.format === "json" || field.type === "object" || field.type === "array";
 }
 
-function parseFieldValue(value: string, field: ProvisionFieldSchema): unknown {
+function parseFieldValue(name: string, value: string, field: ProvisionFieldSchema): unknown {
   if (field.type === "number" || field.type === "integer") {
     if (value.trim() === "") return "";
     const parsed = Number(value);
@@ -215,13 +224,25 @@ function parseFieldValue(value: string, field: ProvisionFieldSchema): unknown {
   if (field.type === "boolean") return value === "true";
   if (field.type === "object" || field.type === "array" || field.format === "json") {
     if (!value.trim()) return field.type === "array" ? [] : {};
-    try { return JSON.parse(value); } catch { return value; }
+    try {
+      const parsed = JSON.parse(value);
+      if (field.type === "array") {
+        if (Array.isArray(parsed)) return parsed;
+        if (isRecord(parsed) && Array.isArray(parsed.accounts)) return parsed.accounts;
+      }
+      return parsed;
+    } catch {
+      return field.type === "array" && name === "tokens" ? splitTokens(value) : value;
+    }
   }
   return value;
 }
 
 function stringifyFieldValue(value: unknown, field: ProvisionFieldSchema): string {
   if (value === undefined || value === null) return "";
+  if (field.type === "array" && Array.isArray(value) && value.every((item) => typeof item === "string")) {
+    return value.join("\n");
+  }
   if (field.type === "object" || field.type === "array" || field.format === "json") {
     return typeof value === "string" ? value : JSON.stringify(value, null, 2);
   }
@@ -234,6 +255,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function splitTokens(value: string): string[] {
   return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function extractGrokAccounts(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.filter(isRecord);
+  if (isRecord(value) && Array.isArray(value.accounts)) return value.accounts.filter(isRecord);
+  return isRecord(value) ? [value] : [];
 }
 
 function tokenFromRecord(value: Record<string, unknown>): string {
@@ -311,6 +338,7 @@ export function AccountOnboardingDialog({
   const [chatGptCodexInput, setChatGptCodexInput] = useState("");
   const [pendingChatGptImport, setPendingChatGptImport] = useState<PendingChatGptImport | null>(null);
   const [chatGptImportBusy, setChatGptImportBusy] = useState(false);
+  const [grokImportFileName, setGrokImportFileName] = useState("");
 
   const selectedChannel = channels.find((item) => item.slug === channel);
   const availableFlows = useMemo(
@@ -350,6 +378,7 @@ export function AccountOnboardingDialog({
     setChatGptCodexInput("");
     setPendingChatGptImport(null);
     setChatGptImportBusy(false);
+    setGrokImportFileName("");
   }, [open]);
 
   useEffect(() => {
@@ -368,6 +397,7 @@ export function AccountOnboardingDialog({
     setChatGptSessionInput("");
     setChatGptCodexInput("");
     setPendingChatGptImport(null);
+    setGrokImportFileName("");
     fetchProvisionSchema(channel, controller.signal)
       .then((next) => setSchema(next))
       .catch((cause: unknown) => {
@@ -456,8 +486,24 @@ export function AccountOnboardingDialog({
   if (!open) return null;
 
   function setField(name: string, field: ProvisionFieldSchema, value: string) {
-    const parsed = parseFieldValue(value, field);
+    const parsed = parseFieldValue(name, value, field);
     setPayload((current) => ({ ...current, [name]: parsed }));
+  }
+
+  async function readGrokAccountFile(file: File | undefined) {
+    if (!file) return;
+    setError("");
+    try {
+      const parsed = JSON.parse(await file.text()) as unknown;
+      const accounts = extractGrokAccounts(parsed);
+      if (accounts.length === 0) throw new Error("JSON 文件中未找到 accounts 账号数组");
+      setPayload((current) => ({ ...current, accounts, tokens: [] }));
+      setGrokImportFileName(`${file.name}（已识别 ${accounts.length} 个账号）`);
+      setMessage("账号 JSON 已载入，请点击“导入账号”完成保存");
+    } catch (cause: unknown) {
+      setGrokImportFileName("");
+      setError(cause instanceof SyntaxError ? "JSON 文件无法解析，请确认内容完整" : cause instanceof Error ? cause.message : "账号 JSON 读取失败");
+    }
   }
 
   function missingRequiredFields(sourcePayload = payload): string[] {
@@ -520,10 +566,11 @@ export function AccountOnboardingDialog({
       setSession(result);
       const importSummary = importFlow && (
         typeof result.added === "number"
+        || typeof result.updated === "number"
         || typeof result.refreshed === "number"
         || typeof result.skipped === "number"
       )
-        ? `新增 ${result.added ?? 0} 个，刷新 ${result.refreshed ?? 0} 个，跳过 ${result.skipped ?? 0} 个`
+        ? `新增 ${result.added ?? 0} 个，更新凭据 ${result.updated ?? result.refreshed ?? 0} 个，跳过 ${result.skipped ?? 0} 个`
         : "";
       setMessage(result.message || importSummary || "流程已开始，请按页面提示继续操作");
       if (result.status === "error" && result.errors?.length) {
@@ -531,6 +578,9 @@ export function AccountOnboardingDialog({
       }
       if (channel === "chatgpt" && selectedFlow.id === "oauth-pkce" && result.authorize_url) {
         window.open(result.authorize_url, "_blank", "noopener,noreferrer");
+      }
+      if (channel === "grok" && selectedFlow.id === "device-code" && result.auth_url) {
+        window.open(result.auth_url, "_blank", "noopener,noreferrer");
       }
       if (result.status === "success" || result.status === "succeeded") {
         onComplete(`${selectedChannel.name} 账号新增成功，账号列表已更新`, channel);
@@ -751,6 +801,32 @@ export function AccountOnboardingDialog({
             </div>}
           </div>}
 
+          {channel === "grok" && activeFlow?.id === "token-import" && !session && (
+            <div className="onboarding-import-tools">
+              <div className="onboarding-import-heading">
+                <div>
+                  <strong>导入 Grok Build 账号文件</strong>
+                  <small>选择包含 accounts 数组的 JSON 文件，系统会自动识别 access_token、refresh_token 和 user_id。</small>
+                </div>
+                <Files size={17} aria-hidden="true" />
+              </div>
+              <label className="onboarding-file-picker onboarding-file-picker-large">
+                <span><Files size={17} />选择 Grok 账号 JSON 文件</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.currentTarget.value = "";
+                    void readGrokAccountFile(file);
+                  }}
+                  disabled={busy}
+                />
+              </label>
+              {grokImportFileName && <div className="onboarding-import-summary"><strong>{grokImportFileName}</strong></div>}
+            </div>
+          )}
+
           {activeFlow && Object.entries(activeFlow.schema.properties ?? {}).map(([name, field]) => {
             if (name === "account_id") return null;
             if (isChatGptTokenImport) return null;
@@ -766,6 +842,7 @@ export function AccountOnboardingDialog({
 
           {session && (qrValue || qrImage) && <div className="onboarding-authorize-box">
             {authUrl && <a href={authUrl} target="_blank" rel="noreferrer" className="onboarding-url">{authUrl}</a>}
+            {typeof session.user_code === "string" && session.user_code && <span className="onboarding-session-status">确认代码：<strong>{session.user_code}</strong></span>}
             {qrImage ? <img className="onboarding-qr-image" src={qrImage} alt="账号授权二维码" /> : <QRCodeSVG value={qrValue} size={210} level="M" />}
             <span className="onboarding-session-status">{sessionStatusText(session.status)}</span>
           </div>}

@@ -21,6 +21,9 @@ func New(adapters map[string]ports.Adapter) *Registry {
 		"chatgpt": {
 			Manifest: ports.AdapterManifest{Slug: "chatgpt", Name: "ChatGPT", Version: "0.1.0", Protocols: []string{"openai", "anthropic", "responses"}, Capabilities: []string{"chat"}},
 		},
+		"grok": {
+			Manifest: ports.AdapterManifest{Slug: "grok", Name: "Grok", Version: "0.1.0", Protocols: []string{"openai", "anthropic", "responses"}, Capabilities: []string{"chat"}},
+		},
 	}
 	for slug, adapter := range adapters {
 		item, ok := items[slug]

@@ -43,7 +43,7 @@ func TestRemoveWatermarkEndpointReturnsPngResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, err := base64.StdEncoding.DecodeString(response.DataBase64)
-	if err != nil || response.MIMEType != "image/png" || response.Width != 512 || response.Height != 512 || response.Method != "go_region_repair" {
+	if err != nil || response.MIMEType != "image/png" || response.Width != 512 || response.Height != 512 || response.Method != "telea_inpaint" {
 		t.Fatalf("response metadata=%#v decode_error=%v", response, err)
 	}
 	if _, format, err := image.Decode(bytes.NewReader(data)); err != nil || format != "png" {

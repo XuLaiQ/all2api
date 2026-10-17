@@ -43,6 +43,11 @@ type Config struct {
 	ChatGPTPlatformBase string
 	ChatGPTWebBase      string
 	ChatGPTProxy        string
+	GrokPlatformBase    string
+	GrokBuildBase       string
+	// GrokProxy is the outbound proxy for grok.com / x.ai traffic. Empty uses
+	// the process proxy environment (HTTPS_PROXY).
+	GrokProxy string
 
 	DoubaoProfileRoot                  string
 	DoubaoBrowserEnabled               bool
@@ -59,26 +64,19 @@ type Config struct {
 	DoubaoBrowserAuthenticatedSelector string
 	DoubaoBrowserWorkerBase            string
 	DoubaoBrowserWorkerToken           string
+}
 
-	// These fields are migration-only compatibility inputs. They are loaded so
-	// the config mapping is complete, but no Go runtime component may consume
-	// them as an upstream or source-project dependency.
-	LegacyBridgeEnabled       bool
-	LegacyWBUpstreamBase      string
-	LegacyWBAdminToken        string
-	LegacyWBDataKey           string
-	LegacyDoubaoUpstreamBase  string
-	LegacyDoubaoAPIKey        string
-	LegacyChatGPTUpstreamBase string
-	LegacyChatGPTAuthKey      string
-	WBUpstreamBase            string
-	WBAdminToken              string
-	WBDataKey                 string
-	WBTraceSecret             string
-	DoubaoUpstreamBase        string
-	DoubaoAPIKey              string
-	ChatGPTUpstreamBase       string
-	ChatGPTAuthKey            string
+// removedVariables were consumed only by the deleted Python legacy bridge.
+// Production refuses to start if any is still set so a stale deployment
+// config is noticed instead of silently ignored.
+var removedVariables = []string{
+	"A2A_LEGACY_BRIDGE_ENABLED",
+	"A2A_LEGACY_WB_UPSTREAM_BASE", "A2A_LEGACY_WB_ADMIN_TOKEN", "A2A_LEGACY_WB_DATA_KEY",
+	"A2A_LEGACY_DOUBAO_UPSTREAM_BASE", "A2A_LEGACY_DOUBAO_API_KEY",
+	"A2A_LEGACY_CHATGPT_UPSTREAM_BASE", "A2A_LEGACY_CHATGPT_AUTH_KEY",
+	"A2A_WB_UPSTREAM_BASE", "A2A_WB_ADMIN_TOKEN", "A2A_WB_DATA_KEY", "A2A_WB_TRACE_SECRET",
+	"A2A_DOUBAO_UPSTREAM_BASE", "A2A_DOUBAO_API_KEY",
+	"A2A_CHATGPT_UPSTREAM_BASE", "A2A_CHATGPT_AUTH_KEY",
 }
 
 func Load() (Config, error) {
@@ -101,6 +99,8 @@ func Load() (Config, error) {
 		DoubaoPlatformBase:                 "https://www.doubao.com",
 		ChatGPTPlatformBase:                "https://auth.openai.com",
 		ChatGPTWebBase:                     "https://chatgpt.com",
+		GrokPlatformBase:                   "https://grok.com",
+		GrokBuildBase:                      "https://cli-chat-proxy.grok.com/v1",
 		SecureCookie:                       "auto",
 		TrustProxy:                         true,
 		TrustedProxies:                     []string{"127.0.0.1", "::1"},
@@ -165,9 +165,6 @@ func Load() (Config, error) {
 	if cfg.TrustProxy, err = boolEnv("A2A_TRUST_PROXY", cfg.TrustProxy); err != nil {
 		return Config{}, err
 	}
-	if cfg.LegacyBridgeEnabled, err = boolEnv("A2A_LEGACY_BRIDGE_ENABLED", cfg.LegacyBridgeEnabled); err != nil {
-		return Config{}, err
-	}
 	if cfg.DoubaoBrowserEnabled, err = boolEnv("A2A_DOUBAO_BROWSER_ENABLED", cfg.DoubaoBrowserEnabled); err != nil {
 		return Config{}, err
 	}
@@ -202,6 +199,9 @@ func Load() (Config, error) {
 		"A2A_CHATGPT_PLATFORM_BASE":                 &cfg.ChatGPTPlatformBase,
 		"A2A_CHATGPT_WEB_BASE":                      &cfg.ChatGPTWebBase,
 		"A2A_CHATGPT_PROXY":                         &cfg.ChatGPTProxy,
+		"A2A_GROK_PLATFORM_BASE":                    &cfg.GrokPlatformBase,
+		"A2A_GROK_BUILD_BASE":                       &cfg.GrokBuildBase,
+		"A2A_GROK_PROXY":                            &cfg.GrokProxy,
 		"A2A_SECURE_COOKIE":                         &cfg.SecureCookie,
 		"A2A_DOUBAO_PROFILE_ROOT":                   &cfg.DoubaoProfileRoot,
 		"A2A_DOUBAO_BROWSER_EXECUTABLE":             &cfg.DoubaoBrowserExecutable,
@@ -211,21 +211,6 @@ func Load() (Config, error) {
 		"A2A_DOUBAO_BROWSER_AUTHENTICATED_SELECTOR": &cfg.DoubaoBrowserAuthenticatedSelector,
 		"A2A_DOUBAO_BROWSER_WORKER_BASE":            &cfg.DoubaoBrowserWorkerBase,
 		"A2A_DOUBAO_BROWSER_WORKER_TOKEN":           &cfg.DoubaoBrowserWorkerToken,
-		"A2A_LEGACY_WB_UPSTREAM_BASE":               &cfg.LegacyWBUpstreamBase,
-		"A2A_LEGACY_WB_ADMIN_TOKEN":                 &cfg.LegacyWBAdminToken,
-		"A2A_LEGACY_WB_DATA_KEY":                    &cfg.LegacyWBDataKey,
-		"A2A_LEGACY_DOUBAO_UPSTREAM_BASE":           &cfg.LegacyDoubaoUpstreamBase,
-		"A2A_LEGACY_DOUBAO_API_KEY":                 &cfg.LegacyDoubaoAPIKey,
-		"A2A_LEGACY_CHATGPT_UPSTREAM_BASE":          &cfg.LegacyChatGPTUpstreamBase,
-		"A2A_LEGACY_CHATGPT_AUTH_KEY":               &cfg.LegacyChatGPTAuthKey,
-		"A2A_WB_UPSTREAM_BASE":                      &cfg.WBUpstreamBase,
-		"A2A_WB_ADMIN_TOKEN":                        &cfg.WBAdminToken,
-		"A2A_WB_DATA_KEY":                           &cfg.WBDataKey,
-		"A2A_WB_TRACE_SECRET":                       &cfg.WBTraceSecret,
-		"A2A_DOUBAO_UPSTREAM_BASE":                  &cfg.DoubaoUpstreamBase,
-		"A2A_DOUBAO_API_KEY":                        &cfg.DoubaoAPIKey,
-		"A2A_CHATGPT_UPSTREAM_BASE":                 &cfg.ChatGPTUpstreamBase,
-		"A2A_CHATGPT_AUTH_KEY":                      &cfg.ChatGPTAuthKey,
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			*target = value
@@ -240,6 +225,11 @@ func Load() (Config, error) {
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Environment), "production") {
+		if stale := setRemovedVariables(); len(stale) > 0 {
+			return Config{}, fmt.Errorf("remove legacy bridge variables from the production environment: %s", strings.Join(stale, ", "))
+		}
 	}
 	return cfg, nil
 }
@@ -286,9 +276,6 @@ func (c Config) Validate() error {
 		if c.AllowWeakAdminPassword {
 			return fmt.Errorf("A2A_ALLOW_WEAK_ADMIN_PASSWORD must be false in production")
 		}
-		if c.LegacyBridgeEnabled || hasLegacyConfiguration(c) {
-			return fmt.Errorf("legacy bridge and legacy upstream configuration must be disabled in production")
-		}
 	}
 	if c.DoubaoBrowserEnabled && strings.TrimSpace(c.DoubaoBrowserWorkerToken) == "" {
 		return fmt.Errorf("A2A_DOUBAO_BROWSER_WORKER_TOKEN is required when browser worker is enabled")
@@ -296,20 +283,16 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func hasLegacyConfiguration(c Config) bool {
-	values := []string{
-		c.LegacyWBUpstreamBase, c.LegacyWBAdminToken, c.LegacyWBDataKey,
-		c.LegacyDoubaoUpstreamBase, c.LegacyDoubaoAPIKey,
-		c.LegacyChatGPTUpstreamBase, c.LegacyChatGPTAuthKey,
-		c.WBUpstreamBase, c.WBAdminToken, c.WBDataKey, c.WBTraceSecret,
-		c.DoubaoUpstreamBase, c.DoubaoAPIKey, c.ChatGPTUpstreamBase, c.ChatGPTAuthKey,
-	}
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return true
+// setRemovedVariables lists removed legacy-bridge variables that still have a
+// non-empty value in the environment.
+func setRemovedVariables() []string {
+	var found []string
+	for _, name := range removedVariables {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			found = append(found, name)
 		}
 	}
-	return false
+	return found
 }
 
 func stringEnv(name, fallback string) (string, error) {

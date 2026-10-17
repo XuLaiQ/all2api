@@ -44,13 +44,41 @@ func TestStoreGenerationDownloadsAndTransformsProviderURL(t *testing.T) {
 	if asset.SourceURL == nil || *asset.SourceURL != server.URL+"/generated.png" {
 		t.Fatalf("source URL = %#v", asset.SourceURL)
 	}
-	if asset.Metadata["watermark_free"] != true || asset.Metadata["watermark_method"] != "go_region_repair" {
+	if asset.Metadata["watermark_free"] != true || asset.Metadata["watermark_method"] != "telea_inpaint" {
 		t.Fatalf("watermark metadata = %#v", asset.Metadata)
 	}
 	if path, ok := mediaStore.MediaContentPath(asset); !ok {
 		t.Fatal("generated asset was not stored")
 	} else if _, err := os.Stat(path); err != nil {
 		t.Fatalf("generated asset path = %v", err)
+	}
+}
+
+func TestStoreGenerationSkipsInpaintForUpstreamRawImage(t *testing.T) {
+	data := pngFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "image/png")
+		_, _ = writer.Write(data)
+	}))
+	defer server.Close()
+	store, err := persistence.Open(context.Background(), t.TempDir()+"/raw.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	transformed := false
+	service := mediaapp.NewServiceWithTransformer(mediainfra.NewStore(store.SQLDB(), store.Path()), func(value []byte) ([]byte, error) {
+		transformed = true
+		return value, nil
+	})
+	assets, err := service.StoreGeneration(context.Background(), map[string]any{
+		"data": []map[string]any{{"url": server.URL + "/raw.png", "watermark_free": true, "watermark_method": "upstream_raw"}},
+	}, mediaapp.GenerationStoreOptions{Actor: "key:7", Channel: "doubao", Model: "model-a", Capability: "image"})
+	if err != nil || len(assets) != 1 {
+		t.Fatalf("StoreGeneration() = %#v/%v", assets, err)
+	}
+	if transformed || assets[0].Metadata["watermark_method"] != "upstream_raw" {
+		t.Fatalf("transformed=%v metadata=%#v", transformed, assets[0].Metadata)
 	}
 }
 

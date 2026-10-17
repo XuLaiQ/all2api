@@ -12,7 +12,9 @@ type AccountImport struct {
 }
 
 type AccountImportResult struct {
-	Added    int             `json:"added"`
+	Added int `json:"added"`
+	// Updated counts existing accounts whose credentials were replaced.
+	Updated  int             `json:"updated"`
 	Skipped  int             `json:"skipped"`
 	Errors   []string        `json:"errors"`
 	Accounts []AccountRecord `json:"accounts"`

@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$DatabasePath = ".\services\api\data\all2api.db",
+    [string]$DatabasePath = ".\data\all2api.db",
     [string]$EvidencePath = "",
     [string]$ChatGPTProxy = ""
 )
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Net.Http
-$workspace = Split-Path -Parent $PSScriptRoot
+$workspace = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $sourceDatabase = [IO.Path]::GetFullPath((Join-Path $workspace $DatabasePath))
 if (-not (Test-Path -LiteralPath $sourceDatabase -PathType Leaf)) {
     throw "Probe database does not exist: $sourceDatabase"

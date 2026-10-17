@@ -12,6 +12,7 @@ type Adapter struct {
 	Slug      string
 	Catalogue []ports.ModelDescriptor
 	Reply     string
+	Reasoning string
 	mu        sync.Mutex
 	ChatCalls int
 }
@@ -29,6 +30,7 @@ func (a *Adapter) Chat(_ context.Context, input ports.ChatInput) (ports.ChatResu
 	return ports.ChatResult{
 		ID:           "chatcmpl_fake",
 		Text:         a.Reply,
+		Reasoning:    a.Reasoning,
 		FinishReason: "stop",
 		CreatedAt:    time.Now().Unix(),
 		Usage:        &ports.Usage{PromptTokens: len(input.Messages), CompletionTokens: 1},

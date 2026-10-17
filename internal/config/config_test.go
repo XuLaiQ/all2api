@@ -8,6 +8,7 @@ func TestLoadReadsCoreEnvironmentAndValidatesRetention(t *testing.T) {
 	t.Setenv("A2A_LOG_RETENTION_DAYS", "14")
 	t.Setenv("A2A_USAGE_RETENTION_DAYS", "30")
 	t.Setenv("A2A_CORS_ORIGINS", "https://console.example, http://localhost:5555")
+	t.Setenv("A2A_GROK_PLATFORM_BASE", "https://grok.example")
 
 	cfg, err := Load()
 	if err != nil {
@@ -15,6 +16,9 @@ func TestLoadReadsCoreEnvironmentAndValidatesRetention(t *testing.T) {
 	}
 	if cfg.Port != 8999 || cfg.DBPath != "./tmp/test.db" {
 		t.Fatalf("unexpected core config: %+v", cfg)
+	}
+	if cfg.GrokPlatformBase != "https://grok.example" {
+		t.Fatalf("unexpected Grok platform base: %q", cfg.GrokPlatformBase)
 	}
 	if len(cfg.CORSOrigins) != 2 || cfg.CORSOrigins[0] != "https://console.example" {
 		t.Fatalf("unexpected CORS origins: %#v", cfg.CORSOrigins)
@@ -38,14 +42,28 @@ func TestProductionConfigRejectsInsecureDefaults(t *testing.T) {
 	}
 }
 
-func TestProductionConfigAcceptsStrongSecretsAndRejectsLegacyRuntime(t *testing.T) {
+func TestProductionConfigAcceptsStrongSecrets(t *testing.T) {
 	cfg := Config{Environment: "production", Host: "127.0.0.1", Port: 8888, DBPath: "test.db", SessionSecret: "session-secret-012345678901234567890123", CredentialMasterKey: "credential-master-key-012345678901234567890", AdminUsername: "admin", AdminPassword: "correct horse battery staple", LogRetentionDays: 30, UsageRetentionDays: 30, ProvisionSessionTTL: 1, SessionDays: 1, SessionIdleHours: 1, LoginMaxFails: 1, BootstrapRPM: 1, DoubaoBrowserMaxContexts: 1, DoubaoBrowserMaxPagesPerContext: 1, DoubaoBrowserOperationTimeout: 1, DoubaoBrowserLaunchTimeout: 1, DoubaoBrowserSessionTTL: 1}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() rejected strong production config: %v", err)
 	}
-	cfg.LegacyBridgeEnabled = true
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() accepted legacy bridge in production")
+}
+
+func TestProductionLoadRejectsRemovedLegacyVariables(t *testing.T) {
+	t.Setenv("A2A_ENV", "production")
+	t.Setenv("A2A_SESSION_SECRET", "session-secret-012345678901234567890123")
+	t.Setenv("A2A_CREDENTIAL_MASTER_KEY", "credential-master-key-012345678901234567890")
+	t.Setenv("A2A_ADMIN_PASSWORD", "correct horse battery staple")
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() rejected clean production environment: %v", err)
+	}
+	t.Setenv("A2A_WB_UPSTREAM_BASE", "http://127.0.0.1:9000")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted a removed legacy bridge variable in production")
+	}
+	t.Setenv("A2A_ENV", "development")
+	if _, err := Load(); err != nil {
+		t.Fatalf("development should ignore removed variables: %v", err)
 	}
 }
 

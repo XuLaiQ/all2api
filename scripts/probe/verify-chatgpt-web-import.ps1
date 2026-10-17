@@ -2,12 +2,12 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$AccountFile,
-    [string]$DatabasePath = ".\services\api\data\all2api.db",
+    [string]$DatabasePath = ".\data\all2api.db",
     [string]$ChatGPTProxy = ""
 )
 
 $ErrorActionPreference = "Stop"
-$workspace = Split-Path -Parent $PSScriptRoot
+$workspace = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $sourceAccountPath = [IO.Path]::GetFullPath($AccountFile)
 $sourceDatabasePath = [IO.Path]::GetFullPath((Join-Path $workspace $DatabasePath))
 if (-not (Test-Path -LiteralPath $sourceAccountPath -PathType Leaf)) { throw "account JSON does not exist" }
