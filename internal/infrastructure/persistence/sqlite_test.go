@@ -3,6 +3,9 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -138,6 +141,46 @@ func TestRecordRequestAtomicallyUpdatesLogsAndDailyUsage(t *testing.T) {
 	}
 }
 
+func TestClearPlaygroundConversationsRemovesOnlyActorData(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir()+"/playground-clear.db")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	now := time.Now().Unix()
+	for _, item := range []ports.PlaygroundConversationSummary{
+		{ID: "conv_admin", Actor: "admin", Title: "Admin", Channel: "wb", Model: "m", CreatedAt: now, UpdatedAt: now},
+		{ID: "conv_other", Actor: "other", Title: "Other", Channel: "wb", Model: "m", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.CreatePlaygroundConversation(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.AddPlaygroundMessage(ctx, item.ID, ports.PlaygroundMessage{ID: item.ID + "_msg", Role: "user", Content: "hello", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adminConversation, otherConversation := "conv_admin", "conv_other"
+	for _, run := range []ports.PlaygroundRun{
+		{ID: "run_admin", ConversationID: &adminConversation, Actor: "admin", Channel: "wb", Model: "m", Status: "success", CreatedAt: now},
+		{ID: "run_other", ConversationID: &otherConversation, Actor: "other", Channel: "wb", Model: "m", Status: "success", CreatedAt: now},
+	} {
+		if err := store.CreatePlaygroundRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := store.ClearPlaygroundConversations(ctx, "admin", ports.AuditEvent{Actor: "admin", Action: "clear_playground_conversations"})
+	if err != nil || result.ConversationsDeleted != 1 || result.RequestRecordsDeleted != 1 {
+		t.Fatalf("ClearPlaygroundConversations() = %#v/%v", result, err)
+	}
+	if _, err := store.GetPlaygroundConversation(ctx, "admin", "conv_admin"); !errors.Is(err, ports.ErrKeyNotFound) {
+		t.Fatalf("admin conversation still exists: %v", err)
+	}
+	if _, err := store.GetPlaygroundConversation(ctx, "other", "conv_other"); err != nil {
+		t.Fatalf("other conversation removed: %v", err)
+	}
+}
+
 func TestPlaygroundHistoryPersistsAndDeletesWithAudit(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, t.TempDir()+"/playground.db")
@@ -150,15 +193,38 @@ func TestPlaygroundHistoryPersistsAndDeletesWithAudit(t *testing.T) {
 	if err := store.CreatePlaygroundConversation(ctx, summary); err != nil {
 		t.Fatalf("CreatePlaygroundConversation() error = %v", err)
 	}
-	if err := store.AddPlaygroundMessage(ctx, "conv_1", ports.PlaygroundMessage{ID: "msg_1", Role: "user", Content: "hello", Model: "model-a", CreatedAt: time.Now().UnixNano()}); err != nil {
-		t.Fatalf("AddPlaygroundMessage() error = %v", err)
+	messages := []ports.PlaygroundMessage{
+		{ID: "msg_2", Role: "user", Content: "hello", Model: "model-a", CreatedAt: 100},
+		{ID: "msg_1", Role: "assistant", Content: "hi", Model: "model-a", RawResponse: json.RawMessage(`{"answer":"ok","tokens":3}`), CreatedAt: 100},
+		{ID: "msg_3", Role: "user", Content: "follow-up", Model: "model-a", CreatedAt: 101},
+	}
+	for _, message := range messages {
+		if err := store.AddPlaygroundMessage(ctx, "conv_1", message); err != nil {
+			t.Fatalf("AddPlaygroundMessage(%s) error = %v", message.ID, err)
+		}
 	}
 	conversation, err := store.GetPlaygroundConversation(ctx, "admin", "conv_1")
-	if err != nil || conversation.MessageCount != 1 {
-		t.Fatalf("GetPlaygroundConversation() = %#v/%v", conversation, err)
+	if err != nil {
+		t.Fatalf("GetPlaygroundConversation() error = %v", err)
+	}
+	if conversation.MessageCount != len(messages) || len(conversation.Messages) != conversation.MessageCount {
+		t.Fatalf("message count mismatch: summary=%d messages=%d", conversation.MessageCount, len(conversation.Messages))
+	}
+	if got := []string{conversation.Messages[0].ID, conversation.Messages[1].ID, conversation.Messages[2].ID}; !reflect.DeepEqual(got, []string{"msg_1", "msg_2", "msg_3"}) {
+		t.Fatalf("message order = %v, want [msg_1 msg_2 msg_3]", got)
+	}
+	if conversation.Messages[1].RawResponse != nil || conversation.Messages[2].RawResponse != nil {
+		t.Fatalf("empty raw response should remain nil: %#v %#v", conversation.Messages[1].RawResponse, conversation.Messages[2].RawResponse)
+	}
+	raw, ok := conversation.Messages[0].RawResponse.(map[string]any)
+	if !ok || raw["answer"] != "ok" || raw["tokens"] != float64(3) {
+		t.Fatalf("raw response = %#v, want decoded object", conversation.Messages[0].RawResponse)
+	}
+	if _, err := store.GetPlaygroundConversation(ctx, "other-actor", "conv_1"); !errors.Is(err, ports.ErrKeyNotFound) {
+		t.Fatalf("actor-isolated lookup error = %v, want ErrKeyNotFound", err)
 	}
 	conversationID := "conv_1"
-	if err := store.CreatePlaygroundRun(ctx, ports.PlaygroundRun{ID: "run_1", ConversationID: &conversationID, Actor: "admin", Channel: "wb", Model: "model-a", Status: "running", MessageCount: 1, CreatedAt: now}); err != nil {
+	if err := store.CreatePlaygroundRun(ctx, ports.PlaygroundRun{ID: "run_1", ConversationID: &conversationID, Actor: "admin", Channel: "wb", Model: "model-a", Status: "running", MessageCount: len(messages), CreatedAt: now}); err != nil {
 		t.Fatalf("CreatePlaygroundRun() error = %v", err)
 	}
 	if err := store.FinishPlaygroundRun(ctx, "run_1", "success", 200, "", time.Now()); err != nil {

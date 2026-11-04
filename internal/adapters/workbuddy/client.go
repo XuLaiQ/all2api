@@ -257,11 +257,13 @@ func (c *Client) ChatStream(ctx context.Context, input ports.ChatInput, accountI
 	if token == "" {
 		return ErrCredentialUnavailable
 	}
+	global := isGlobalAccount(credentials)
 	messages := append([]ports.ChatMessage(nil), input.Messages...)
-	if strings.EqualFold(credentials["realm"], "global") || strings.Contains(strings.ToLower(credentials["domain"]), "workbuddy.ai") {
-		if len(messages) > 0 && messages[0].Role != "system" {
-			messages = append([]ports.ChatMessage{{Role: "system", Content: "You are a helpful assistant."}}, messages...)
-		}
+	// Global realm upstream rejects a conversation whose first message is not a
+	// system prompt (upstream code 11-128 "first message is not system prompt"),
+	// so inject a fallback system turn exactly like the reference gateway.
+	if global && len(messages) > 0 && messages[0].Role != "system" {
+		messages = append([]ports.ChatMessage{{Role: "system", Content: "You are a helpful assistant."}}, messages...)
 	}
 	payload := map[string]any{"model": input.Model, "messages": messages, "stream": true, "stream_options": map[string]any{"include_usage": true}}
 	if input.MaxTokens != nil {
@@ -277,24 +279,34 @@ func (c *Client) ChatStream(ctx context.Context, input ports.ChatInput, accountI
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURLFor(credentials)+"/v2/chat/completions", bytes.NewReader(encoded))
-	if err != nil {
-		return err
+	// Global accounts must use /console/chat/completions (the /v2 path answers
+	// 11-128 "request illegal"); CN keeps /v2. On 404/405 for /console we fall
+	// back to /v2 so an upstream path split never takes the channel down.
+	paths := []string{"/v2/chat/completions"}
+	if global {
+		paths = []string{"/console/chat/completions", "/v2/chat/completions"}
 	}
-	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("Content-Type", "application/json")
-	for key, value := range c.runtimeHeaders(credentials, token) {
-		request.Header.Set(key, value)
+	var response *http.Response
+	for index, path := range paths {
+		response, err = c.doChat(ctx, credentials, token, path, encoded)
+		if err != nil {
+			return err
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+			response.Body.Close()
+			last := index == len(paths)-1
+			if !last && (response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed) {
+				continue
+			}
+			return newHTTPError(response.StatusCode, "stream", body)
+		}
+		break
 	}
-	response, err := c.HTTPClient.Do(request)
-	if err != nil {
-		return ports.NewTransportError("stream", err)
+	if response == nil {
+		return ErrProtocol
 	}
 	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		return newHTTPError(response.StatusCode, "stream", body)
-	}
 	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 		var payload struct {
@@ -446,8 +458,30 @@ func sanitizeProviderCode(value string) string {
 	return value
 }
 
+// doChat builds and sends one streaming chat request for the given path.
+func (c *Client) doChat(ctx context.Context, credentials map[string]string, token, path string, body []byte) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURLFor(credentials)+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Content-Type", "application/json")
+	for key, value := range c.runtimeHeaders(credentials, token) {
+		request.Header.Set(key, value)
+	}
+	response, err := c.HTTPClient.Do(request)
+	if err != nil {
+		return nil, ports.NewTransportError("stream", err)
+	}
+	return response, nil
+}
+
+func isGlobalAccount(credentials map[string]string) bool {
+	return strings.EqualFold(credentials["realm"], "global") || strings.Contains(strings.ToLower(credentials["domain"]), "workbuddy.ai")
+}
+
 func (c *Client) baseURLFor(credentials map[string]string) string {
-	if strings.EqualFold(credentials["realm"], "global") || strings.Contains(strings.ToLower(credentials["domain"]), "workbuddy.ai") {
+	if isGlobalAccount(credentials) {
 		if c.GlobalBaseURL != "" {
 			return c.GlobalBaseURL
 		}
@@ -459,7 +493,7 @@ func (c *Client) runtimeHeaders(credentials map[string]string, token string) map
 	if credentials == nil {
 		credentials = map[string]string{}
 	}
-	global := strings.EqualFold(credentials["realm"], "global") || strings.Contains(strings.ToLower(credentials["domain"]), "workbuddy.ai")
+	global := isGlobalAccount(credentials)
 	origin := "https://copilot.tencent.com"
 	language := "zh-CN"
 	if global {

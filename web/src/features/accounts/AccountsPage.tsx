@@ -4,6 +4,7 @@ import { Check, Minus, Trash2 } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -94,6 +95,7 @@ function channelDisplayName(slug: string, channels: ChannelOverview[]): string {
 export function AccountsPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canManageAccounts = role === "admin";
+  const toast = useToast();
   const [rows, setRows] = useState<AccountRecord[]>([]);
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [channelsLoading, setChannelsLoading] = useState(true);
@@ -106,8 +108,6 @@ export function AccountsPage() {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [noticeMessage, setNoticeMessage] = useState("");
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [accountActionId, setAccountActionId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -123,20 +123,21 @@ export function AccountsPage() {
       .then(setChannels)
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
+          const message = cause instanceof ApiClientError ? cause.message : "读取渠道配置失败";
           setChannels([]);
-          setChannelsError(cause instanceof ApiClientError ? cause.message : "读取渠道配置失败");
+          setChannelsError(message);
+          toast.error(`${message}。新增账号和渠道筛选暂时不可用。`);
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) setChannelsLoading(false);
       });
     return () => controller.abort();
-  }, [channelsRetry]);
+  }, [channelsRetry, toast]);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     setSelectedIds([]);
     fetchAccounts(page, filters, controller.signal, pageSize)
       .then((result) => {
@@ -146,14 +147,14 @@ export function AccountsPage() {
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
-          setError(cause instanceof ApiClientError ? cause.message : "读取本地账号快照失败");
+          toast.error(cause instanceof ApiClientError ? cause.message : "读取本地账号快照失败");
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, pageSize, filters, retry]);
+  }, [page, pageSize, filters, retry, toast]);
 
   function applyDraftFilters(nextDraft: FilterDraft) {
     const next: AccountFilters = {};
@@ -178,21 +179,20 @@ export function AccountsPage() {
 
   const handleOnboardingComplete = useCallback((message: string, channel?: string) => {
     setOnboardingOpen(false);
-    setNoticeMessage(message);
+    toast.success(message);
     setPage(1);
     setRetry((value) => value + 1);
     if (channel) void refreshModels(channel).catch(() => undefined);
-  }, []);
+  }, [toast]);
 
   async function handleAccountEnabled(account: AccountRecord) {
     setAccountActionId(account.id);
-    setError("");
     try {
       await setAccountEnabled(account.id, !account.enabled);
-      setNoticeMessage(account.enabled ? "账号已停用" : "账号已启用");
+      toast.success(account.enabled ? "账号已停用" : "账号已启用");
       setRetry((value) => value + 1);
     } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : "更新账号状态失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "更新账号状态失败");
     } finally {
       setAccountActionId(null);
     }
@@ -209,13 +209,12 @@ export function AccountsPage() {
 
   async function handleAccountRefresh(account: AccountRecord) {
     setAccountActionId(account.id);
-    setError("");
     try {
       await refreshAccount(account.id);
-      setNoticeMessage("账号凭据已刷新");
+      toast.success("账号凭据已刷新");
       setRetry((value) => value + 1);
     } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : "刷新账号凭据失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "刷新账号凭据失败");
     } finally {
       setAccountActionId(null);
     }
@@ -246,22 +245,21 @@ export function AccountsPage() {
     if (!pendingDelete) return;
     const action = pendingDelete;
     setPendingDelete(null);
-    setError("");
 
     if (action.kind === "batch") {
       setBatchBusy(true);
       try {
         const result = await batchDeleteAccounts(action.accountIds);
         const failedCount = result.failed.length;
-        setNoticeMessage(
-          failedCount
-            ? `已删除 ${result.deleted.length} 个账号，${failedCount} 个删除失败`
-            : `已删除 ${result.deleted.length} 个账号及其凭据`,
-        );
+        if (failedCount) {
+          toast.warning(`已删除 ${result.deleted.length} 个账号，${failedCount} 个删除失败`);
+        } else {
+          toast.success(`已删除 ${result.deleted.length} 个账号及其凭据`);
+        }
         setSelectedIds([]);
         setRetry((value) => value + 1);
       } catch (cause: unknown) {
-        setError(cause instanceof ApiClientError ? cause.message : "批量删除账号失败");
+        toast.error(cause instanceof ApiClientError ? cause.message : "批量删除账号失败");
       } finally {
         setBatchBusy(false);
       }
@@ -271,10 +269,10 @@ export function AccountsPage() {
     setAccountActionId(action.accountId);
     try {
       await deleteAccount(action.accountId);
-      setNoticeMessage("账号及其凭据已删除");
+      toast.success("账号及其凭据已删除");
       setRetry((value) => value + 1);
     } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : "删除账号失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "删除账号失败");
     } finally {
       setAccountActionId(null);
     }
@@ -304,19 +302,6 @@ export function AccountsPage() {
         )}
       </div>
 
-      {error && (
-        <div className="notice notice-error" role="alert">
-          <span>{error}</span>
-          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
-        </div>
-      )}
-      {channelsError && (
-        <div className="notice notice-error" role="alert">
-          <span>{channelsError}。新增账号和渠道筛选暂时不可用。</span>
-          <Button variant="secondary" size="sm" onClick={() => setChannelsRetry((value) => value + 1)}>重试</Button>
-        </div>
-      )}
-      {noticeMessage && <div className="notice notice-info" role="status">{noticeMessage}</div>}
       {unconfiguredChannels.length > 0 && (
         <div className="notice notice-warning account-configuration-notice" role="status">
           <span>

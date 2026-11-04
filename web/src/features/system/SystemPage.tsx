@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
@@ -43,6 +44,7 @@ function stateLabel(status: string): { label: string; tone: string } {
 
 export function SystemPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
+  const toast = useToast();
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [storage, setStorage] = useState<StorageHealth | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
@@ -52,17 +54,13 @@ export function SystemPage() {
     usage_retention_days: 365,
   });
   const [settingsSaving, setSettingsSaving] = useState(false);
-  const [settingsMessage, setSettingsMessage] = useState("");
-  const [settingsError, setSettingsError] = useState("");
   const [days, setDays] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     Promise.all([
       fetchSystemInfo(controller.signal),
       fetchStorageHealth(controller.signal),
@@ -78,28 +76,26 @@ export function SystemPage() {
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
-          setError(cause instanceof ApiClientError ? cause.message : "读取系统状态失败");
+          toast.error(cause instanceof ApiClientError ? cause.message : "读取系统状态失败");
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [days, retry]);
+  }, [days, retry, toast]);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (role !== "admin") return;
     setSettingsSaving(true);
-    setSettingsMessage("");
-    setSettingsError("");
     try {
       const nextSettings = await updateAdminSettings(settingsDraft);
       setSettings(nextSettings);
       setSettingsDraft(nextSettings.values);
-      setSettingsMessage("设置已保存");
+      toast.success("设置已保存");
     } catch (cause: unknown) {
-      setSettingsError(cause instanceof ApiClientError ? cause.message : "保存设置失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "保存设置失败");
     } finally {
       setSettingsSaving(false);
     }
@@ -126,7 +122,6 @@ export function SystemPage() {
         </div>
       </div>
 
-      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button></div>}
       {loading ? (
         <div className="table-state" aria-live="polite">正在读取系统状态…</div>
       ) : (
@@ -173,8 +168,6 @@ export function SystemPage() {
 
           <section className="data-section surface-panel" aria-labelledby="system-settings-title">
             <div className="section-heading"><div><h2 id="system-settings-title">保留策略</h2><p>控制本地请求日志和用量聚合的保留周期</p></div></div>
-            {settingsError && <div className="notice notice-error" role="alert">{settingsError}</div>}
-            {settingsMessage && <div className="notice notice-info" role="status">{settingsMessage}</div>}
             <form className="system-settings-form" onSubmit={(event) => void saveSettings(event)}>
               <label>
                 <span>请求日志保留天数</span>

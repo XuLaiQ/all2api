@@ -35,10 +35,51 @@ func (retryableRouteFixtureError) Error() string   { return "upstream fixture fa
 func (retryableRouteFixtureError) StatusCode() int { return 502 }
 func (retryableRouteFixtureError) Kind() string    { return "upstream_unavailable" }
 
+type credentialRejectedFixtureError struct{}
+
+func (credentialRejectedFixtureError) Error() string   { return "credential rejected" }
+func (credentialRejectedFixtureError) StatusCode() int { return 401 }
+func (credentialRejectedFixtureError) Kind() string    { return "credential_rejected" }
+
+type accountRetryAdapter struct {
+	attempts []string
+}
+
+func (a *accountRetryAdapter) Channel() string { return "chatgpt" }
+func (a *accountRetryAdapter) Models(context.Context) ([]ports.ModelDescriptor, error) {
+	return []ports.ModelDescriptor{{UpstreamID: "model-chatgpt", Capabilities: []string{"chat"}}}, nil
+}
+func (a *accountRetryAdapter) Chat(context.Context, ports.ChatInput) (ports.ChatResult, error) {
+	return ports.ChatResult{}, credentialRejectedFixtureError{}
+}
+func (a *accountRetryAdapter) ChatWithAccount(_ context.Context, _ ports.ChatInput, accountID string) (ports.ChatResult, error) {
+	a.attempts = append(a.attempts, accountID)
+	if accountID == "expired" {
+		return ports.ChatResult{}, credentialRejectedFixtureError{}
+	}
+	return ports.ChatResult{ID: "ok", Text: "recovered"}, nil
+}
+func (a *accountRetryAdapter) ChatStreamWithAccount(_ context.Context, _ ports.ChatInput, accountID string, emit func(ports.StreamChunk) error) error {
+	a.attempts = append(a.attempts, accountID)
+	if accountID == "expired" {
+		return credentialRejectedFixtureError{}
+	}
+	return emit(ports.StreamChunk{ID: "ok", Text: "recovered", FinishReason: "stop"})
+}
+
 type accountFixture struct{}
 
 func (accountFixture) Candidates(_ context.Context, channel, _ string, _ bool) ([]ports.AccountCandidate, error) {
 	return []ports.AccountCandidate{{ID: channel + ":account", NativeID: channel + "-account", Channel: channel}}, nil
+}
+
+type twoAccountFixture struct{}
+
+func (twoAccountFixture) Candidates(_ context.Context, channel, _ string, _ bool) ([]ports.AccountCandidate, error) {
+	return []ports.AccountCandidate{
+		{ID: channel + ":expired", NativeID: "expired", Channel: channel},
+		{ID: channel + ":fresh", NativeID: "fresh", Channel: channel},
+	}, nil
 }
 
 type streamFixtureAdapter struct {
@@ -71,6 +112,38 @@ func (a streamFixtureAdapter) ChatStreamWithAccount(_ context.Context, _ ports.C
 }
 
 var _ ports.AccountStreamAdapter = streamFixtureAdapter{}
+
+func TestChatRetriesCredentialRejectedAccountBeforeReturningError(t *testing.T) {
+	adapter := &accountRetryAdapter{}
+	service := NewServiceWithRecorderAndPool(nil, map[string]ports.Adapter{"chatgpt": adapter}, nil, scheduler.NewPool(twoAccountFixture{}, 1, 3))
+	result, err := service.AdminChat(context.Background(), ports.ChatInput{
+		Model: "chatgpt/model-chatgpt", Messages: []ports.ChatMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil || result.Text != "recovered" {
+		t.Fatalf("credential rejection retry = %#v/%v attempts=%v", result, err, adapter.attempts)
+	}
+	if len(adapter.attempts) != 2 || adapter.attempts[0] != "expired" || adapter.attempts[1] != "fresh" {
+		t.Fatalf("attempts = %v, want expired then fresh", adapter.attempts)
+	}
+}
+
+func TestAdminChatStreamRetriesCredentialRejectedAccountBeforeOutput(t *testing.T) {
+	adapter := &accountRetryAdapter{}
+	service := NewServiceWithRecorderAndPool(nil, map[string]ports.Adapter{"chatgpt": adapter}, nil, scheduler.NewPool(twoAccountFixture{}, 1, 3))
+	chunks := make([]ports.StreamChunk, 0)
+	err := service.AdminChatStream(context.Background(), ports.ChatInput{
+		Model: "chatgpt/model-chatgpt", Messages: []ports.ChatMessage{{Role: "user", Content: "hello"}},
+	}, func(chunk ports.StreamChunk) error {
+		chunks = append(chunks, chunk)
+		return nil
+	})
+	if err != nil || len(chunks) != 1 || chunks[0].Text != "recovered" {
+		t.Fatalf("credential rejection stream retry = %#v/%v attempts=%v", chunks, err, adapter.attempts)
+	}
+	if len(adapter.attempts) != 2 || adapter.attempts[0] != "expired" || adapter.attempts[1] != "fresh" {
+		t.Fatalf("stream attempts = %v, want expired then fresh", adapter.attempts)
+	}
+}
 
 func TestAdminChatRejectsLocallyDisabledChannel(t *testing.T) {
 	service := NewServiceWithRecorderAndPool(nil, map[string]ports.Adapter{

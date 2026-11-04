@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import "./ChannelsPage.css";
@@ -22,27 +23,26 @@ function accountAccessLabel(channel: ChannelOverview): { label: string; detail: 
 }
 
 export function ChannelsPage() {
+  const toast = useToast();
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     fetchChannels(controller.signal)
       .then(setChannels)
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
-          setError(cause instanceof ApiClientError ? cause.message : "读取渠道失败");
+          toast.error(cause instanceof ApiClientError ? cause.message : "读取渠道失败");
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [retry]);
+  }, [retry, toast]);
 
   return (
     <main className="page-content data-page channels-page">
@@ -56,12 +56,6 @@ export function ChannelsPage() {
         </Button>
       </div>
 
-      {error && (
-        <div className="notice notice-error" role="alert">
-          <span>{error}</span>
-          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
-        </div>
-      )}
 
       {loading ? (
         <TableState live>正在读取渠道…</TableState>

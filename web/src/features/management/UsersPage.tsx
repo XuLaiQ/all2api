@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -12,71 +13,66 @@ import "./ManagementPage.css";
 export function UsersPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canManage = role === "admin";
+  const toast = useToast();
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [draft, setDraft] = useState({ username: "", role: "viewer" as "admin" | "viewer" });
   const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState("");
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     fetchUsers(page, pageSize, controller.signal)
       .then((result) => {
         setUsers(result.data);
         setTotal(result.pagination.total);
       })
       .catch((cause: unknown) => {
-        if (!controller.signal.aborted) setError(cause instanceof ApiClientError ? cause.message : "读取用户失败");
+        if (!controller.signal.aborted) toast.error(cause instanceof ApiClientError ? cause.message : "读取用户失败");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, pageSize, reload]);
+  }, [page, pageSize, reload, toast]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canManage || !draft.username.trim()) return;
     setSaving(true);
-    setError("");
     try {
       await createUser({ username: draft.username.trim(), role: draft.role, enabled: true });
       setDraft({ username: "", role: "viewer" });
-      setNotice("用户已创建");
+      toast.success("用户已创建");
       setPage(1);
       setReload((value) => value + 1);
     } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : "创建用户失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "创建用户失败");
     } finally { setSaving(false); }
   }
 
   async function toggle(user: ManagedUser) {
     try { await patchUser(user.username, { enabled: !user.enabled }); setReload((value) => value + 1); }
-    catch (cause: unknown) { setError(cause instanceof ApiClientError ? cause.message : "更新用户失败"); }
+    catch (cause: unknown) { toast.error(cause instanceof ApiClientError ? cause.message : "更新用户失败"); }
   }
 
   async function remove(user: ManagedUser) {
     if (!window.confirm(`确定删除用户“${user.username}”吗？`)) return;
     try {
       await deleteUser(user.username);
-      setNotice("用户已删除");
+      toast.success("用户已删除");
       if (users.length === 1 && page > 1) setPage((value) => value - 1);
       setReload((value) => value + 1);
     }
-    catch (cause: unknown) { setError(cause instanceof ApiClientError ? cause.message : "删除用户失败"); }
+    catch (cause: unknown) { toast.error(cause instanceof ApiClientError ? cause.message : "删除用户失败"); }
   }
 
   return <main className="page-content data-page management-page">
     <div className="page-heading"><div><span className="page-eyebrow">ACCESS CONTROL</span><h1>用户管理</h1><p>管理控制台用户目录；认证凭据仍由环境配置维护</p></div><Button variant="secondary" onClick={() => setReload((value) => value + 1)}>刷新</Button></div>
-    {error && <div className="notice notice-error" role="alert">{error}</div>}
-    {notice && <div className="notice notice-info" role="status">{notice}</div>}
     {canManage && <form className="log-filter-form management-form" onSubmit={(event) => void submit(event)}>
       <label><span>用户名</span><input value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} placeholder="例如 operator" /></label>
       <label><span>角色</span><Select

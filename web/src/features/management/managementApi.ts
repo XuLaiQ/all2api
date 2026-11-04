@@ -51,7 +51,8 @@ export type PlaygroundConversationMessage = {
 };
 
 export type PlaygroundConversation = PlaygroundConversationSummary & {
-  messages: PlaygroundConversationMessage[];
+  /** The API may return null for a conversation without persisted messages. */
+  messages: PlaygroundConversationMessage[] | null;
 };
 
 export type PlaygroundResult = {
@@ -99,8 +100,8 @@ export async function runPlaygroundSearch(body: {
   channel?: string;
   model?: string;
   prompt: string;
-}): Promise<PlaygroundSearchResult> {
-  const response = await apiClient.post<DataResponse<PlaygroundSearchResult>>("/playground/search", body);
+}, signal?: AbortSignal): Promise<PlaygroundSearchResult> {
+  const response = await apiClient.post<DataResponse<PlaygroundSearchResult>>("/playground/search", body, { signal });
   return response.data.data;
 }
 
@@ -110,8 +111,8 @@ export async function runPlaygroundFileTask(body: {
   kind: "ppt" | "psd";
   prompt: string;
   base64_images?: string[];
-}): Promise<PlaygroundFileResult> {
-  const response = await apiClient.post<DataResponse<PlaygroundFileResult>>("/playground/editable-file", body);
+}, signal?: AbortSignal): Promise<PlaygroundFileResult> {
+  const response = await apiClient.post<DataResponse<PlaygroundFileResult>>("/playground/editable-file", body, { signal });
   return response.data.data;
 }
 
@@ -126,10 +127,11 @@ export async function runPlaygroundGeneration(body: {
   ratio?: string;
   duration?: number;
   base64_images?: string[];
-}): Promise<PlaygroundGenerationResult> {
+}, signal?: AbortSignal): Promise<PlaygroundGenerationResult> {
   const response = await apiClient.post<DataResponse<PlaygroundGenerationResult>>(
     "/playground/generations",
     body,
+    { signal },
   );
   return response.data.data;
 }
@@ -157,14 +159,26 @@ export async function fetchPlaygroundConversation(
   return response.data.data;
 }
 
+export async function clearPlaygroundConversations(signal?: AbortSignal): Promise<{
+  conversations_deleted: number;
+  request_records_deleted: number;
+}> {
+  const response = await apiClient.delete<DataResponse<{
+    conversations_deleted: number;
+    request_records_deleted: number;
+  }>>("/playground/conversations/clear", { signal });
+  return response.data.data;
+}
+
 export async function deletePlaygroundConversation(
   conversationId: string,
+  signal?: AbortSignal,
 ): Promise<{ id: string; deleted: boolean; request_records_deleted: number }> {
   const response = await apiClient.delete<DataResponse<{
     id: string;
     deleted: boolean;
     request_records_deleted: number;
-  }>>(`/playground/conversations/${encodeURIComponent(conversationId)}`);
+  }>>(`/playground/conversations/${encodeURIComponent(conversationId)}`, { signal });
   return response.data.data;
 }
 

@@ -3,6 +3,7 @@ import { useOutletContext } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -21,6 +22,7 @@ function formatCount(value: number | null): string {
 export function ModelsPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canManage = role === "admin";
+  const toast = useToast();
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [rows, setRows] = useState<ModelRecord[]>([]);
   const [kinds, setKinds] = useState<string[]>([]);
@@ -30,11 +32,9 @@ export function ModelsPage() {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [pending, setPending] = useState<ModelRecord | null>(null);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [catalogMessage, setCatalogMessage] = useState("");
   const [retry, setRetry] = useState(0);
   const initialRefreshDone = useRef(false);
 
@@ -47,7 +47,6 @@ export function ModelsPage() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     fetchModels(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
@@ -56,34 +55,32 @@ export function ModelsPage() {
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
-          setError(cause instanceof ApiClientError ? cause.message : "读取模型广场失败");
+          toast.error(cause instanceof ApiClientError ? cause.message : "读取模型广场失败");
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, pageSize, filters, retry]);
+  }, [page, pageSize, filters, retry, toast]);
 
   const refreshCatalog = useCallback(async () => {
     setRefreshing(true);
-    setError("");
-    setCatalogMessage("");
     try {
       const result = await refreshModels();
       const failed = result.channels.filter((item) => item.status === "failed");
-      setCatalogMessage(
-        failed.length > 0
-          ? `已同步 ${result.total} 个真实模型；${failed.map((item) => item.channel).join("、")} 渠道暂不可用或超时`
-          : `已从真实渠道同步 ${result.total} 个模型`,
-      );
+      if (failed.length > 0) {
+        toast.warning(`已同步 ${result.total} 个真实模型；${failed.map((item) => item.channel).join("、")} 渠道暂不可用或超时`);
+      } else {
+        toast.success(`已从真实渠道同步 ${result.total} 个模型`);
+      }
       setRetry((value) => value + 1);
     } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : "刷新真实模型广场失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "刷新真实模型广场失败");
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     if (!canManage || initialRefreshDone.current) return;
@@ -110,13 +107,13 @@ export function ModelsPage() {
     if (!pending) return;
     const selected = pending;
     setSaving(true);
-    setError("");
     try {
       await setModelEnabled(selected.id, !selected.enabled);
       setPending(null);
+      toast.success(selected.enabled ? "模型已停用" : "模型已启用");
       setRetry((value) => value + 1);
     } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "更新模型状态失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "更新模型状态失败");
     } finally {
       setSaving(false);
     }
@@ -136,13 +133,6 @@ export function ModelsPage() {
         </Button>}
       </div>
 
-      {error && (
-        <div className="notice notice-error" role="alert">
-          <span>{error}</span>
-          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
-        </div>
-      )}
-      {catalogMessage && <div className="notice notice-info" role="status">{catalogMessage}</div>}
       {pending && (
         <div className="notice notice-confirm" role="alertdialog" aria-label="确认模型状态变更">
           <span>

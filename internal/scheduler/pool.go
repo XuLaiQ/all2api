@@ -57,6 +57,10 @@ func (l *Lease) Release() {
 }
 
 func (p *Pool) Candidates(ctx context.Context, channel, model string, requireCredentials bool) ([]ports.AccountCandidate, error) {
+	return p.candidates(ctx, channel, model, requireCredentials, nil)
+}
+
+func (p *Pool) candidates(ctx context.Context, channel, model string, requireCredentials bool, excluded map[string]struct{}) ([]ports.AccountCandidate, error) {
 	if p.source == nil {
 		return nil, ErrNoAvailableAccount
 	}
@@ -68,7 +72,7 @@ func (p *Pool) Candidates(ctx context.Context, channel, model string, requireCre
 	defer p.mu.Unlock()
 	ranked := make([]ports.AccountCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if p.inflight[candidate.ID] >= p.maxInflight {
+		if _, skip := excluded[candidate.ID]; skip || p.inflight[candidate.ID] >= p.maxInflight {
 			continue
 		}
 		ranked = append(ranked, candidate)
@@ -90,13 +94,25 @@ func (p *Pool) Candidates(ctx context.Context, channel, model string, requireCre
 }
 
 func (p *Pool) Acquire(ctx context.Context, channel, model string, requireCredentials bool) (*Lease, error) {
-	candidates, err := p.Candidates(ctx, channel, model, requireCredentials)
+	return p.AcquireExcluding(ctx, channel, model, requireCredentials, nil)
+}
+
+// AcquireExcluding leases the best available account not present in excluded.
+// Callers use it to move past an account that has just returned a retryable
+// credential/upstream failure without immediately selecting the same account.
+func (p *Pool) AcquireExcluding(ctx context.Context, channel, model string, requireCredentials bool, excluded map[string]struct{}) (*Lease, error) {
+	candidates, err := p.candidates(ctx, channel, model, requireCredentials, excluded)
 	if err != nil {
 		return nil, err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, candidate := range candidates {
+		if excluded != nil {
+			if _, skip := excluded[candidate.ID]; skip {
+				continue
+			}
+		}
 		if p.inflight[candidate.ID] >= p.maxInflight {
 			continue
 		}

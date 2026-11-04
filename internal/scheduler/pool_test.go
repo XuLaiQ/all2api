@@ -14,6 +14,20 @@ func (s sourceFixture) Candidates(context.Context, string, string, bool) ([]port
 	return append([]ports.AccountCandidate(nil), s.candidates...), nil
 }
 
+func TestAcquireExcludingScansPastCandidateLimit(t *testing.T) {
+	pool := NewPool(sourceFixture{candidates: []ports.AccountCandidate{
+		{ID: "a", NativeID: "a", Priority: 3},
+		{ID: "b", NativeID: "b", Priority: 2},
+		{ID: "c", NativeID: "c", Priority: 1},
+		{ID: "d", NativeID: "d", Priority: 0},
+	}}, 1, 3)
+	lease, err := pool.AcquireExcluding(context.Background(), "chatgpt", "model", true, map[string]struct{}{"a": {}, "b": {}, "c": {}})
+	if err != nil || lease.Candidate.ID != "d" {
+		t.Fatalf("AcquireExcluding() = %#v, %v", lease, err)
+	}
+	lease.Release()
+}
+
 func TestPoolLimitsInflightAndReleasesIdempotently(t *testing.T) {
 	pool := NewPool(sourceFixture{candidates: []ports.AccountCandidate{{ID: "a", NativeID: "cn:a", Priority: 1}, {ID: "b", NativeID: "cn:b", Priority: 0}}}, 1, 3)
 	first, err := pool.Acquire(context.Background(), "wb", "model-a", true)

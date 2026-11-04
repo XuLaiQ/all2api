@@ -3,6 +3,7 @@ import { Archive, Download, Eraser, FileImage, FileText, Image as ImageIcon, Pla
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { Select } from "../../app/controls/Select";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -41,6 +42,7 @@ function AssetIcon({ kind }: { kind: MediaKind }) {
 export function MediaLibraryPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canManage = role === "admin";
+  const toast = useToast();
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [filters, setFilters] = useState<MediaAssetFilters>({});
@@ -49,7 +51,6 @@ export function MediaLibraryPage() {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
   const [selected, setSelected] = useState<MediaAsset | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -64,20 +65,19 @@ export function MediaLibraryPage() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     fetchMediaAssets(page, pageSize, filters, controller.signal)
       .then((result) => {
         setAssets(result.data);
         setTotal(result.pagination.total);
       })
       .catch((cause: unknown) => {
-        if (!controller.signal.aborted) setError(cause instanceof ApiClientError ? cause.message : "读取素材库失败");
+        if (!controller.signal.aborted) toast.error(cause instanceof ApiClientError ? cause.message : "读取素材库失败");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, pageSize, filters, reload]);
+  }, [page, pageSize, filters, reload, toast]);
 
   function applySearch() {
     setPage(1);
@@ -91,9 +91,10 @@ export function MediaLibraryPage() {
     try {
       await deleteMediaAsset(asset.id);
       if (selected?.id === asset.id) setSelected(null);
+      toast.success("素材已删除");
       setReload((value) => value + 1);
     } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : "删除素材失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "删除素材失败");
     } finally {
       setDeleting(null);
     }
@@ -102,15 +103,15 @@ export function MediaLibraryPage() {
   async function removeWatermark(asset: MediaAsset) {
     if (!canManage || asset.kind !== "image" || watermarking) return;
     setWatermarking(asset.id);
-    setError("");
     try {
       const result = await removeGeneratedWatermark(asset.content_url);
       const stem = asset.filename.replace(/\.[^.]+$/, "") || "image";
       const saved = await saveWatermarkRemovedAsset(asset.id, result.dataUrl, `${stem}_clean.png`);
       setAssets((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
       setTotal((current) => current + 1);
+      toast.success("已生成去水印副本");
     } catch (cause: unknown) {
-      setError(cause instanceof ApiClientError ? cause.message : cause instanceof Error ? cause.message : "去水印失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : cause instanceof Error ? cause.message : "去水印失败");
     } finally {
       setWatermarking(null);
     }
@@ -145,7 +146,6 @@ export function MediaLibraryPage() {
         <Button variant="secondary" onClick={() => { setDraftSearch(""); setFilters({}); setPage(1); }}>清除</Button>
       </div>
 
-      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setReload((value) => value + 1)}>重试</Button></div>}
       {loading ? <div className="media-library-state">正在读取素材库…</div> : assets.length === 0 ? <div className="media-library-state">还没有生成素材。去调试台生成图片、视频或 PPT 后，结果会自动出现在这里。</div> : <div className="media-asset-grid">
         {assets.map((asset) => <AssetCard key={asset.id} asset={asset} canManage={canManage} deleting={deleting === asset.id} watermarking={watermarking === asset.id} onOpen={() => setSelected(asset)} onDelete={() => void remove(asset)} onRemoveWatermark={() => void removeWatermark(asset)} />)}
       </div>}

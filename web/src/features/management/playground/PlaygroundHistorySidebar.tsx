@@ -1,4 +1,4 @@
-import { Check, Copy, MessageCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Copy, Eraser, MessageCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "../../../app/controls/Button";
 import { Pagination } from "../../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../../app/data/pagination.constants";
@@ -17,13 +17,14 @@ type PlaygroundHistorySidebarProps = {
   requestTotal: number;
   page: number;
   requestPage: number;
-  pageSize: number;
+  conversationPageSize: number;
+  requestPageSize: number;
   busy: boolean;
   deletingConversationId: string | null;
   response: unknown;
   copied: boolean;
-  modelsError: string;
   onStartNewConversation: () => void;
+  onClearConversations: () => void;
   onOpenConversation: (id: string) => void;
   onDeleteConversation: (id: string, title: string) => void;
   onSidebarTabChange: (tab: PlaygroundSidebarTab) => void;
@@ -61,13 +62,14 @@ export function PlaygroundHistorySidebar({
   requestTotal,
   page,
   requestPage,
-  pageSize,
+  conversationPageSize,
+  requestPageSize,
   busy,
   deletingConversationId,
   response,
   copied,
-  modelsError,
   onStartNewConversation,
+  onClearConversations,
   onOpenConversation,
   onDeleteConversation,
   onSidebarTabChange,
@@ -89,9 +91,14 @@ export function PlaygroundHistorySidebar({
             <div className="playground-history-brand-mark" aria-hidden="true"><MessageCircle size={16} /></div>
             <div><strong>调试对话</strong><span>Conversation space</span></div>
           </div>
-          <Button variant="unstyled" className="playground-icon-button playground-history-new" onClick={onStartNewConversation} title="新建对话" aria-label="新建对话">
-            <Plus size={17} aria-hidden="true" />
-          </Button>
+          <div className="playground-history-actions">
+            <Button variant="unstyled" className="playground-icon-button playground-history-new" onClick={onStartNewConversation} title="新建对话" aria-label="新建对话">
+              <Plus size={17} aria-hidden="true" />
+            </Button>
+            {role === "admin" && <Button variant="unstyled" className="playground-icon-button" onClick={onClearConversations} disabled={busy || deletingConversationId !== null} title="清空全部历史" aria-label="清空全部历史">
+              {deletingConversationId === "__all__" ? <RefreshCw size={15} className="spin" aria-hidden="true" /> : <Eraser size={15} aria-hidden="true" />}
+            </Button>}
+          </div>
         </div>
         <div className="playground-history-tools">
           <div className="playground-sidebar-tabs" role="tablist" aria-label="调试台侧栏视图">
@@ -135,7 +142,7 @@ export function PlaygroundHistorySidebar({
       </div>
       <Pagination
         currentPage={isConversationView ? page : requestPage}
-        pageSize={pageSize || DEFAULT_PAGE_SIZE}
+        pageSize={(isConversationView ? conversationPageSize : requestPageSize) || DEFAULT_PAGE_SIZE}
         total={currentTotal}
         pageSizes={PAGE_SIZE_OPTIONS}
         layout="prev, pager, next"
@@ -145,7 +152,6 @@ export function PlaygroundHistorySidebar({
         onSizeChange={onPageSizeChange}
       />
       {response !== null && <details className="playground-latest-response"><summary><span>最新原始响应</span><Button variant="unstyled" onClick={(event) => { event.preventDefault(); onCopyLatestResponse(); }} title="复制最新响应" aria-label="复制最新响应">{copied ? <Check size={14} /> : <Copy size={14} />}</Button></summary><pre>{JSON.stringify(response, null, 2)}</pre></details>}
-      {modelsError && <div className="playground-history-error">{modelsError}</div>}
     </aside>
   );
 }

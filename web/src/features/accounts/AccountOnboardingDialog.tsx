@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import type { ChannelOverview } from "../usage/usageApi";
 import { Select } from "../../app/controls/Select";
 import {
@@ -316,6 +317,7 @@ export function AccountOnboardingDialog({
   onClose,
   onComplete,
 }: Props) {
+  const toast = useToast();
   const available = useMemo(() => configuredChannels(channels), [channels]);
   const unavailable = useMemo(
     () => channels.filter((item) => !(item.provision_configured ?? item.accounts_configured)),
@@ -401,13 +403,17 @@ export function AccountOnboardingDialog({
     fetchProvisionSchema(channel, controller.signal)
       .then((next) => setSchema(next))
       .catch((cause: unknown) => {
-        if (!controller.signal.aborted) setSchemaError(errorMessage(cause));
+        if (!controller.signal.aborted) {
+          const message = errorMessage(cause);
+          setSchemaError(message);
+          toast.error(`读取渠道新增能力失败：${message}`);
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setSchemaLoading(false);
       });
     return () => controller.abort();
-  }, [open, channel, selectedChannel?.provision_configured, selectedChannel?.accounts_configured]);
+  }, [open, channel, selectedChannel?.provision_configured, selectedChannel?.accounts_configured, toast]);
 
   useEffect(() => {
     setPayload(defaultPayload(selectedFlow));
@@ -446,10 +452,16 @@ export function AccountOnboardingDialog({
         if (completed.status === "success" || completed.status === "succeeded") {
           onComplete(`${selectedChannel?.name ?? channel} 账号授权成功，账号列表已更新`, channel);
         } else if (completed.error || completed.message) {
-          setError(completed.error || completed.message || "账号保存失败");
+          const message = completed.error || completed.message || "账号保存失败";
+          setError(message);
+          toast.error(message);
         }
       } catch (cause: unknown) {
-        if (active) setError(errorMessage(cause));
+        if (active) {
+          const message = errorMessage(cause);
+          setError(message);
+          toast.error(message);
+        }
       } finally {
         if (active) setBusy(false);
       }
@@ -467,11 +479,22 @@ export function AccountOnboardingDialog({
           if (next.status === "success" || next.status === "succeeded") {
             onComplete(`${selectedChannel?.name ?? channel} 账号授权成功，账号列表已更新`, channel);
           }
+          if (next.errors?.length) {
+            next.errors.forEach((message) => toast.warning(message));
+          }
           if (next.status && terminalStatuses.has(next.status) && next.status !== "success" && next.status !== "succeeded") {
-            setError(next.error || next.message || "账号授权失败");
+            const message = next.error || next.message || "账号授权失败";
+            setError(message);
+            toast.error(message);
           }
         })
-        .catch((cause: unknown) => { if (active) setError(errorMessage(cause)); })
+        .catch((cause: unknown) => {
+          if (active) {
+            const message = errorMessage(cause);
+            setError(message);
+            toast.error(message);
+          }
+        })
         .finally(() => {
           if (active && !completing) timer = window.setTimeout(poll, Math.max(2, session.poll_after_seconds ?? 2) * 1000);
         });
@@ -481,7 +504,7 @@ export function AccountOnboardingDialog({
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [open, channel, session, activeFlow, payload, callback, selectedChannel?.name, onComplete]);
+  }, [open, channel, session, activeFlow, payload, callback, selectedChannel?.name, onComplete, toast]);
 
   if (!open) return null;
 
@@ -502,7 +525,9 @@ export function AccountOnboardingDialog({
       setMessage("账号 JSON 已载入，请点击“导入账号”完成保存");
     } catch (cause: unknown) {
       setGrokImportFileName("");
-      setError(cause instanceof SyntaxError ? "JSON 文件无法解析，请确认内容完整" : cause instanceof Error ? cause.message : "账号 JSON 读取失败");
+      const message = cause instanceof SyntaxError ? "JSON 文件无法解析，请确认内容完整" : cause instanceof Error ? cause.message : "账号 JSON 读取失败";
+      setError(message);
+      toast.error(message);
     }
   }
 
@@ -516,13 +541,13 @@ export function AccountOnboardingDialog({
 
   async function startFlow(payloadOverride?: Record<string, unknown>) {
     if (!channel || !selectedFlow || !(selectedChannel?.provision_configured ?? selectedChannel?.accounts_configured)) {
-      setError("请先选择已配置账号能力的渠道和新增方式");
+      toast.warning("请先选择已配置账号能力的渠道和新增方式");
       return;
     }
     const flowPayload = payloadOverride ?? payload;
     const missing = missingRequiredFields(flowPayload);
     if (missing.length > 0) {
-      setError(`请填写必填字段：${missing.map((name) => fieldLabel(name, selectedFlow.schema.properties?.[name] ?? {})).join("、")}`);
+      toast.warning(`请填写必填字段：${missing.map((name) => fieldLabel(name, selectedFlow.schema.properties?.[name] ?? {})).join("、")}`);
       return;
     }
     setBusy(true);
@@ -573,8 +598,14 @@ export function AccountOnboardingDialog({
         ? `新增 ${result.added ?? 0} 个，更新凭据 ${result.updated ?? result.refreshed ?? 0} 个，跳过 ${result.skipped ?? 0} 个`
         : "";
       setMessage(result.message || importSummary || "流程已开始，请按页面提示继续操作");
-      if (result.status === "error" && result.errors?.length) {
-        setError(result.errors.join("；"));
+      if (result.errors?.length) {
+        const message = result.errors.join("；");
+        if (result.status === "error") {
+          setError(message);
+          toast.error(message);
+        } else {
+          toast.warning(message);
+        }
       }
       if (channel === "chatgpt" && selectedFlow.id === "oauth-pkce" && result.authorize_url) {
         window.open(result.authorize_url, "_blank", "noopener,noreferrer");
@@ -586,7 +617,9 @@ export function AccountOnboardingDialog({
         onComplete(`${selectedChannel.name} 账号新增成功，账号列表已更新`, channel);
       }
     } catch (cause: unknown) {
-      setError(errorMessage(cause));
+      const message = errorMessage(cause);
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -611,7 +644,9 @@ export function AccountOnboardingDialog({
         onComplete(`${selectedChannel?.name ?? channel} 账号新增成功，账号列表已更新`, channel);
       } else if (result.message) setMessage(result.message);
     } catch (cause: unknown) {
-      setError(errorMessage(cause));
+      const message = errorMessage(cause);
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -624,9 +659,13 @@ export function AccountOnboardingDialog({
     try {
       const result = await cancelProvision(channel, session.session_id, newIdempotencyKey());
       setSession((current) => ({ ...current, ...result }));
-      setMessage(result.message || "账号新增流程已取消");
+      const message = result.message || "账号新增流程已取消";
+      setMessage(message);
+      toast.warning(message);
     } catch (cause: unknown) {
-      setError(errorMessage(cause));
+      const message = errorMessage(cause);
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -643,7 +682,7 @@ export function AccountOnboardingDialog({
     const normalizedTokens = tokens.map((item) => item.trim()).filter(Boolean);
     const normalizedAccounts = accounts.filter((item) => tokenFromRecord(item));
     if (normalizedTokens.length === 0 && normalizedAccounts.length === 0) {
-      setError("没有读取到可用的 ChatGPT 访问令牌");
+      toast.warning("没有读取到可用的 ChatGPT 访问令牌");
       return;
     }
     setChatGptImportBusy(true);
@@ -663,7 +702,9 @@ export function AccountOnboardingDialog({
       if (!token) throw new Error("会话 JSON 中未找到 accessToken 字段");
       await submitChatGptImport([], [token]);
     } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : "会话 JSON 解析失败");
+      const message = cause instanceof Error ? cause.message : "会话 JSON 解析失败";
+      setError(message);
+      toast.error(message);
     }
   }
 
@@ -674,7 +715,9 @@ export function AccountOnboardingDialog({
       if (!account) throw new Error("Codex 认证 JSON 中未找到 access_token 字段");
       await submitChatGptImport([account], []);
     } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : "Codex 认证 JSON 解析失败");
+      const message = cause instanceof Error ? cause.message : "Codex 认证 JSON 解析失败";
+      setError(message);
+      toast.error(message);
     }
   }
 
@@ -699,7 +742,9 @@ export function AccountOnboardingDialog({
       });
     } catch (cause: unknown) {
       setPendingChatGptImport(null);
-      setError(cause instanceof SyntaxError ? "JSON 文件无法解析，请确认内容完整" : cause instanceof Error ? cause.message : "账号 JSON 读取失败");
+      const message = cause instanceof SyntaxError ? "JSON 文件无法解析，请确认内容完整" : cause instanceof Error ? cause.message : "账号 JSON 读取失败";
+      setError(message);
+      toast.error(message);
     } finally {
       setChatGptImportBusy(false);
     }
@@ -731,14 +776,11 @@ export function AccountOnboardingDialog({
           <Button variant="unstyled" className="icon-close" aria-label="关闭" onClick={onClose} disabled={busy}>×</Button>
         </div>
 
-        {error && <div className="notice notice-error" role="alert">{error}</div>}
-        {message && <div className="notice notice-info" role="status">{message}</div>}
-        {session && (session.errors?.length || typeof session.added === "number" || typeof session.refreshed === "number") && (
-          <div className={`notice ${session.errors?.length ? "notice-warning" : "notice-info"}`} role={session.errors?.length ? "alert" : "status"}>
-            {(typeof session.added === "number" || typeof session.refreshed === "number" || typeof session.skipped === "number") && (
-              <div>处理结果：新增 {session.added ?? 0} 个，刷新 {session.refreshed ?? 0} 个，跳过 {session.skipped ?? 0} 个。</div>
-            )}
-            {session.errors?.length ? <ul>{session.errors.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul> : null}
+        {error && <div className="onboarding-channel-status onboarding-channel-notice" role="alert">{error}</div>}
+        {message && <div className="onboarding-channel-status" role="status">{message}</div>}
+        {session && (typeof session.added === "number" || typeof session.refreshed === "number" || typeof session.skipped === "number") && (
+          <div className="onboarding-import-summary" role="status">
+            处理结果：新增 {session.added ?? 0} 个，刷新 {session.refreshed ?? 0} 个，跳过 {session.skipped ?? 0} 个。
           </div>
         )}
 
@@ -758,14 +800,14 @@ export function AccountOnboardingDialog({
           /></label>
 
           {channelsLoading && <div className="onboarding-channel-status" role="status">正在读取渠道账号能力…</div>}
-          {!channelsLoading && channelsError && <div className="notice notice-error onboarding-channel-notice" role="alert"><span>{channelsError}</span>{onRetryChannels && <Button variant="secondary" size="sm" onClick={onRetryChannels} disabled={busy}>重试</Button>}</div>}
-          {!channelsLoading && !channelsError && channels.length === 0 && <div className="notice notice-warning onboarding-channel-notice" role="status">暂未读取到已注册渠道。</div>}
-          {!channelsLoading && !channelsError && channels.length > 0 && available.length === 0 && <div className="notice notice-warning onboarding-channel-notice" role="status">当前没有已配置账号能力的渠道。</div>}
+          {!channelsLoading && channelsError && <div className="onboarding-channel-status onboarding-channel-notice" role="alert"><span>{channelsError}</span>{onRetryChannels && <Button variant="secondary" size="sm" onClick={onRetryChannels} disabled={busy}>重试</Button>}</div>}
+          {!channelsLoading && !channelsError && channels.length === 0 && <div className="onboarding-channel-status onboarding-channel-notice" role="status">暂未读取到已注册渠道。</div>}
+          {!channelsLoading && !channelsError && channels.length > 0 && available.length === 0 && <div className="onboarding-channel-status onboarding-channel-notice" role="status">当前没有已配置账号能力的渠道。</div>}
           {!channelsLoading && !channelsError && selectedChannel && <div className={`onboarding-channel-status ${(selectedChannel.provision_configured ?? selectedChannel.accounts_configured) ? "is-ready" : "is-unavailable"}`} role="status"><span className={`status-pill ${(selectedChannel.provision_configured ?? selectedChannel.accounts_configured) ? "success" : "warning"}`}><i />{channelStatusText(selectedChannel)}</span></div>}
 
           {channel && schemaLoading && <div className="table-state" role="status">正在读取该渠道的新增方式…</div>}
-          {channel && !schemaLoading && schemaError && <div className="notice notice-error" role="alert">读取渠道新增能力失败：{schemaError}</div>}
-          {channel && !schemaLoading && !schemaError && schema && availableFlows.length === 0 && <div className="notice notice-warning" role="status">该渠道当前没有可用的账号新增方式。</div>}
+          {channel && !schemaLoading && schemaError && <div className="onboarding-channel-status onboarding-channel-notice" role="alert">读取渠道新增能力失败：{schemaError}</div>}
+          {channel && !schemaLoading && !schemaError && schema && availableFlows.length === 0 && <div className="onboarding-channel-status onboarding-channel-notice" role="status">该渠道当前没有可用的账号新增方式。</div>}
           {channel !== "chatgpt" && availableFlows.length > 0 && <label><span>新增方式</span><Select value={flowId} onChange={setFlowId} disabled={busy || Boolean(session)} placeholder="请选择新增方式" options={availableFlows.map((flow) => ({ value: flow.id, label: flowPresentation(channel, flow).title }))} /></label>}
           {activeFlow && <p className="secondary-text">{flowPresentation(channel, activeFlow).description}</p>}
 
@@ -783,7 +825,11 @@ export function AccountOnboardingDialog({
               {chatGptImportMethod === "oauth" && <p className="secondary-text">点击“开始授权”后会打开 ChatGPT 登录页，完成登录后把浏览器地址栏中的回调地址粘贴到下方。</p>}
               {chatGptImportMethod === "token" && <>
                 <label><span>访问令牌列表</span><textarea value={chatGptTokenInput} onChange={(event) => setChatGptTokenInput(event.target.value)} rows={5} placeholder="每行填写一个访问令牌" disabled={chatGptImportBusy} /></label>
-                <label className="onboarding-file-picker"><span><FileText size={15} />选择 TXT 文件</span><input type="file" accept=".txt,text/plain" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ""; if (file) void file.text().then((value) => setChatGptTokenInput((current) => [...splitTokens(current), ...splitTokens(value)].join("\n"))).catch(() => setError("TXT 文件读取失败")); }} disabled={chatGptImportBusy} /></label>
+                <label className="onboarding-file-picker"><span><FileText size={15} />选择 TXT 文件</span><input type="file" accept=".txt,text/plain" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ""; if (file) void file.text().then((value) => setChatGptTokenInput((current) => [...splitTokens(current), ...splitTokens(value)].join("\n"))).catch(() => {
+                    const message = "TXT 文件读取失败";
+                    setError(message);
+                    toast.error(message);
+                  }); }} disabled={chatGptImportBusy} /></label>
                 <Button variant="primary" className="primary-action-button" onClick={() => void submitChatGptImport([], splitTokens(chatGptTokenInput))} disabled={chatGptImportBusy || !splitTokens(chatGptTokenInput).length}>{chatGptImportBusy ? <LoaderCircle size={15} className="spin" /> : <Upload size={15} />}导入访问令牌</Button>
               </>}
               {chatGptImportMethod === "session" && <>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
@@ -32,18 +33,17 @@ function dayLabel(value: string): string {
 }
 
 export function UsagePage() {
+  const toast = useToast();
   const [days, setDays] = useState(30);
   const [group, setGroup] = useState<UsageGroup>("daily");
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [rows, setRows] = useState<UsageRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     Promise.all([
       fetchUsageSummary(days, controller.signal),
       fetchUsageRows(group, days, controller.signal),
@@ -54,7 +54,7 @@ export function UsagePage() {
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setError(cause instanceof ApiClientError ? cause.message : "读取用量统计失败");
+        toast.error(cause instanceof ApiClientError ? cause.message : "读取用量统计失败");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -64,7 +64,7 @@ export function UsagePage() {
       controller.abort();
       window.clearInterval(timer);
     };
-  }, [days, group, retry]);
+  }, [days, group, retry, toast]);
 
   const maxRequests = useMemo(
     () => Math.max(1, ...rows.map((row) => row.requests)),
@@ -94,12 +94,6 @@ export function UsagePage() {
         </label>
       </div>
 
-      {error && (
-        <div className="notice notice-error" role="alert">
-          <span>{error}</span>
-          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
-        </div>
-      )}
 
       <section className="metric-grid" aria-label="统计汇总">
         <Metric label="请求数" value={loading ? "…" : number(summary?.requests ?? 0)} />

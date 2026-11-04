@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Select } from "../../app/controls/Select";
 import {
@@ -38,6 +39,7 @@ function targetEditor(route?: ModelRoute): EditorState {
 export function RoutesPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canManage = role === "admin";
+  const toast = useToast();
   const [routes, setRoutes] = useState<ModelRoute[]>([]);
   const [channels, setChannels] = useState<RegisteredChannel[]>([]);
   const [channelsError, setChannelsError] = useState(false);
@@ -45,7 +47,6 @@ export function RoutesPage() {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -53,26 +54,28 @@ export function RoutesPage() {
     fetchRouteChannels(controller.signal)
       .then(setChannels)
       .catch(() => {
-        if (!controller.signal.aborted) setChannelsError(true);
+        if (!controller.signal.aborted) {
+          setChannelsError(true);
+          toast.error("无法读取渠道目录，当前不能编辑路由。");
+        }
       });
     return () => controller.abort();
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     fetchRoutes(controller.signal)
       .then(setRoutes)
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setError(cause instanceof ApiClientError ? cause.message : "读取路由失败");
+        toast.error(cause instanceof ApiClientError ? cause.message : "读取路由失败");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [retry]);
+  }, [retry, toast]);
 
   function updateTarget(index: number, change: Partial<TargetDraft>) {
     if (!editor) return;
@@ -97,11 +100,10 @@ export function RoutesPage() {
     event.preventDefault();
     if (!editor) return;
     if (editor.targets.some((target) => !target.channel)) {
-      setError("请为每个目标选择渠道");
+      toast.warning("请为每个目标选择渠道");
       return;
     }
     setSaving(true);
-    setError("");
     const input: RouteInput = {
       strategy: "priority",
       enabled: editor.enabled,
@@ -113,9 +115,10 @@ export function RoutesPage() {
     try {
       await saveRoute(editor.alias.trim(), input);
       setEditor(null);
+      toast.success(editor.originalAlias ? "路由已更新" : "路由已创建");
       setRetry((value) => value + 1);
     } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "保存路由失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "保存路由失败");
     } finally {
       setSaving(false);
     }
@@ -127,9 +130,10 @@ export function RoutesPage() {
     setPendingDelete(null);
     try {
       await deleteRoute(alias);
+      toast.success("路由已删除");
       setRetry((value) => value + 1);
     } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "删除路由失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "删除路由失败");
     }
   }
 
@@ -145,13 +149,6 @@ export function RoutesPage() {
         {canManage && <Button variant="primary" onClick={() => setEditor(targetEditor())}>创建路由</Button>}
       </div>
 
-      {error && (
-        <div className="notice notice-error" role="alert">
-          <span>{error}</span>
-          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
-        </div>
-      )}
-      {channelsError && <div className="notice notice-error" role="alert">无法读取渠道目录，当前不能编辑路由。</div>}
       {pendingDelete && (
         <div className="notice notice-confirm" role="alertdialog" aria-label="确认删除路由">
           <span>删除路由「{pendingDelete}」后，使用该别名的请求将失败。确认删除？</span>

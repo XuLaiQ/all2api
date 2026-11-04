@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -62,6 +63,7 @@ function statusTone(status: number): string {
 export function LogsPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canClear = role === "admin";
+  const toast = useToast();
   const [draft, setDraft] = useState<DraftFilters>(emptyFilters);
   const [filters, setFilters] = useState<LogFilters>({});
   const [page, setPage] = useState(1);
@@ -70,12 +72,9 @@ export function LogsPage() {
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [clearMessage, setClearMessage] = useState("");
-  const [clearError, setClearError] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -88,7 +87,6 @@ export function LogsPage() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     fetchLogs(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
@@ -96,13 +94,13 @@ export function LogsPage() {
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setError(cause instanceof ApiClientError ? cause.message : "读取请求日志失败");
+        toast.error(cause instanceof ApiClientError ? cause.message : "读取请求日志失败");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, pageSize, filters, retry]);
+  }, [page, pageSize, filters, retry, toast]);
 
   function applyDraftFilters(nextDraft: DraftFilters) {
     const next: LogFilters = {};
@@ -133,18 +131,14 @@ export function LogsPage() {
   async function confirmLogClear() {
     if (!canClear) return;
     setClearing(true);
-    setClearError("");
-    setClearMessage("");
     try {
       const result = await clearExpiredLogs();
       setConfirmClear(false);
-      setClearMessage(
-        `清理完成：删除 ${result.request_logs_deleted} 条请求明细、${result.usage_daily_deleted} 条日用量记录。`,
-      );
+      toast.success(`清理完成：删除 ${result.request_logs_deleted} 条请求明细、${result.usage_daily_deleted} 条日用量记录。`);
       setPage(1);
       setRetry((value) => value + 1);
     } catch (cause: unknown) {
-      setClearError(cause instanceof ApiClientError ? cause.message : "清理过期日志失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "清理过期日志失败");
     } finally {
       setClearing(false);
     }
@@ -183,8 +177,6 @@ export function LogsPage() {
           </div>
         </div>
       )}
-      {clearMessage && <div className="notice notice-info" role="status">{clearMessage}</div>}
-      {clearError && <div className="notice notice-error" role="alert">{clearError}</div>}
 
       <form className="log-filter-form" onSubmit={applyFilters}>
         <label>
@@ -259,12 +251,6 @@ export function LogsPage() {
         </div>
       </form>
 
-      {error && (
-        <div className="notice notice-error" role="alert">
-          <span>{error}</span>
-          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
-        </div>
-      )}
 
       {loading ? (
         <TableState live>正在读取请求日志…</TableState>

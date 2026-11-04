@@ -307,40 +307,65 @@ func (s *Service) Chat(ctx context.Context, authorization, xAPIKey string, input
 		}
 		adapterInput := input
 		adapterInput.Model = upstreamModel
-		var result ports.ChatResult
-		var chatErr error
 		if accountAdapter, accountAware := adapter.(ports.AccountAwareAdapter); accountAware && s.pool != nil {
-			lease, acquireErr := s.pool.Acquire(ctx, channel, upstreamModel, true)
-			if acquireErr != nil {
-				setTargetError(&Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"})
+			excluded := map[string]struct{}{}
+			for {
+				lease, acquireErr := s.pool.AcquireExcluding(ctx, channel, upstreamModel, true, excluded)
+				if acquireErr != nil {
+					if lastErr == nil {
+						setTargetError(&Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"})
+					}
+					break
+				}
+				result, chatErr := accountAdapter.ChatWithAccount(ctx, adapterInput, lease.Candidate.NativeID)
+				accountID := lease.Candidate.ID
+				lease.Release()
+				if chatErr == nil {
+					if result.ID == "" {
+						result.ID = "chatcmpl_" + fmt.Sprintf("%d", s.now().UnixNano())
+					}
+					if result.CreatedAt == 0 {
+						result.CreatedAt = s.now().Unix()
+					}
+					if result.FinishReason == "" {
+						result.FinishReason = "stop"
+					}
+					result.UpstreamModel = upstreamModel
+					result.Channel = channel
+					result.RouteAlias = target.Alias
+					result.FallbackDepth = target.Depth
+					return key, result, nil
+				}
+				setTargetError(classifyAdapterError(chatErr))
+				if !retryableRouteError(lastErr) {
+					return key, ports.ChatResult{}, lastErr
+				}
+				excluded[accountID] = struct{}{}
+			}
+		} else {
+			result, chatErr := adapter.Chat(ctx, adapterInput)
+			if chatErr != nil {
+				setTargetError(classifyAdapterError(chatErr))
+				if !retryableRouteError(lastErr) {
+					return key, ports.ChatResult{}, lastErr
+				}
 				continue
 			}
-			result, chatErr = accountAdapter.ChatWithAccount(ctx, adapterInput, lease.Candidate.NativeID)
-			lease.Release()
-		} else {
-			result, chatErr = adapter.Chat(ctx, adapterInput)
-		}
-		if chatErr != nil {
-			setTargetError(classifyAdapterError(chatErr))
-			if !retryableRouteError(lastErr) {
-				return key, ports.ChatResult{}, lastErr
+			if result.ID == "" {
+				result.ID = "chatcmpl_" + fmt.Sprintf("%d", s.now().UnixNano())
 			}
-			continue
+			if result.CreatedAt == 0 {
+				result.CreatedAt = s.now().Unix()
+			}
+			if result.FinishReason == "" {
+				result.FinishReason = "stop"
+			}
+			result.UpstreamModel = upstreamModel
+			result.Channel = channel
+			result.RouteAlias = target.Alias
+			result.FallbackDepth = target.Depth
+			return key, result, nil
 		}
-		if result.ID == "" {
-			result.ID = "chatcmpl_" + fmt.Sprintf("%d", s.now().UnixNano())
-		}
-		if result.CreatedAt == 0 {
-			result.CreatedAt = s.now().Unix()
-		}
-		if result.FinishReason == "" {
-			result.FinishReason = "stop"
-		}
-		result.UpstreamModel = upstreamModel
-		result.Channel = channel
-		result.RouteAlias = target.Alias
-		result.FallbackDepth = target.Depth
-		return key, result, nil
 	}
 	if lastErr != nil {
 		return key, ports.ChatResult{}, lastErr
@@ -357,7 +382,7 @@ func retryableRouteError(err error) bool {
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return true
 	default:
-		return serviceError.Code == "upstream_unavailable" || serviceError.Code == "upstream_timeout" || serviceError.Code == "account_unavailable" || serviceError.Code == "channel_disabled"
+		return serviceError.Code == "upstream_unavailable" || serviceError.Code == "upstream_timeout" || serviceError.Code == "account_unavailable" || serviceError.Code == "channel_disabled" || serviceError.Code == "credential_rejected" || serviceError.Code == "token_expired" || serviceError.Code == "refresh_token_invalid"
 	}
 }
 
@@ -427,31 +452,37 @@ func (s *Service) ChatStream(ctx context.Context, authorization, xAPIKey string,
 		}
 		adapterInput := input
 		adapterInput.Model = upstreamModel
-		emitted := false
-		emitChunk := func(chunk ports.StreamChunk) error {
-			emitted = true
-			chunk.Channel = channel
-			chunk.UpstreamModel = upstreamModel
-			chunk.RouteAlias = target.Alias
-			chunk.FallbackDepth = target.Depth
-			return emit(chunk)
-		}
 		if streamAdapter, ok := adapter.(ports.AccountStreamAdapter); ok && s.pool != nil {
-			lease, acquireErr := s.pool.Acquire(ctx, channel, upstreamModel, true)
-			if acquireErr != nil {
-				setTargetError(&Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"})
-				continue
+			excluded := map[string]struct{}{}
+			for {
+				lease, acquireErr := s.pool.AcquireExcluding(ctx, channel, upstreamModel, true, excluded)
+				if acquireErr != nil {
+					if lastErr == nil {
+						setTargetError(&Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"})
+					}
+					break
+				}
+				emitted := false
+				emitChunk := func(chunk ports.StreamChunk) error {
+					emitted = true
+					chunk.Channel = channel
+					chunk.UpstreamModel = upstreamModel
+					chunk.RouteAlias = target.Alias
+					chunk.FallbackDepth = target.Depth
+					return emit(chunk)
+				}
+				streamErr := streamAdapter.ChatStreamWithAccount(ctx, adapterInput, lease.Candidate.NativeID, emitChunk)
+				accountID := lease.Candidate.ID
+				lease.Release()
+				if streamErr == nil {
+					return key, nil
+				}
+				setTargetError(classifyAdapterError(streamErr))
+				if emitted || !retryableRouteError(lastErr) {
+					return key, lastErr
+				}
+				excluded[accountID] = struct{}{}
 			}
-			streamErr := streamAdapter.ChatStreamWithAccount(ctx, adapterInput, lease.Candidate.NativeID, emitChunk)
-			lease.Release()
-			if streamErr == nil {
-				return key, nil
-			}
-			setTargetError(classifyAdapterError(streamErr))
-			if emitted || !retryableRouteError(lastErr) {
-				return key, lastErr
-			}
-			continue
 		}
 		result, chatErr := adapter.Chat(ctx, adapterInput)
 		if chatErr != nil {
@@ -461,7 +492,8 @@ func (s *Service) ChatStream(ctx context.Context, authorization, xAPIKey string,
 			}
 			continue
 		}
-		if err := emitChunk(ports.StreamChunk{ID: result.ID, Text: result.Text, Reasoning: result.Reasoning, FinishReason: result.FinishReason, CreatedAt: result.CreatedAt, Usage: result.Usage}); err != nil {
+		chunk := ports.StreamChunk{ID: result.ID, Text: result.Text, Reasoning: result.Reasoning, FinishReason: result.FinishReason, CreatedAt: result.CreatedAt, Usage: result.Usage, Channel: channel, UpstreamModel: upstreamModel, RouteAlias: target.Alias, FallbackDepth: target.Depth}
+		if err := emit(chunk); err != nil {
 			return key, err
 		}
 		return key, nil
@@ -608,32 +640,49 @@ func (s *Service) AdminChat(ctx context.Context, input ports.ChatInput) (ports.C
 			continue
 		}
 		input.Model = upstreamModel
-		var result ports.ChatResult
-		var chatErr error
 		if accountAdapter, accountAware := adapter.(ports.AccountAwareAdapter); accountAware && s.pool != nil {
-			lease, acquireErr := s.pool.Acquire(ctx, channel, upstreamModel, true)
-			if acquireErr != nil {
-				lastErr = &Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"}
+			excluded := map[string]struct{}{}
+			for {
+				lease, acquireErr := s.pool.AcquireExcluding(ctx, channel, upstreamModel, true, excluded)
+				if acquireErr != nil {
+					if lastErr == nil {
+						lastErr = &Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"}
+					}
+					break
+				}
+				result, chatErr := accountAdapter.ChatWithAccount(ctx, input, lease.Candidate.NativeID)
+				accountID := lease.Candidate.ID
+				lease.Release()
+				if chatErr == nil {
+					result = normalizeResult(result, s.now())
+					result.UpstreamModel = upstreamModel
+					result.Channel = channel
+					result.RouteAlias = target.Alias
+					result.FallbackDepth = target.Depth
+					return result, nil
+				}
+				lastErr = classifyAdapterError(chatErr)
+				if !retryableRouteError(lastErr) {
+					return ports.ChatResult{}, lastErr
+				}
+				excluded[accountID] = struct{}{}
+			}
+		} else {
+			result, chatErr := adapter.Chat(ctx, input)
+			if chatErr != nil {
+				lastErr = classifyAdapterError(chatErr)
+				if !retryableRouteError(lastErr) {
+					return ports.ChatResult{}, lastErr
+				}
 				continue
 			}
-			result, chatErr = accountAdapter.ChatWithAccount(ctx, input, lease.Candidate.NativeID)
-			lease.Release()
-		} else {
-			result, chatErr = adapter.Chat(ctx, input)
+			result = normalizeResult(result, s.now())
+			result.UpstreamModel = upstreamModel
+			result.Channel = channel
+			result.RouteAlias = target.Alias
+			result.FallbackDepth = target.Depth
+			return result, nil
 		}
-		if chatErr != nil {
-			lastErr = classifyAdapterError(chatErr)
-			if !retryableRouteError(lastErr) {
-				return ports.ChatResult{}, lastErr
-			}
-			continue
-		}
-		result = normalizeResult(result, s.now())
-		result.UpstreamModel = upstreamModel
-		result.Channel = channel
-		result.RouteAlias = target.Alias
-		result.FallbackDepth = target.Depth
-		return result, nil
 	}
 	if lastErr != nil {
 		return ports.ChatResult{}, lastErr
@@ -683,53 +732,68 @@ func (s *Service) AdminChatStream(ctx context.Context, input ports.ChatInput, em
 			lastErr = &Error{Status: 404, Code: "model_not_found", Message: "model was not found"}
 			continue
 		}
-		lease, acquireErr := s.pool.Acquire(ctx, channel, upstreamModel, true)
-		if acquireErr != nil {
-			lastErr = &Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"}
-			continue
-		}
 		adapterInput := input
 		adapterInput.Model = upstreamModel
-		emitted := false
-		emitChunk := func(chunk ports.StreamChunk) error {
-			emitted = true
-			chunk.Channel = channel
-			chunk.UpstreamModel = upstreamModel
-			chunk.RouteAlias = target.Alias
-			chunk.FallbackDepth = target.Depth
-			return emit(chunk)
-		}
 		if streamAdapter, ok := adapter.(ports.AccountStreamAdapter); ok {
-			streamErr := streamAdapter.ChatStreamWithAccount(ctx, adapterInput, lease.Candidate.NativeID, emitChunk)
-			lease.Release()
-			if streamErr == nil {
-				return nil
-			}
-			lastErr = classifyAdapterError(streamErr)
-			if emitted || !retryableRouteError(lastErr) {
-				return lastErr
+			excluded := map[string]struct{}{}
+			for {
+				lease, acquireErr := s.pool.AcquireExcluding(ctx, channel, upstreamModel, true, excluded)
+				if acquireErr != nil {
+					if lastErr == nil {
+						lastErr = &Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"}
+					}
+					break
+				}
+				emitted := false
+				emitChunk := func(chunk ports.StreamChunk) error {
+					emitted = true
+					chunk.Channel = channel
+					chunk.UpstreamModel = upstreamModel
+					chunk.RouteAlias = target.Alias
+					chunk.FallbackDepth = target.Depth
+					return emit(chunk)
+				}
+				streamErr := streamAdapter.ChatStreamWithAccount(ctx, adapterInput, lease.Candidate.NativeID, emitChunk)
+				accountID := lease.Candidate.ID
+				lease.Release()
+				if streamErr == nil {
+					return nil
+				}
+				lastErr = classifyAdapterError(streamErr)
+				if emitted || !retryableRouteError(lastErr) {
+					return lastErr
+				}
+				excluded[accountID] = struct{}{}
 			}
 			continue
 		}
 		accountAdapter, accountOK := adapter.(ports.AccountAwareAdapter)
 		if !accountOK {
-			lease.Release()
 			lastErr = &Error{Status: 503, Code: "adapter_unavailable", Message: "channel account adapter is not available"}
 			continue
 		}
-		result, chatErr := accountAdapter.ChatWithAccount(ctx, adapterInput, lease.Candidate.NativeID)
-		lease.Release()
-		if chatErr != nil {
+		excluded := map[string]struct{}{}
+		for {
+			lease, acquireErr := s.pool.AcquireExcluding(ctx, channel, upstreamModel, true, excluded)
+			if acquireErr != nil {
+				if lastErr == nil {
+					lastErr = &Error{Status: 503, Code: "account_unavailable", Message: "no account is available for this channel"}
+				}
+				break
+			}
+			result, chatErr := accountAdapter.ChatWithAccount(ctx, adapterInput, lease.Candidate.NativeID)
+			accountID := lease.Candidate.ID
+			lease.Release()
+			if chatErr == nil {
+				chunk := ports.StreamChunk{ID: result.ID, Text: result.Text, Reasoning: result.Reasoning, FinishReason: result.FinishReason, CreatedAt: result.CreatedAt, Usage: result.Usage, Channel: channel, UpstreamModel: upstreamModel, RouteAlias: target.Alias, FallbackDepth: target.Depth}
+				return emit(chunk)
+			}
 			lastErr = classifyAdapterError(chatErr)
 			if !retryableRouteError(lastErr) {
 				return lastErr
 			}
-			continue
+			excluded[accountID] = struct{}{}
 		}
-		if err := emitChunk(ports.StreamChunk{ID: result.ID, Text: result.Text, Reasoning: result.Reasoning, FinishReason: result.FinishReason, CreatedAt: result.CreatedAt, Usage: result.Usage}); err != nil {
-			return err
-		}
-		return nil
 	}
 	if lastErr != nil {
 		return lastErr

@@ -33,6 +33,12 @@ func (s *Service) DeleteConversation(ctx context.Context, actor, id string, audi
 	}
 	return s.repository.DeletePlaygroundConversation(ctx, actor, id, audit)
 }
+func (s *Service) ClearConversations(ctx context.Context, actor string, audit ports.AuditEvent) (ports.PlaygroundClearResult, error) {
+	if s.repository == nil {
+		return ports.PlaygroundClearResult{}, errors.New("playground storage is unavailable")
+	}
+	return s.repository.ClearPlaygroundConversations(ctx, actor, audit)
+}
 func (s *Service) ListRuns(ctx context.Context, page, size int) ([]ports.PlaygroundRun, int, error) {
 	if s.repository == nil {
 		return nil, 0, errors.New("playground storage is unavailable")

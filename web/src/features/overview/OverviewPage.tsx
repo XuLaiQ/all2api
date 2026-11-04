@@ -6,7 +6,8 @@ import { LineChart, PieChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import { ApiClientError } from "../../api/client";
-import { Button, ButtonLink } from "../../app/controls/Button";
+import { ButtonLink } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { Select } from "../../app/controls/Select";
 import { fetchAccounts, type AccountRecord } from "../accounts/accountsApi";
 import { fetchRoutes, type ModelRoute } from "../routes/routesApi";
@@ -166,12 +167,12 @@ function EChart({
 }
 
 export function OverviewPage() {
+  const toast = useToast();
   const [overview, setOverview] = useState<OverviewPayload | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [routes, setRoutes] = useState<ModelRoute[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [trendDays, setTrendDays] = useState(30);
   const [refreshTick, setRefreshTick] = useState(0);
   const [trendRefreshTick, setTrendRefreshTick] = useState(0);
@@ -201,7 +202,7 @@ export function OverviewPage() {
       const failed = [overviewResult, metricsResult, accountsResult, routesResult]
         .find((result) => result.status === "rejected");
       if (failed?.status === "rejected" && !controller.signal.aborted && initialLoad) {
-        setError(failed.reason instanceof ApiClientError ? failed.reason.message : "部分运行数据暂时无法读取");
+        toast.error(failed.reason instanceof ApiClientError ? failed.reason.message : "部分运行数据暂时无法读取");
       }
     }).finally(() => {
       if (!controller.signal.aborted && initialLoad) {
@@ -213,7 +214,7 @@ export function OverviewPage() {
       }
     });
     return () => controller.abort();
-  }, [refreshTick]);
+  }, [refreshTick, toast]);
 
   useEffect(() => {
     if (!initialLoadedRef.current) return undefined;
@@ -227,11 +228,11 @@ export function OverviewPage() {
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
-          setError(cause instanceof ApiClientError ? cause.message : "读取请求趋势失败");
+          toast.error(cause instanceof ApiClientError ? cause.message : "读取请求趋势失败");
         }
       });
     return () => controller.abort();
-  }, [trendDays, trendRefreshTick]);
+  }, [trendDays, trendRefreshTick, toast]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setRefreshTick((value) => value + 1), 10_000);
@@ -386,7 +387,6 @@ export function OverviewPage() {
         </div>
       </div>
 
-      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setRefreshTick((value) => value + 1)}>重试</Button></div>}
 
       <section className="overview-kpis" aria-label="运行指标">
         <Metric label="今日请求" value={loading ? "…" : number(metrics?.requests ?? 0)} icon="↗" meta={metrics ? "最近 24h" : "等待数据"} />

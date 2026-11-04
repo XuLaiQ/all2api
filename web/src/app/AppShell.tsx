@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { ApiClientError, apiClient, onUnauthorized } from "../api/client";
 import { Button } from "./controls/Button";
 import { LoginPage } from "../features/auth/LoginPage";
+import { ToastProvider } from "./Toast";
 
 type AuthState =
   | { status: "checking" }
@@ -131,7 +132,8 @@ export function AppShell() {
   }
 
   return (
-    <div className="app-frame">
+    <ToastProvider>
+      <div className="app-frame">
       <header className="app-header">
         <div className="header-context">
           <span className="header-context-root">控制台</span>
@@ -234,6 +236,7 @@ export function AppShell() {
           <Outlet context={{ role: auth.role }} />
         </div>
       </div>
-    </div>
+      </div>
+    </ToastProvider>
   );
 }

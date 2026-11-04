@@ -3,6 +3,7 @@ package grok
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -146,7 +147,12 @@ func (c *Client) SetProxy(proxy string) error {
 }
 
 const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-const defaultBuildUserAgent = "grok-shell/1.0.13 (windows; x86_64)"
+
+// Build (xAI CLI) client identity. These must track the current grok-shell
+// release the upstream expects; a stale version is rejected by cli-chat-proxy.
+const defaultBuildClientVersion = "1.0.60"
+
+var defaultBuildUserAgent = "grok-shell/" + defaultBuildClientVersion + " (linux; x86_64)"
 
 func NewClient(baseURL string, resolver CredentialResolver) *Client {
 	return NewClientWithBuildBase(baseURL, "https://cli-chat-proxy.grok.com/v1", resolver)
@@ -158,11 +164,11 @@ func NewClientWithBuildBase(baseURL, buildBaseURL string, resolver CredentialRes
 		BuildBaseURL:       strings.TrimRight(strings.TrimSpace(buildBaseURL), "/"),
 		HTTPClient:         &http.Client{Timeout: 20 * time.Second},
 		StreamHTTPClient:   &http.Client{},
-		OAuth:              NewBuildOAuth(&http.Client{Timeout: 30 * time.Second}, "1.0.13"),
+		OAuth:              NewBuildOAuth(&http.Client{Timeout: 30 * time.Second}, defaultBuildClientVersion),
 		ResolveCredential:  resolver,
 		UserAgent:          defaultUserAgent,
 		BuildUserAgent:     defaultBuildUserAgent,
-		BuildClientVersion: "1.0.13",
+		BuildClientVersion: defaultBuildClientVersion,
 		BuildClientID:      "grok-shell",
 		BuildTokenAuth:     "xai-grok-cli",
 		BuildAgentID:       uuid.NewString(),
@@ -395,7 +401,7 @@ func (c *Client) buildModels(ctx context.Context, credentials map[string]string)
 	if err != nil {
 		return nil, err
 	}
-	c.applyBuildHeaders(request, credentials, false)
+	c.applyBuildHeaders(request, credentials, false, "")
 	response, err := c.httpClient().Do(request)
 	if err != nil {
 		return nil, ports.NewTransportError("Grok Build models", err)
@@ -442,26 +448,35 @@ func (c *Client) buildModels(ctx context.Context, credentials map[string]string)
 }
 
 func (c *Client) buildChatStream(ctx context.Context, input ports.ChatInput, credentials map[string]string, emit func(ports.StreamChunk) error) error {
-	prompt := formatPrompt(input.Messages)
-	if prompt == "" {
+	items, instructions := buildResponsesInput(input.Messages)
+	if len(items) == 0 {
 		return fmt.Errorf("Grok Build messages are empty")
 	}
 	model := strings.TrimSpace(input.Model)
 	payload := map[string]any{
 		"model":   model,
-		"input":   prompt,
+		"input":   items,
 		"stream":  true,
 		"store":   false,
 		"include": []string{"reasoning.encrypted_content"},
+		// grok-build always asks for a concise reasoning summary; without it the
+		// proxy can omit reasoning deltas entirely.
+		"reasoning": map[string]any{"summary": "concise"},
+	}
+	if instructions != "" {
+		payload["instructions"] = instructions
 	}
 	if input.MaxTokens != nil {
-		payload["max_tokens"] = *input.MaxTokens
+		payload["max_output_tokens"] = *input.MaxTokens
 	}
 	if input.Temperature != nil {
 		payload["temperature"] = *input.Temperature
 	}
 	if input.TopP != nil {
 		payload["top_p"] = *input.TopP
+	}
+	if effort := normalizeBuildEffort(input.ReasoningEffort); effort != "" {
+		payload["reasoning"] = map[string]any{"summary": "concise", "effort": effort}
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -473,7 +488,7 @@ func (c *Client) buildChatStream(ctx context.Context, input ports.ChatInput, cre
 	if err != nil {
 		return err
 	}
-	c.applyBuildHeaders(request, credentials, true)
+	c.applyBuildHeaders(request, credentials, true, model)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
 	client := c.StreamHTTPClient
@@ -521,7 +536,7 @@ func (c *Client) buildChatStream(ctx context.Context, input ports.ChatInput, cre
 	return nil
 }
 
-func (c *Client) applyBuildHeaders(request *http.Request, credentials map[string]string, trace bool) {
+func (c *Client) applyBuildHeaders(request *http.Request, credentials map[string]string, trace bool, model string) {
 	token := accessToken(credentials)
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-XAI-Token-Auth", c.BuildTokenAuth)
@@ -529,7 +544,11 @@ func (c *Client) applyBuildHeaders(request *http.Request, credentials map[string
 	request.Header.Set("x-grok-client-identifier", c.BuildClientID)
 	request.Header.Set("x-grok-client-mode", "headless")
 	request.Header.Set("User-Agent", firstCredentialValue(credentials, "user_agent", "User-Agent", "user-agent", c.BuildUserAgent))
-	if userID := firstCredentialValue(credentials, "user_id", "userId", "uid"); userID != "" {
+	if strings.TrimSpace(model) != "" {
+		request.Header.Set("x-grok-model-override", model)
+	}
+	userID := firstCredentialValue(credentials, "user_id", "userId", "uid")
+	if userID != "" {
 		if trace {
 			request.Header.Set("x-grok-user-id", userID)
 		} else {
@@ -542,10 +561,47 @@ func (c *Client) applyBuildHeaders(request *http.Request, credentials map[string
 	if trace {
 		request.Header.Set("x-authenticateresponse", "authenticate-response")
 		request.Header.Set("x-grok-agent-id", c.BuildAgentID)
+		// Stable per-account session affinity keeps upstream prompt cache hits.
+		// Never use a random per-request UUID: it breaks affinity and zeroes
+		// cached_tokens.
+		if sessionID := buildSessionID(credentials); sessionID != "" {
+			request.Header.Set("x-grok-session-id", sessionID)
+			request.Header.Set("x-grok-conv-id", sessionID)
+			request.Header.Set("x-grok-conv-group-id", sessionID)
+		}
 		request.Header.Set("x-grok-req-id", uuid.NewString())
 		traceID := strings.ReplaceAll(uuid.NewString(), "-", "")
 		spanID := strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
 		request.Header.Set("traceparent", "00-"+traceID+"-"+spanID+"-01")
+	}
+}
+
+// buildSessionID derives a stable UUID-shaped session id from the account
+// identity so upstream session affinity (and prefix cache) survives restarts.
+func buildSessionID(credentials map[string]string) string {
+	identity := firstCredentialValue(credentials, "user_id", "userId", "uid", "email")
+	if identity == "" {
+		identity = accessToken(credentials)
+	}
+	if identity == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte("grok-build-session:" + identity))
+	return uuid.UUID(digest[:16]).String()
+}
+
+// normalizeBuildEffort maps client effort aliases to the wire tiers grok-build
+// accepts, folding unsupported extremes onto the nearest offered level.
+func normalizeBuildEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "minimal":
+		return "low"
+	case "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(value))
+	case "max":
+		return "xhigh"
+	default:
+		return ""
 	}
 }
 
@@ -818,6 +874,41 @@ func normalizeUserID(value string) string {
 		return ""
 	}
 	return parsed.String()
+}
+
+// buildResponsesInput converts chat messages into the xAI Responses API input
+// item array. System/developer turns become the top-level instructions; every
+// other turn becomes a {type:message, role, content:[{type:input_text|output_text}]}
+// item, matching the official grok-shell client wire shape.
+func buildResponsesInput(messages []ports.ChatMessage) ([]map[string]any, string) {
+	items := make([]map[string]any, 0, len(messages))
+	var instructions []string
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		switch role {
+		case "system", "developer":
+			instructions = append(instructions, content)
+			continue
+		case "", "user":
+			role = "user"
+		case "assistant", "model":
+			role = "assistant"
+		}
+		partType := "input_text"
+		if role == "assistant" {
+			partType = "output_text"
+		}
+		items = append(items, map[string]any{
+			"type":    "message",
+			"role":    role,
+			"content": []any{map[string]any{"type": partType, "text": content}},
+		})
+	}
+	return items, strings.Join(instructions, "\n\n")
 }
 
 func formatPrompt(messages []ports.ChatMessage) string {

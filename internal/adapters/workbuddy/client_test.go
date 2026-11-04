@@ -2,6 +2,7 @@ package workbuddy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,5 +78,64 @@ func TestClientRefreshUsesNativeTokenRotationContract(t *testing.T) {
 	updated, err := client.Refresh(context.Background(), "cn:user-1")
 	if err != nil || updated["access_token"] != "access-2" || updated["refresh_token"] != "refresh-2" {
 		t.Fatalf("Refresh() = %#v/%v", updated, err)
+	}
+}
+
+// TestGlobalChatUsesConsolePathWithSystemFallback locks the global-realm fix:
+// global accounts must hit /console/chat/completions with a leading system
+// message (upstream rejects /v2 with 11-128 "request illegal").
+func TestGlobalChatUsesConsolePathWithSystemFallback(t *testing.T) {
+	var gotPath, gotFirstRole string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotPath = request.URL.Path
+		var payload struct {
+			Messages []struct {
+				Role string `json:"role"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&payload)
+		if len(payload.Messages) > 0 {
+			gotFirstRole = payload.Messages[0].Role
+		}
+		_, _ = writer.Write([]byte(`{"id":"c1","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	client := NewClient("https://copilot.tencent.com", func(context.Context, string) (map[string]string, error) {
+		return map[string]string{"access_token": "tok", "realm": "global", "domain": "www.workbuddy.ai", "uid": "u1"}, nil
+	})
+	client.GlobalBaseURL = server.URL
+	if _, err := client.Chat(context.Background(), ports.ChatInput{Model: "m", Messages: []ports.ChatMessage{{Role: "user", Content: "hi"}}}, "acct"); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if gotPath != "/console/chat/completions" {
+		t.Fatalf("global chat path = %q, want /console/chat/completions", gotPath)
+	}
+	if gotFirstRole != "system" {
+		t.Fatalf("global chat first role = %q, want system", gotFirstRole)
+	}
+}
+
+// TestGlobalChatFallsBackToV2OnNotFound verifies the 404/405 fallback keeps the
+// channel usable if the console path disappears upstream.
+func TestGlobalChatFallsBackToV2OnNotFound(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.URL.Path)
+		if request.URL.Path == "/console/chat/completions" {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = writer.Write([]byte(`{"id":"c2","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	client := NewClient("https://copilot.tencent.com", func(context.Context, string) (map[string]string, error) {
+		return map[string]string{"access_token": "tok", "realm": "global", "uid": "u1"}, nil
+	})
+	client.GlobalBaseURL = server.URL
+	if _, err := client.Chat(context.Background(), ports.ChatInput{Model: "m", Messages: []ports.ChatMessage{{Role: "user", Content: "hi"}}}, "acct"); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if len(paths) != 2 || paths[1] != "/v2/chat/completions" {
+		t.Fatalf("paths = %v, want [/console/... /v2/...]", paths)
 	}
 }

@@ -239,6 +239,7 @@ func NewServerWithAdapters(cfg config.Config, storage ports.Storage, logger *log
 	server.mux.HandleFunc("/admin/api/media/assets/{asset_id}", server.mediaAsset)
 	server.mux.HandleFunc("/admin/api/media/assets/{asset_id}/content", server.mediaContent)
 	server.mux.HandleFunc("/admin/api/playground/conversations", server.playgroundConversations)
+	server.mux.HandleFunc("/admin/api/playground/conversations/clear", server.playgroundConversationsClear)
 	server.mux.HandleFunc("/admin/api/playground/conversations/{conversation_id}", server.playgroundConversation)
 	server.mux.HandleFunc("/admin/api/playground/runs", server.playgroundRuns)
 	server.mux.HandleFunc("/admin/api/playground/chat", server.playgroundChat)

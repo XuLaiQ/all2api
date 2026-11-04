@@ -38,6 +38,27 @@ func (s *Server) playgroundConversations(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, r, 200, map[string]any{"data": rows, "pagination": map[string]int{"page": page, "page_size": size, "total": total, "total_pages": (total + size - 1) / size}})
 }
 
+func (s *Server) playgroundConversationsClear(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodDelete {
+		writeAdminError(w, r, 405, "request_error", "method not allowed", nil)
+		return
+	}
+	if s.playground == nil {
+		writeAdminError(w, r, 503, "service_unavailable", "playground storage is unavailable", nil)
+		return
+	}
+	result, err := s.playground.ClearConversations(r.Context(), user.Username, ports.AuditEvent{Actor: user.Username, Action: "clear_playground_conversations", IP: s.clientIP(r)})
+	if err != nil {
+		writeAdminError(w, r, 503, "service_unavailable", err.Error(), nil)
+		return
+	}
+	writeJSON(w, r, 200, map[string]any{"data": result})
+}
+
 func (s *Server) playgroundConversation(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireAdmin(w, r, r.Method != http.MethodGet)
 	if !ok {

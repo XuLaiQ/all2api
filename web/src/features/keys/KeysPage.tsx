@@ -4,6 +4,7 @@ import { Check, Copy } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -114,6 +115,7 @@ function keyInput(editor: EditorState): KeyInput {
 export function KeysPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canManage = role === "admin";
+  const toast = useToast();
   const [rows, setRows] = useState<ApiKeyRecord[]>([]);
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -129,7 +131,6 @@ export function KeysPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -141,7 +142,6 @@ export function KeysPage() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     fetchKeys(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
@@ -149,13 +149,13 @@ export function KeysPage() {
       })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setError(cause instanceof ApiClientError ? cause.message : "读取密钥失败");
+        toast.error(cause instanceof ApiClientError ? cause.message : "读取密钥失败");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, pageSize, filters, retry]);
+  }, [page, pageSize, filters, retry, toast]);
 
   function applyDraftFilters(nextDraft: FilterDraft) {
     const next: KeyFilters = {};
@@ -198,7 +198,6 @@ export function KeysPage() {
     event.preventDefault();
     if (!editor) return;
     setSaving(true);
-    setError("");
     try {
       const input = keyInput(editor);
       if (editor.id === undefined) {
@@ -209,9 +208,10 @@ export function KeysPage() {
         await updateKey(editor.id, input);
       }
       setEditor(null);
+      toast.success(editor.id === undefined ? "密钥已创建" : "密钥已更新");
       setRetry((value) => value + 1);
     } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "保存密钥失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "保存密钥失败");
     } finally {
       setSaving(false);
     }
@@ -220,9 +220,10 @@ export function KeysPage() {
   async function toggleEnabled(row: ApiKeyRecord) {
     try {
       await updateKey(row.id, { enabled: !row.enabled });
+      toast.success(row.enabled ? "密钥已停用" : "密钥已启用");
       setRetry((value) => value + 1);
     } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "更新密钥状态失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "更新密钥状态失败");
     }
   }
 
@@ -238,25 +239,26 @@ export function KeysPage() {
       } else {
         await revokeKey(action.id);
       }
+      toast.success(action.kind === "rotate" ? "密钥已轮换" : "密钥已撤销");
       setRetry((value) => value + 1);
     } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "密钥操作失败");
+      toast.error(cause instanceof ApiClientError ? cause.message : "密钥操作失败");
     }
   }
 
   async function copyOneTimeKey() {
     if (!(await copyText(oneTimeKey))) {
-      setError("无法访问剪贴板，请手动复制当前密钥");
+      toast.error("无法访问剪贴板，请手动复制当前密钥");
     }
   }
 
   async function copyRowKey(row: ApiKeyRecord) {
     if (!row.key) {
-      setError("该密钥只保留了前缀，请先轮换密钥");
+      toast.warning("该密钥只保留了前缀，请先轮换密钥");
       return;
     }
     if (!(await copyText(row.key))) {
-      setError("无法访问剪贴板，请手动复制当前密钥");
+      toast.error("无法访问剪贴板，请手动复制当前密钥");
       return;
     }
     setCopiedKeyId(row.id);
@@ -267,7 +269,7 @@ export function KeysPage() {
 
   async function copyGatewayUrl(target: CopyTarget) {
     if (!(await copyText(gatewayBaseUrl()))) {
-      setError("无法访问剪贴板，请手动复制调用地址");
+      toast.error("无法访问剪贴板，请手动复制调用地址");
       return;
     }
     setCopiedUrlTarget(target);
@@ -286,12 +288,6 @@ export function KeysPage() {
         {canManage && <Button variant="primary" onClick={() => startEdit()}>创建密钥</Button>}
       </div>
 
-      {error && (
-        <div className="notice notice-error" role="alert">
-          <span>{error}</span>
-          <Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button>
-        </div>
-      )}
       {pendingAction && (
         <div className="notice notice-confirm" role="alertdialog" aria-label="确认密钥操作">
           <span>

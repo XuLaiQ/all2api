@@ -47,7 +47,70 @@ func (d *DB) GetPlaygroundConversation(ctx context.Context, actor, id string) (p
 	} else if err != nil {
 		return ports.PlaygroundConversation{}, err
 	}
+
+	rows, err := d.db.QueryContext(ctx, `SELECT id,role,content,model,raw_response,created_at FROM playground_messages WHERE conversation_id = ? ORDER BY created_at ASC,id ASC`, item.ID)
+	if err != nil {
+		return ports.PlaygroundConversation{}, err
+	}
+	defer rows.Close()
+	item.Messages = []ports.PlaygroundMessage{}
+	for rows.Next() {
+		var message ports.PlaygroundMessage
+		var raw sql.NullString
+		if err := rows.Scan(&message.ID, &message.Role, &message.Content, &message.Model, &raw, &message.CreatedAt); err != nil {
+			return ports.PlaygroundConversation{}, err
+		}
+		if raw.Valid && raw.String != "" {
+			var decoded any
+			if err := json.Unmarshal([]byte(raw.String), &decoded); err != nil {
+				decoded = raw.String
+			}
+			message.RawResponse = decoded
+		}
+		item.Messages = append(item.Messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return ports.PlaygroundConversation{}, err
+	}
 	return item, nil
+}
+
+func (d *DB) ClearPlaygroundConversations(ctx context.Context, actor string, audit ports.AuditEvent) (ports.PlaygroundClearResult, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ports.PlaygroundClearResult{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var result ports.PlaygroundClearResult
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM playground_conversations WHERE actor = ?", actor).Scan(&result.ConversationsDeleted); err != nil {
+		return ports.PlaygroundClearResult{}, err
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM playground_runs WHERE conversation_id IN (SELECT id FROM playground_conversations WHERE actor = ?)", actor).Scan(&result.RequestRecordsDeleted); err != nil {
+		return ports.PlaygroundClearResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM playground_runs WHERE conversation_id IN (SELECT id FROM playground_conversations WHERE actor = ?)", actor); err != nil {
+		return ports.PlaygroundClearResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM playground_conversations WHERE actor = ?", actor); err != nil {
+		return ports.PlaygroundClearResult{}, err
+	}
+	audit.Target = actor
+	if audit.Action == "" {
+		audit.Action = "clear_playground_conversations"
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_logs(ts,actor,action,target,detail,ip) VALUES(unixepoch(),?,?,?,?,?)", audit.Actor, audit.Action, audit.Target, audit.Detail, audit.IP); err != nil {
+		return ports.PlaygroundClearResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ports.PlaygroundClearResult{}, err
+	}
+	committed = true
+	return result, nil
 }
 
 func (d *DB) DeletePlaygroundConversation(ctx context.Context, actor, id string, audit ports.AuditEvent) (int, error) {

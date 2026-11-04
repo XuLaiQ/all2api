@@ -30,6 +30,11 @@ type PlaygroundConversation struct {
 	Messages []PlaygroundMessage `json:"messages"`
 }
 
+type PlaygroundClearResult struct {
+	ConversationsDeleted  int `json:"conversations_deleted"`
+	RequestRecordsDeleted int `json:"request_records_deleted"`
+}
+
 type PlaygroundRun struct {
 	ID             string  `json:"id"`
 	ConversationID *string `json:"conversation_id,omitempty"`
@@ -49,6 +54,7 @@ type PlaygroundRepository interface {
 	ListPlaygroundConversations(context.Context, string, int, int) ([]PlaygroundConversationSummary, int, error)
 	GetPlaygroundConversation(context.Context, string, string) (PlaygroundConversation, error)
 	DeletePlaygroundConversation(context.Context, string, string, AuditEvent) (int, error)
+	ClearPlaygroundConversations(context.Context, string, AuditEvent) (PlaygroundClearResult, error)
 	ListPlaygroundRuns(context.Context, int, int) ([]PlaygroundRun, int, error)
 	CreatePlaygroundConversation(context.Context, PlaygroundConversationSummary) error
 	AddPlaygroundMessage(context.Context, string, PlaygroundMessage) error

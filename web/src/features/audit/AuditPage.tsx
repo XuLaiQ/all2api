@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useToast } from "../../app/ToastContext";
 import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
@@ -32,6 +33,7 @@ function formatTimestamp(value: string): string {
 }
 
 export function AuditPage() {
+  const toast = useToast();
   const [draft, setDraft] = useState<FilterDraft>(emptyFilters);
   const [filters, setFilters] = useState<AuditFilters>({});
   const [page, setPage] = useState(1);
@@ -39,13 +41,9 @@ export function AuditPage() {
   const [rows, setRows] = useState<AuditRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [retry, setRetry] = useState(0);
-
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError("");
     fetchAuditLogs(page, filters, controller.signal, pageSize)
       .then((result) => {
         setRows(result.data);
@@ -53,14 +51,14 @@ export function AuditPage() {
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
-          setError(cause instanceof ApiClientError ? cause.message : "读取审计日志失败");
+          toast.error(cause instanceof ApiClientError ? cause.message : "读取审计日志失败");
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, pageSize, filters, retry]);
+  }, [page, pageSize, filters, toast]);
 
   function applyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -101,7 +99,6 @@ export function AuditPage() {
         </div>
       </form>
 
-      {error && <div className="notice notice-error" role="alert"><span>{error}</span><Button variant="secondary" size="sm" onClick={() => setRetry((value) => value + 1)}>重试</Button></div>}
 
       {loading ? (
         <TableState live>正在读取审计日志…</TableState>
