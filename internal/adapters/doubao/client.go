@@ -321,15 +321,17 @@ func collectDoubaoModels(value any, modeID string, result *[]ports.ModelDescript
 		}
 	case map[string]any:
 		if typed["need_login"] != true {
-			id := firstString(typed, "model_item_key", "modelItemKey", "model_id", "id", "item_id")
+			id := firstString(typed, "model_item_key", "modelItemKey", "model_id")
 			if id != "" && !seen[id] {
 				if subscription, ok := typed["subscribe_config"].(map[string]any); !ok || subscription["need_upgrade"] != true {
-					seen[id] = true
 					name := firstString(typed, "name", "display_name")
 					if name == "" {
 						name = id
 					}
-					*result = append(*result, ports.ModelDescriptor{UpstreamID: id, DisplayName: name, Capabilities: []string{"chat"}})
+					if !isUncuratedDoubaoModel(id, name) {
+						seen[id] = true
+						*result = append(*result, ports.ModelDescriptor{UpstreamID: id, DisplayName: name, Capabilities: []string{"chat"}})
+					}
 				}
 			}
 		}
@@ -354,18 +356,21 @@ func collectDoubaoModels(value any, modeID string, result *[]ports.ModelDescript
 						if !ok || object["need_login"] == true {
 							continue
 						}
-						id := firstString(object, "model_item_key", "modelItemKey", "model_id", "id", "item_id")
+						id := firstString(object, "model_item_key", "modelItemKey", "model_id")
 						if id == "" || seen[id] {
 							continue
 						}
 						if subscription, ok := object["subscribe_config"].(map[string]any); ok && subscription["need_upgrade"] == true {
 							continue
 						}
-						seen[id] = true
 						name := firstString(object, "name", "display_name")
 						if name == "" {
 							name = id
 						}
+						if isUncuratedDoubaoModel(id, name) {
+							continue
+						}
+						seen[id] = true
 						_ = modeID
 						*result = append(*result, ports.ModelDescriptor{UpstreamID: id, DisplayName: name, Capabilities: []string{"chat"}})
 					}
@@ -379,6 +384,20 @@ func collectDoubaoModels(value any, modeID string, result *[]ports.ModelDescript
 			collectDoubaoModels(child, modeID, result, seen)
 		}
 	}
+}
+
+func isUncuratedDoubaoModel(id, name string) bool {
+	id = strings.TrimSpace(id)
+	name = strings.TrimSpace(name)
+	if id == "" || len(id) > 2 || name != id {
+		return false
+	}
+	for _, char := range id {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func firstString(object map[string]any, keys ...string) string {

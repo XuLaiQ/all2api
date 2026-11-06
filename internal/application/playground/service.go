@@ -45,6 +45,12 @@ func (s *Service) ListRuns(ctx context.Context, page, size int) ([]ports.Playgro
 	}
 	return s.repository.ListPlaygroundRuns(ctx, page, size)
 }
+func (s *Service) ClearRuns(ctx context.Context, audit ports.AuditEvent) (int, error) {
+	if s.repository == nil {
+		return 0, errors.New("playground storage is unavailable")
+	}
+	return s.repository.ClearPlaygroundRuns(ctx, audit)
+}
 func (s *Service) CreateConversation(ctx context.Context, item ports.PlaygroundConversationSummary) error {
 	if s.repository == nil {
 		return errors.New("playground storage is unavailable")

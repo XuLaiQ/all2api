@@ -464,6 +464,9 @@ func parseModels(value any) []ports.ModelDescriptor {
 		if id == "" {
 			continue
 		}
+		if strings.HasPrefix(strings.ToLower(id), "chatgpt_alpha_model_external_access_reserved_gate_") {
+			continue
+		}
 		name := id
 		if value, ok := object["title"].(string); ok && value != "" {
 			name = value

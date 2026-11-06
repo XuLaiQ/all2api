@@ -56,6 +56,7 @@ type PlaygroundRepository interface {
 	DeletePlaygroundConversation(context.Context, string, string, AuditEvent) (int, error)
 	ClearPlaygroundConversations(context.Context, string, AuditEvent) (PlaygroundClearResult, error)
 	ListPlaygroundRuns(context.Context, int, int) ([]PlaygroundRun, int, error)
+	ClearPlaygroundRuns(context.Context, AuditEvent) (int, error)
 	CreatePlaygroundConversation(context.Context, PlaygroundConversationSummary) error
 	AddPlaygroundMessage(context.Context, string, PlaygroundMessage) error
 	CreatePlaygroundRun(context.Context, PlaygroundRun) error

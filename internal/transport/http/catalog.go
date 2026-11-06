@@ -76,6 +76,7 @@ func (s *Server) adminModelsRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	results := make([]map[string]any, 0, len(channels))
 	total := 0
+	synced := false
 	for _, channel := range channels {
 		item, exists := s.registry.Get(channel)
 		if !exists || item.Adapter == nil {
@@ -95,8 +96,12 @@ func (s *Server) adminModelsRefresh(w http.ResponseWriter, r *http.Request) {
 			results = append(results, map[string]any{"channel": channel, "status": "failed", "error": "catalog_unavailable"})
 			continue
 		}
+		synced = true
 		total += count
 		results = append(results, map[string]any{"channel": channel, "status": "ok", "count": count})
+	}
+	if synced && s.gateway != nil {
+		s.gateway.InvalidateModelMappings()
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"data": map[string]any{"source": "live", "refreshed_at": time.Now().Unix(), "total": total, "channels": results}})
 }
@@ -137,22 +142,27 @@ func (s *Server) adminModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Enabled bool `json:"enabled"`
+		Enabled     *bool   `json:"enabled"`
+		DisplayName *string `json:"display_name"`
+		PublicID    *string `json:"public_id"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
-		writeAdminError(w, r, 422, "validation_error", "enabled must be a boolean", nil)
+		writeAdminError(w, r, 422, "validation_error", "request body is invalid", nil)
 		return
 	}
-	item, err := s.catalog.SetModelEnabled(r.Context(), r.PathValue("model_id"), body.Enabled, ports.AuditEvent{Actor: user.Username, Action: "set_model_enabled", IP: s.clientIP(r)})
+	item, err := s.catalog.UpdateModel(r.Context(), r.PathValue("model_id"), ports.ModelUpdate{Enabled: body.Enabled, DisplayName: body.DisplayName, PublicID: body.PublicID}, ports.AuditEvent{Actor: user.Username, Action: "update_model", IP: s.clientIP(r)})
 	if errors.Is(err, ports.ErrKeyNotFound) {
 		writeAdminError(w, r, 404, "not_found", "model not found", nil)
 		return
 	}
 	if err != nil {
-		writeAdminError(w, r, 503, "service_unavailable", err.Error(), nil)
+		writeAdminError(w, r, 422, "validation_error", err.Error(), nil)
 		return
+	}
+	if s.gateway != nil {
+		s.gateway.InvalidateModelMappings()
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"data": item})
 }

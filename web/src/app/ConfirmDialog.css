@@ -1,0 +1,105 @@
+.confirm-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-width: none;
+  max-height: min(520px, calc(100dvh - 32px));
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-panel);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-raised), 0 18px 52px rgb(18 31 45 / 22%);
+}
+
+.confirm-dialog[open] {
+  animation: confirm-dialog-in 160ms ease-out;
+}
+
+.confirm-dialog::backdrop {
+  background: rgb(23 34 47 / 48%);
+  backdrop-filter: blur(2px);
+  animation: confirm-backdrop-in 160ms ease-out;
+}
+
+.confirm-dialog-content {
+  padding: 22px 22px 18px;
+}
+
+.confirm-dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 12px;
+}
+
+.confirm-dialog-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--danger), var(--surface-raised) 88%);
+  color: var(--danger);
+}
+
+.confirm-dialog-heading h2 {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.confirm-dialog-content p {
+  margin: 0 0 21px 45px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.confirm-dialog-actions .ui-button {
+  min-width: 76px;
+  min-height: 34px;
+}
+
+.confirm-dialog-actions .ui-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary), transparent 36%);
+  outline-offset: 2px;
+}
+
+@keyframes confirm-dialog-in {
+  from { opacity: 0; transform: translateY(6px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes confirm-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (max-width: 480px) {
+  .confirm-dialog-content {
+    padding: 19px 17px 16px;
+  }
+
+  .confirm-dialog-content p {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-dialog[open],
+  .confirm-dialog::backdrop {
+    animation: none;
+  }
+}

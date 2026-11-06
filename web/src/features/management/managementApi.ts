@@ -220,6 +220,11 @@ export async function fetchPlaygroundRuns(
   return response.data;
 }
 
+export async function clearPlaygroundRuns(): Promise<{ request_records_deleted: number }> {
+  const response = await apiClient.delete<DataResponse<{ request_records_deleted: number }>>("/playground/runs");
+  return response.data.data;
+}
+
 export async function runPlayground(body: {
   channel: string;
   model: string;
@@ -296,6 +301,7 @@ export async function runPlaygroundStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let result: PlaygroundResult | null = null;
+  let streamErrorText: string | null = null;
 
   const consumeFrame = (frame: string) => {
     const payload = parseStreamFrame(frame);
@@ -304,6 +310,7 @@ export async function runPlaygroundStream(
     if (event.type === "delta" && typeof event.content === "string") {
       onEvent(event);
     } else if (event.type === "error" && typeof event.message === "string") {
+      streamErrorText = event.message;
       onEvent(event);
     } else if (event.type === "done") {
       result = event;
@@ -327,6 +334,9 @@ export async function runPlaygroundStream(
   }
   if (buffer.trim()) consumeFrame(buffer);
 
+  if (streamErrorText) {
+    throw new ApiClientError(streamErrorText, response.status, null);
+  }
   if (!result) {
     throw new ApiClientError("调试流未正常结束", response.status, null);
   }

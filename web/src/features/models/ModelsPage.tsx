@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { ApiClientError } from "../../api/client";
@@ -8,7 +8,7 @@ import { DataTable, TableState } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "../../app/data/pagination.constants";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
-import { fetchModels, refreshModels, setModelEnabled, type ModelFilters, type ModelRecord } from "./modelsApi";
+import { fetchAllModels, modelDisplayName, refreshModels, setModelEnabled, updateModel, type ModelFilters, type ModelRecord } from "./modelsApi";
 import { Select } from "../../app/controls/Select";
 import "./ModelsPage.css";
 
@@ -24,19 +24,16 @@ export function ModelsPage() {
   const canManage = role === "admin";
   const toast = useToast();
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
-  const [rows, setRows] = useState<ModelRecord[]>([]);
-  const [kinds, setKinds] = useState<string[]>([]);
+  const [catalog, setCatalog] = useState<ModelRecord[]>([]);
   const [draft, setDraft] = useState<DraftFilters>(emptyFilters);
   const [filters, setFilters] = useState<ModelFilters>({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
-  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<ModelRecord | null>(null);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [retry, setRetry] = useState(0);
-  const initialRefreshDone = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -47,12 +44,8 @@ export function ModelsPage() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    fetchModels(page, filters, controller.signal, pageSize)
-      .then((result) => {
-        setRows(result.data);
-        setKinds(result.facets.kinds);
-        setTotal(result.pagination.total);
-      })
+    fetchAllModels({}, controller.signal)
+      .then(setCatalog)
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) {
           toast.error(cause instanceof ApiClientError ? cause.message : "读取模型广场失败");
@@ -62,7 +55,26 @@ export function ModelsPage() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [page, pageSize, filters, retry, toast]);
+  }, [retry, toast]);
+
+  const kinds = useMemo(
+    () => Array.from(new Set(catalog.map((item) => item.kind).filter(Boolean))).sort(),
+    [catalog],
+  );
+  const filteredRows = useMemo(() => {
+    const search = filters.search?.trim().toLowerCase() ?? "";
+    return catalog.filter((item) =>
+      (!filters.channel || item.channel === filters.channel)
+      && (!filters.kind || item.kind === filters.kind)
+      && (filters.enabled === undefined || item.enabled === filters.enabled)
+      && (!search || [item.id, item.upstream_id, item.public_id, item.display_name].some((value) => value.toLowerCase().includes(search))),
+    );
+  }, [catalog, filters]);
+  const total = filteredRows.length;
+  const rows = useMemo(
+    () => filteredRows.slice((page - 1) * pageSize, page * pageSize),
+    [filteredRows, page, pageSize],
+  );
 
   const refreshCatalog = useCallback(async () => {
     setRefreshing(true);
@@ -81,12 +93,6 @@ export function ModelsPage() {
       setRefreshing(false);
     }
   }, [toast]);
-
-  useEffect(() => {
-    if (!canManage || initialRefreshDone.current) return;
-    initialRefreshDone.current = true;
-    void refreshCatalog();
-  }, [canManage, refreshCatalog]);
 
   function applyDraftFilters(nextDraft: DraftFilters) {
     const next: ModelFilters = {};
@@ -116,6 +122,35 @@ export function ModelsPage() {
       toast.error(cause instanceof ApiClientError ? cause.message : "更新模型状态失败");
     } finally {
       setSaving(false);
+    }
+  }
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDisplayName, setEditDisplayName] = useState("");
+  const [editPublicId, setEditPublicId] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  function startEdit(model: ModelRecord) {
+    setEditingId(model.id);
+    setEditDisplayName(model.display_name);
+    setEditPublicId(model.public_id);
+  }
+
+  async function saveEdit() {
+    if (!editingId) return;
+    setEditSaving(true);
+    try {
+      await updateModel(editingId, {
+        display_name: editDisplayName,
+        public_id: editPublicId,
+      });
+      setEditingId(null);
+      toast.success("模型命名已更新");
+      setRetry((value) => value + 1);
+    } catch (cause) {
+      toast.error(cause instanceof ApiClientError ? cause.message : "更新模型命名失败");
+    } finally {
+      setEditSaving(false);
     }
   }
 
@@ -188,14 +223,34 @@ export function ModelsPage() {
             <thead><tr><th>模型</th><th>渠道</th><th>类型</th><th>能力</th><th>上下文</th><th>最大输出</th><th>状态</th>{canManage && <th>操作</th>}</tr></thead>
             <tbody>{rows.map((model) => (
               <tr key={model.id}>
-                <td><span className="channel-name">{model.display_name}</span><span className="secondary-text">{model.id}</span></td>
+                <td>
+                  {editingId === model.id ? (
+                    <div className="model-edit-form">
+                      <label>显示名<input value={editDisplayName} onChange={(event) => setEditDisplayName(event.target.value)} /></label>
+                      <label>对外 ID<input value={editPublicId} onChange={(event) => setEditPublicId(event.target.value)} /></label>
+                      <div className="log-filter-actions">
+                        <Button variant="primary" size="sm" disabled={editSaving} onClick={() => void saveEdit()}>{editSaving ? "保存中…" : "保存"}</Button>
+                        <Button variant="secondary" size="sm" disabled={editSaving} onClick={() => setEditingId(null)}>取消</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="channel-name">{model.public_id || model.upstream_id}</span>
+                      {modelDisplayName(model) !== (model.public_id || model.upstream_id) && <span className="secondary-text">{modelDisplayName(model)}</span>}
+                      <span className="secondary-text">上游: {model.upstream_id}</span>
+                    </>
+                  )}
+                </td>
                 <td>{model.channel}</td>
                 <td>{model.kind || "未提供"}</td>
                 <td><span className="model-cap-list">{model.caps.length ? model.caps.join(", ") : "未提供"}</span></td>
                 <td>{formatCount(model.context_window)}</td>
                 <td>{formatCount(model.max_output)}</td>
                 <td><span className={`status-label ${model.enabled ? "status-success" : "status-danger"}`}>{model.enabled ? "启用" : "停用"}</span></td>
-                {canManage && <td><Button variant={model.enabled ? "danger" : "secondary"} size="sm" className={model.enabled ? "model-disable-button" : "model-enable-button"} onClick={() => setPending(model)}>{model.enabled ? "停用" : "启用"}</Button></td>}
+                {canManage && <td>
+                  <Button variant="secondary" size="sm" onClick={() => (editingId === model.id ? setEditingId(null) : startEdit(model))}>{editingId === model.id ? "关闭" : "命名"}</Button>{" "}
+                  <Button variant={model.enabled ? "danger" : "secondary"} size="sm" className={model.enabled ? "model-disable-button" : "model-enable-button"} onClick={() => setPending(model)}>{model.enabled ? "停用" : "启用"}</Button>
+                </td>}
               </tr>
             ))}</tbody>
         </DataTable>

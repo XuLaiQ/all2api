@@ -12,6 +12,7 @@ var (
 	ErrBootstrapKey   = errors.New("bootstrap key is managed by configuration")
 	ErrInvalidKey     = errors.New("invalid or expired API key")
 	ErrKeyRateLimited = errors.New("API key rate limit exceeded")
+	ErrValidation     = errors.New("validation failed")
 )
 
 type APIKey struct {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Check, ChevronDown, Palette, ScanLine, SlidersHorizontal, Sparkles } from "lucide-react";
 import { Button } from "../../../app/controls/Button";
-import type { ModelRecord } from "../../models/modelsApi";
+import { modelOptionLabel, type ModelRecord } from "../../models/modelsApi";
 import type { ComposerMode, PlaygroundGenerationSettings } from "./types";
 
 type PlaygroundComposerModeControlsProps = {
@@ -46,11 +46,15 @@ export function PlaygroundComposerModeControls({
   const [imageStyle, setImageStyle] = useState("人像摄影");
   const [pptLength, setPptLength] = useState("智能推荐");
   const modelOptions = availableModels.map((item) => [
-    item.upstream_id,
-    item.display_name === item.upstream_id ? "" : item.display_name,
+    item.public_id || item.upstream_id,
+    modelOptionLabel(item),
   ] as const);
-  const selectedModelValue = selectedModel?.upstream_id ?? availableModels[0]?.upstream_id ?? "";
-  const modelLabel = selectedModel?.display_name ?? (selectedModelValue || "未选择");
+  const selectedModelValue = selectedModel
+    ? (selectedModel.public_id || selectedModel.upstream_id)
+    : availableModels[0]
+      ? (availableModels[0].public_id || availableModels[0].upstream_id)
+      : "";
+  const modelLabel = selectedModel ? modelOptionLabel(selectedModel) : (selectedModelValue || "未选择");
 
   function toggle(name: Exclude<PopoverName, null>) {
     setOpen((current) => current === name ? null : name);

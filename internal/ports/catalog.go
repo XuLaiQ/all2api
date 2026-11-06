@@ -12,16 +12,35 @@ type ModelQuery struct {
 }
 
 type ModelRecord struct {
-	ID            string   `json:"id"`
-	Channel       string   `json:"channel"`
-	UpstreamID    string   `json:"upstream_id"`
-	DisplayName   string   `json:"display_name"`
-	Kind          string   `json:"kind"`
-	Capabilities  []string `json:"caps"`
-	ContextWindow *int64   `json:"context_window"`
-	MaxOutput     *int64   `json:"max_output"`
-	Multiplier    float64  `json:"multiplier"`
-	Enabled       bool     `json:"enabled"`
+	ID                string   `json:"id"`
+	Channel           string   `json:"channel"`
+	UpstreamID        string   `json:"upstream_id"`
+	PublicID          string   `json:"public_id"`
+	DisplayName       string   `json:"display_name"`
+	Kind              string   `json:"kind"`
+	Capabilities      []string `json:"caps"`
+	ContextWindow     *int64   `json:"context_window"`
+	MaxOutput         *int64   `json:"max_output"`
+	Multiplier        float64  `json:"multiplier"`
+	Enabled           bool     `json:"enabled"`
+	DisplayNameLocked bool     `json:"display_name_locked"`
+	PublicIDLocked    bool     `json:"public_id_locked"`
+}
+
+// ModelUpdate carries optional admin edits; nil fields are left unchanged.
+// Setting a value also locks it against overwrite by model refreshes.
+type ModelUpdate struct {
+	DisplayName *string
+	PublicID    *string
+	Enabled     *bool
+}
+
+// ModelMappingRow is the public_id -> upstream_id resolution entry used by the
+// gateway to translate clean client-facing model names.
+type ModelMappingRow struct {
+	Channel    string
+	PublicID   string
+	UpstreamID string
 }
 
 type RouteTarget struct {
@@ -59,12 +78,19 @@ type ChannelOverride struct {
 
 type CatalogRepository interface {
 	ListModels(context.Context, ModelQuery) ([]ModelRecord, int, []string, error)
-	UpdateModelEnabled(context.Context, string, bool, AuditEvent) (ModelRecord, error)
+	UpdateModel(context.Context, string, ModelUpdate, AuditEvent) (ModelRecord, error)
+	ListModelMappings(context.Context) ([]ModelMappingRow, error)
 	ListRoutes(context.Context) ([]RouteRecord, error)
 	UpsertRoute(context.Context, string, RouteInput, AuditEvent) (RouteRecord, error)
 	DeleteRoute(context.Context, string, AuditEvent) error
 	GetSettings(context.Context) (map[string]string, error)
 	PutSettings(context.Context, map[string]string, AuditEvent) error
+}
+
+// ModelMappingSource supplies the public_id -> upstream_id translation table
+// used by the gateway when resolving client-facing model names.
+type ModelMappingSource interface {
+	ListModelMappings(context.Context) ([]ModelMappingRow, error)
 }
 
 type RouteSource interface {

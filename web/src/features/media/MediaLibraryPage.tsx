@@ -3,6 +3,7 @@ import { Archive, Download, Eraser, FileImage, FileText, Image as ImageIcon, Pla
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useConfirm } from "../../app/ConfirmDialogContext";
 import { useToast } from "../../app/ToastContext";
 import { Select } from "../../app/controls/Select";
 import { Pagination } from "../../app/data/Pagination";
@@ -43,6 +44,7 @@ export function MediaLibraryPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canManage = role === "admin";
   const toast = useToast();
+  const confirm = useConfirm();
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [filters, setFilters] = useState<MediaAssetFilters>({});
@@ -86,7 +88,12 @@ export function MediaLibraryPage() {
 
   async function remove(asset: MediaAsset) {
     if (!canManage || deleting) return;
-    if (!window.confirm(`确定删除“${asset.filename}”吗？`)) return;
+    const accepted = await confirm({
+      title: "删除素材",
+      message: "删除素材“" + asset.filename + "”后无法恢复。",
+      confirmText: "删除素材",
+    });
+    if (!accepted) return;
     setDeleting(asset.id);
     try {
       await deleteMediaAsset(asset.id);

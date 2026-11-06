@@ -12,8 +12,15 @@ import (
 	"github.com/XuLaiQ/all2api/internal/ports"
 )
 
+const uncuratedModelNoise = `(
+	display_name_locked = 0 AND (
+		(lower(channel) = 'chatgpt' AND lower(upstream_id) GLOB 'chatgpt_alpha_model_external_access_reserved_gate_*') OR
+		(lower(channel) = 'doubao' AND length(upstream_id) <= 2 AND upstream_id != '' AND upstream_id NOT GLOB '*[^0-9]*' AND trim(display_name) = upstream_id)
+	)
+)`
+
 func (d *DB) ListModels(ctx context.Context, query ports.ModelQuery) ([]ports.ModelRecord, int, []string, error) {
-	where := make([]string, 0, 4)
+	where := []string{"NOT " + uncuratedModelNoise}
 	args := make([]any, 0, 5)
 	if query.Channel != "" {
 		where = append(where, "channel = ?")
@@ -32,14 +39,10 @@ func (d *DB) ListModels(ctx context.Context, query ports.ModelQuery) ([]ports.Mo
 		}
 	}
 	if query.Search != "" {
-		value := "%" + escapeLike(query.Search) + "%"
-		where = append(where, `(id LIKE ? ESCAPE '\' OR display_name LIKE ? ESCAPE '')`)
-		args = append(args, value, value)
+		where = append(where, `(instr(lower(id), lower(?)) > 0 OR instr(lower(upstream_id), lower(?)) > 0 OR instr(lower(public_id), lower(?)) > 0 OR instr(lower(display_name), lower(?)) > 0)`)
+		args = append(args, query.Search, query.Search, query.Search, query.Search)
 	}
-	whereSQL := ""
-	if len(where) > 0 {
-		whereSQL = " WHERE " + strings.Join(where, " AND ")
-	}
+	whereSQL := " WHERE " + strings.Join(where, " AND ")
 	var total int
 	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM models"+whereSQL, args...).Scan(&total); err != nil {
 		return nil, 0, nil, fmt.Errorf("count models: %w", err)
@@ -56,8 +59,9 @@ func (d *DB) ListModels(ctx context.Context, query ports.ModelQuery) ([]ports.Mo
 		pageSize = 200
 	}
 	listArgs := append(append([]any(nil), args...), pageSize, (page-1)*pageSize)
-	rows, err := d.db.QueryContext(ctx, `SELECT id, channel, upstream_id, display_name, kind, caps,
-		context_window, max_output, multiplier, enabled FROM models`+whereSQL+" ORDER BY channel, display_name, id LIMIT ? OFFSET ?", listArgs...)
+	rows, err := d.db.QueryContext(ctx, `SELECT id, channel, upstream_id, public_id, display_name, kind, caps,
+		context_window, max_output, multiplier, enabled, display_name_locked, public_id_locked
+		FROM models`+whereSQL+" ORDER BY channel, display_name, id LIMIT ? OFFSET ?", listArgs...)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("list models: %w", err)
 	}
@@ -73,7 +77,7 @@ func (d *DB) ListModels(ctx context.Context, query ports.ModelQuery) ([]ports.Mo
 	if err := rows.Err(); err != nil {
 		return nil, 0, nil, fmt.Errorf("iterate models: %w", err)
 	}
-	kindRows, err := d.db.QueryContext(ctx, "SELECT DISTINCT kind FROM models WHERE kind != '' ORDER BY kind")
+	kindRows, err := d.db.QueryContext(ctx, "SELECT DISTINCT kind FROM models WHERE kind != '' AND NOT "+uncuratedModelNoise+" ORDER BY kind")
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("list model kinds: %w", err)
 	}
@@ -103,7 +107,32 @@ func (d *DB) SyncModels(ctx context.Context, channel string, models []ports.Mode
 			_ = tx.Rollback()
 		}
 	}()
+	existingPublicIDs := make(map[string]string)
+	usedPublicIDs := make(map[string]bool)
+	existingRows, err := tx.QueryContext(ctx, "SELECT id, public_id FROM models WHERE channel = ?", channel)
+	if err != nil {
+		return 0, fmt.Errorf("read existing model public ids: %w", err)
+	}
+	for existingRows.Next() {
+		var id, publicID string
+		if err := existingRows.Scan(&id, &publicID); err != nil {
+			_ = existingRows.Close()
+			return 0, fmt.Errorf("scan existing model public ids: %w", err)
+		}
+		existingPublicIDs[id] = publicID
+		if publicID != "" {
+			usedPublicIDs[publicID] = true
+		}
+	}
+	if err := existingRows.Err(); err != nil {
+		_ = existingRows.Close()
+		return 0, fmt.Errorf("iterate existing model public ids: %w", err)
+	}
+	if err := existingRows.Close(); err != nil {
+		return 0, fmt.Errorf("close existing model public ids: %w", err)
+	}
 	count := 0
+	seenIDs := make(map[string]bool, len(models))
 	for _, model := range models {
 		if strings.TrimSpace(model.UpstreamID) == "" {
 			continue
@@ -121,11 +150,30 @@ func (d *DB) SyncModels(ctx context.Context, channel string, models []ports.Mode
 		if strings.TrimSpace(name) == "" {
 			name = model.UpstreamID
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO models(id, channel, upstream_id, display_name, kind, caps, multiplier, enabled)
-			VALUES (?, ?, ?, ?, ?, ?, 1, 1)
+		if isUncuratedModelNoise(channel, model.UpstreamID, name) {
+			continue
+		}
+		if seenIDs[id] {
+			continue
+		}
+		seenIDs[id] = true
+		// New rows get a generated public_id; existing rows keep theirs so
+		// client-facing identifiers stay stable across refreshes.
+		publicID, exists := existingPublicIDs[id]
+		if !exists || publicID == "" {
+			seed := slugModelID(name)
+			if seed == "" {
+				seed = model.UpstreamID
+			}
+			publicID = allocateModelPublicID(seed, usedPublicIDs)
+			existingPublicIDs[id] = publicID
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO models(id, channel, upstream_id, public_id, display_name, kind, caps, multiplier, enabled)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)
 			ON CONFLICT(id) DO UPDATE SET channel=excluded.channel, upstream_id=excluded.upstream_id,
-			display_name=excluded.display_name, kind=excluded.kind, caps=excluded.caps`,
-			id, channel, model.UpstreamID, name, kind, string(caps)); err != nil {
+			display_name=CASE WHEN models.display_name_locked=1 THEN models.display_name ELSE excluded.display_name END,
+			kind=excluded.kind, caps=excluded.caps`,
+			id, channel, model.UpstreamID, publicID, name, kind, string(caps)); err != nil {
 			return 0, fmt.Errorf("upsert model %s: %w", id, err)
 		}
 		count++
@@ -145,7 +193,7 @@ func (d *DB) SyncModels(ctx context.Context, channel string, models []ports.Mode
 	return count, nil
 }
 
-func (d *DB) UpdateModelEnabled(ctx context.Context, id string, enabled bool, audit ports.AuditEvent) (ports.ModelRecord, error) {
+func (d *DB) UpdateModel(ctx context.Context, id string, update ports.ModelUpdate, audit ports.AuditEvent) (ports.ModelRecord, error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ports.ModelRecord{}, fmt.Errorf("begin model update: %w", err)
@@ -156,23 +204,51 @@ func (d *DB) UpdateModelEnabled(ctx context.Context, id string, enabled bool, au
 			_ = tx.Rollback()
 		}
 	}()
-	var exists int
-	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM models WHERE id = ?", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	var channel string
+	if err := tx.QueryRowContext(ctx, "SELECT channel FROM models WHERE id = ?", id).Scan(&channel); errors.Is(err, sql.ErrNoRows) {
 		return ports.ModelRecord{}, ports.ErrKeyNotFound
 	} else if err != nil {
 		return ports.ModelRecord{}, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE models SET enabled = ? WHERE id = ?", boolInt(enabled), id); err != nil {
-		return ports.ModelRecord{}, fmt.Errorf("update model: %w", err)
+	if update.PublicID != nil {
+		publicID := slugModelID(*update.PublicID)
+		if publicID == "" {
+			return ports.ModelRecord{}, fmt.Errorf("%w: public id must not be empty", ports.ErrValidation)
+		}
+		var conflict string
+		err := tx.QueryRowContext(ctx, "SELECT id FROM models WHERE channel = ? AND public_id = ? AND id != ?", channel, publicID, id).Scan(&conflict)
+		if err == nil {
+			return ports.ModelRecord{}, fmt.Errorf("%w: public id %q already used in channel %q", ports.ErrValidation, publicID, channel)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return ports.ModelRecord{}, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE models SET public_id = ?, public_id_locked = 1 WHERE id = ?", publicID, id); err != nil {
+			return ports.ModelRecord{}, fmt.Errorf("update model public id: %w", err)
+		}
+	}
+	if update.DisplayName != nil {
+		name := strings.TrimSpace(*update.DisplayName)
+		if name == "" {
+			return ports.ModelRecord{}, fmt.Errorf("%w: display name must not be empty", ports.ErrValidation)
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE models SET display_name = ?, display_name_locked = 1 WHERE id = ?", name, id); err != nil {
+			return ports.ModelRecord{}, fmt.Errorf("update model display name: %w", err)
+		}
+	}
+	if update.Enabled != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE models SET enabled = ? WHERE id = ?", boolInt(*update.Enabled), id); err != nil {
+			return ports.ModelRecord{}, fmt.Errorf("update model: %w", err)
+		}
 	}
 	audit.Target = id
 	if audit.Action == "" {
-		audit.Action = "set_model_enabled"
+		audit.Action = "update_model"
 	}
 	if err := insertAuditTx(ctx, tx, audit, 0); err != nil {
 		return ports.ModelRecord{}, err
 	}
-	item, err := scanModel(tx.QueryRowContext(ctx, `SELECT id, channel, upstream_id, display_name, kind, caps, context_window, max_output, multiplier, enabled FROM models WHERE id = ?`, id))
+	item, err := scanModel(tx.QueryRowContext(ctx, modelSelectColumns+` FROM models WHERE id = ?`, id))
 	if err != nil {
 		return ports.ModelRecord{}, err
 	}
@@ -181,6 +257,41 @@ func (d *DB) UpdateModelEnabled(ctx context.Context, id string, enabled bool, au
 	}
 	committed = true
 	return item, nil
+}
+
+func (d *DB) ListModelMappings(ctx context.Context) ([]ports.ModelMappingRow, error) {
+	rows, err := d.db.QueryContext(ctx, "SELECT channel, public_id, upstream_id FROM models WHERE enabled = 1 AND public_id != '' AND NOT "+uncuratedModelNoise)
+	if err != nil {
+		return nil, fmt.Errorf("list model mappings: %w", err)
+	}
+	defer rows.Close()
+	result := make([]ports.ModelMappingRow, 0)
+	for rows.Next() {
+		var item ports.ModelMappingRow
+		if err := rows.Scan(&item.Channel, &item.PublicID, &item.UpstreamID); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func isUncuratedModelNoise(channel, upstreamID, displayName string) bool {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	upstreamID = strings.TrimSpace(upstreamID)
+	displayName = strings.TrimSpace(displayName)
+	if channel == "chatgpt" && strings.HasPrefix(strings.ToLower(upstreamID), "chatgpt_alpha_model_external_access_reserved_gate_") {
+		return true
+	}
+	if channel != "doubao" || len(upstreamID) == 0 || len(upstreamID) > 2 || displayName != upstreamID {
+		return false
+	}
+	for _, char := range upstreamID {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *DB) ListRoutes(ctx context.Context) ([]ports.RouteRecord, error) {
@@ -319,12 +430,16 @@ func (d *DB) DeleteRoute(ctx context.Context, alias string, audit ports.AuditEve
 	return nil
 }
 
+const modelSelectColumns = `SELECT id, channel, upstream_id, public_id, display_name, kind, caps,
+	context_window, max_output, multiplier, enabled, display_name_locked, public_id_locked`
+
 func scanModel(row rowScanner) (ports.ModelRecord, error) {
 	var item ports.ModelRecord
 	var caps string
-	var enabled int
+	var enabled, displayNameLocked, publicIDLocked int
 	var contextWindow, maxOutput sql.NullInt64
-	if err := row.Scan(&item.ID, &item.Channel, &item.UpstreamID, &item.DisplayName, &item.Kind, &caps, &contextWindow, &maxOutput, &item.Multiplier, &enabled); err != nil {
+	if err := row.Scan(&item.ID, &item.Channel, &item.UpstreamID, &item.PublicID, &item.DisplayName, &item.Kind, &caps,
+		&contextWindow, &maxOutput, &item.Multiplier, &enabled, &displayNameLocked, &publicIDLocked); err != nil {
 		return ports.ModelRecord{}, err
 	}
 	if err := json.Unmarshal([]byte(caps), &item.Capabilities); err != nil {
@@ -339,5 +454,7 @@ func scanModel(row rowScanner) (ports.ModelRecord, error) {
 		item.MaxOutput = &value
 	}
 	item.Enabled = enabled != 0
+	item.DisplayNameLocked = displayNameLocked != 0
+	item.PublicIDLocked = publicIDLocked != 0
 	return item, nil
 }

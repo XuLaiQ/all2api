@@ -36,9 +36,13 @@ type Service struct {
 	pool         *scheduler.Pool
 	channelState ports.ChannelStateSource
 	routes       ports.RouteSource
+	mappings     ports.ModelMappingSource
 	now          func() time.Time
 	modelMu      sync.RWMutex
 	modelCache   map[string]modelCacheEntry
+	mappingMu    sync.RWMutex
+	mappingCache map[string]map[string]string // channel -> public_id -> upstream_id
+	mappingRead  time.Time
 }
 
 type modelCacheEntry struct {
@@ -72,15 +76,103 @@ func (s *Service) SetRouteSource(source ports.RouteSource) {
 	s.routes = source
 }
 
+func (s *Service) SetModelMappingSource(source ports.ModelMappingSource) {
+	s.mappings = source
+}
+
+// InvalidateModelMappings drops the cached public_id -> upstream_id table so
+// admin edits take effect immediately.
+func (s *Service) InvalidateModelMappings() {
+	s.mappingMu.Lock()
+	defer s.mappingMu.Unlock()
+	s.mappingCache = nil
+	s.mappingRead = time.Time{}
+}
+
+const modelMappingTTL = time.Minute
+
+func (s *Service) modelMappingIndex(ctx context.Context) map[string]map[string]string {
+	if s.mappings == nil {
+		return nil
+	}
+	s.mappingMu.RLock()
+	if s.mappingCache != nil && s.now().Sub(s.mappingRead) < modelMappingTTL {
+		cached := s.mappingCache
+		s.mappingMu.RUnlock()
+		return cached
+	}
+	s.mappingMu.RUnlock()
+
+	rows, err := s.mappings.ListModelMappings(ctx)
+	if err != nil {
+		s.mappingMu.RLock()
+		stale := s.mappingCache
+		s.mappingMu.RUnlock()
+		return stale
+	}
+	index := make(map[string]map[string]string)
+	for _, row := range rows {
+		channelIndex := index[row.Channel]
+		if channelIndex == nil {
+			channelIndex = make(map[string]string)
+			index[row.Channel] = channelIndex
+		}
+		channelIndex[row.PublicID] = row.UpstreamID
+	}
+	s.mappingMu.Lock()
+	s.mappingCache = index
+	s.mappingRead = s.now()
+	s.mappingMu.Unlock()
+	return index
+}
+
+// resolvePublicModel translates a client-facing "channel/public_id" or bare
+// public_id into its channel + upstream id. ok=false means the value is not a
+// known public id and the caller should fall back to direct routing.
+func (s *Service) resolvePublicModel(ctx context.Context, value string) (channel, upstream, publicID string, ok bool) {
+	index := s.modelMappingIndex(ctx)
+	if len(index) == 0 {
+		return "", "", "", false
+	}
+	if targetChannel, public, found := strings.Cut(value, "/"); found {
+		channelIndex := index[targetChannel]
+		if channelIndex == nil {
+			return "", "", "", false
+		}
+		if upstream, hit := channelIndex[public]; hit {
+			return targetChannel, upstream, public, true
+		}
+		return "", "", "", false
+	}
+	// Bare public id: unambiguous only when a single channel declares it.
+	for channel, channelIndex := range index {
+		if upstream, hit := channelIndex[value]; hit {
+			return channel, upstream, value, true
+		}
+	}
+	return "", "", "", false
+}
+
 type modelTarget struct {
 	Channel  string
 	Upstream string
 	Alias    string
+	// PublicID is set when the request used a client-facing public model id;
+	// scope checks accept either it or the upstream id.
+	PublicID string
 	Depth    int
 }
 
-func annotateTargetError(err error, target modelTarget) error {
-	serviceErr, ok := err.(*Error)
+// targetModelAllowed accepts either the upstream id or the public id the
+// client used, so API keys may be scoped with clean public model names.
+func targetModelAllowed(keyModels []string, target modelTarget) bool {
+	if scope.ModelAllowed(keyModels, target.Channel, target.Upstream) {
+		return true
+	}
+	return target.PublicID != "" && scope.ModelAllowed(keyModels, target.Channel, target.PublicID)
+}
+
+func annotateTargetError(err error, target modelTarget) error {	serviceErr, ok := err.(*Error)
 	if !ok {
 		return err
 	}
@@ -93,6 +185,9 @@ func annotateTargetError(err error, target modelTarget) error {
 
 func (s *Service) resolveTargets(ctx context.Context, value string) ([]modelTarget, error) {
 	value = strings.TrimSpace(value)
+	if channel, upstream, publicID, ok := s.resolvePublicModel(ctx, value); ok {
+		return []modelTarget{{Channel: channel, Upstream: upstream, PublicID: publicID}}, nil
+	}
 	if strings.Contains(value, "/") {
 		channel, upstream, ok := strings.Cut(value, "/")
 		if !ok || channel == "" || upstream == "" {
@@ -100,8 +195,15 @@ func (s *Service) resolveTargets(ctx context.Context, value string) ([]modelTarg
 		}
 		return []modelTarget{{Channel: channel, Upstream: upstream}}, nil
 	}
+	if routeTargets, err := s.resolveRouteTargets(ctx, value); routeTargets != nil || err != nil {
+		return routeTargets, err
+	}
+	return nil, &Error{Status: 404, Code: "model_not_found", Message: "model route was not found"}
+}
+
+func (s *Service) resolveRouteTargets(ctx context.Context, value string) ([]modelTarget, error) {
 	if s.routes == nil || value == "" {
-		return nil, &Error{Status: 404, Code: "model_not_found", Message: "model must use channel/model format"}
+		return nil, nil
 	}
 	routes, err := s.routes.ListRoutes(ctx)
 	if err != nil {
@@ -129,7 +231,7 @@ func (s *Service) resolveTargets(ctx context.Context, value string) ([]modelTarg
 			return result, nil
 		}
 	}
-	return nil, &Error{Status: 404, Code: "model_not_found", Message: "model route was not found"}
+	return nil, nil
 }
 
 func (s *Service) resolveModel(ctx context.Context, value string) (string, string, string, error) {
@@ -168,6 +270,7 @@ func (s *Service) Models(ctx context.Context, authorization, xAPIKey string) ([]
 	if err != nil {
 		return nil, err
 	}
+	mappingIndex := s.modelMappingIndex(ctx)
 	result := make([]ports.ModelDescriptor, 0)
 	var unavailable int
 	var firstError error
@@ -218,11 +321,17 @@ func (s *Service) Models(ctx context.Context, authorization, xAPIKey string) ([]
 			continue
 		}
 		s.rememberModels(channel, models)
+		channelPublicIDs := mappingIndex[channel]
 		for _, model := range models {
-			if !scope.ModelAllowed(key.Models, channel, model.UpstreamID) || !scope.ChannelAllowed(key.Channels, channel) {
+			publicID := model.PublicID
+			if publicID == "" {
+				publicID = channelPublicIDs[model.UpstreamID]
+			}
+			if !targetModelAllowed(key.Models, modelTarget{Channel: channel, Upstream: model.UpstreamID, PublicID: publicID}) || !scope.ChannelAllowed(key.Channels, channel) {
 				continue
 			}
 			model.Channel = channel
+			model.PublicID = publicID
 			result = append(result, model)
 		}
 	}
@@ -261,7 +370,7 @@ func (s *Service) Chat(ctx context.Context, authorization, xAPIKey string, input
 			}
 			continue
 		}
-		if !scope.ModelAllowed(key.Models, channel, upstreamModel) {
+		if !targetModelAllowed(key.Models, target) {
 			setTargetError(&Error{Status: 403, Code: "model_not_allowed", Message: "API key is not authorized for this route target"})
 			if len(targets) == 1 {
 				return key, ports.ChatResult{}, lastErr
@@ -406,7 +515,7 @@ func (s *Service) ChatStream(ctx context.Context, authorization, xAPIKey string,
 			}
 			continue
 		}
-		if !scope.ModelAllowed(key.Models, channel, upstreamModel) {
+		if !targetModelAllowed(key.Models, target) {
 			setTargetError(&Error{Status: 403, Code: "model_not_allowed", Message: "API key is not authorized for this route target"})
 			if len(targets) == 1 {
 				return key, lastErr
@@ -513,14 +622,16 @@ func (s *Service) Capability(ctx context.Context, authorization, xAPIKey string,
 }
 
 func (s *Service) CapabilityWithKey(ctx context.Context, key ports.APIKey, input ports.CapabilityInput) (ports.APIKey, ports.CapabilityResult, error) {
-	channel, upstreamModel, _, resolveErr := s.resolveModel(ctx, input.Model)
+	targets, resolveErr := s.resolveTargets(ctx, input.Model)
 	if resolveErr != nil {
 		return key, ports.CapabilityResult{}, resolveErr
 	}
+	target := targets[0]
+	channel, upstreamModel := target.Channel, target.Upstream
 	if !scope.ChannelAllowed(key.Channels, channel) {
 		return key, ports.CapabilityResult{}, &Error{Status: 403, Code: "channel_not_allowed", Message: "API key is not authorized for this channel"}
 	}
-	if !scope.ModelAllowed(key.Models, channel, upstreamModel) {
+	if !targetModelAllowed(key.Models, target) {
 		return key, ports.CapabilityResult{}, &Error{Status: 403, Code: "model_not_allowed", Message: "API key is not authorized for this model"}
 	}
 	if enabled, stateErr := s.channelEnabled(ctx, channel); stateErr != nil {

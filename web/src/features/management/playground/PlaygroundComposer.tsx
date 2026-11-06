@@ -2,7 +2,7 @@ import { useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent 
 import { Send, X } from "lucide-react";
 import { Button } from "../../../app/controls/Button";
 import { Select } from "../../../app/controls/Select";
-import type { ModelRecord } from "../../models/modelsApi";
+import { modelOptionLabel, type ModelRecord } from "../../models/modelsApi";
 import type { ChannelOverview } from "../../usage/usageApi";
 import { PlaygroundComposerActions } from "./PlaygroundComposerActions";
 import { PlaygroundComposerModeControls } from "./PlaygroundComposerModeControls";
@@ -136,8 +136,8 @@ export function PlaygroundComposer({
             placeholder={modelsLoading ? "读取模型…" : !channel ? "先选渠道" : "选择模型"}
             ariaLabel="选择模型"
             options={availableModels.map((item) => ({
-              value: item.upstream_id,
-              label: item.display_name === item.upstream_id ? item.display_name : `${item.display_name} (${item.upstream_id})`,
+              value: item.public_id || item.upstream_id,
+              label: modelOptionLabel(item),
             }))}
           /></label>
           <PlaygroundComposerActions mode={mode} availableModes={availableModes} onModeChange={onModeChange} onAttach={() => inputRef.current?.click()} />
@@ -152,7 +152,7 @@ export function PlaygroundComposer({
           <input ref={inputRef} className="playground-composer-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void appendFiles(event.target.files); event.currentTarget.value = ""; }} disabled={role !== "admin" || busy} />
         </div>
       </div>
-      <div className="playground-composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><span>{selectedModel ? `${selectedChannel?.name ?? channel} / ${model}` : "请选择可用模型"}</span></div>
+      <div className="playground-composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><span>{selectedModel ? `${selectedChannel?.name ?? channel} / ${modelOptionLabel(selectedModel)}` : "请选择可用模型"}</span></div>
     </form>
   );
 }

@@ -34,10 +34,27 @@ func (s *CatalogService) SyncModels(ctx context.Context, channel string, models 
 }
 
 func (s *CatalogService) SetModelEnabled(ctx context.Context, id string, enabled bool, audit ports.AuditEvent) (ports.ModelRecord, error) {
+	return s.UpdateModel(ctx, id, ports.ModelUpdate{Enabled: &enabled}, audit)
+}
+
+func (s *CatalogService) UpdateModel(ctx context.Context, id string, update ports.ModelUpdate, audit ports.AuditEvent) (ports.ModelRecord, error) {
 	if s.repository == nil {
 		return ports.ModelRecord{}, errors.New("catalog storage is unavailable")
 	}
-	return s.repository.UpdateModelEnabled(ctx, id, enabled, audit)
+	if update.PublicID != nil {
+		publicID := strings.TrimSpace(*update.PublicID)
+		if publicID == "" || len(publicID) > 96 {
+			return ports.ModelRecord{}, fmt.Errorf("invalid model public id")
+		}
+		update.PublicID = &publicID
+	}
+	if update.DisplayName != nil && strings.TrimSpace(*update.DisplayName) == "" {
+		return ports.ModelRecord{}, fmt.Errorf("invalid model display name")
+	}
+	if update.PublicID == nil && update.DisplayName == nil && update.Enabled == nil {
+		return ports.ModelRecord{}, fmt.Errorf("no model fields to update")
+	}
+	return s.repository.UpdateModel(ctx, id, update, audit)
 }
 
 func (s *CatalogService) Routes(ctx context.Context) ([]ports.RouteRecord, error) {

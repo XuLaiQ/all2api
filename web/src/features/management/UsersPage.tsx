@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { Button } from "../../app/controls/Button";
+import { useConfirm } from "../../app/ConfirmDialogContext";
 import { useToast } from "../../app/ToastContext";
 import { DataTable } from "../../app/data/DataTable";
 import { Pagination } from "../../app/data/Pagination";
@@ -14,6 +15,7 @@ export function UsersPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const canManage = role === "admin";
   const toast = useToast();
+  const confirm = useConfirm();
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -61,7 +63,12 @@ export function UsersPage() {
   }
 
   async function remove(user: ManagedUser) {
-    if (!window.confirm(`确定删除用户“${user.username}”吗？`)) return;
+    const accepted = await confirm({
+      title: "删除用户",
+      message: "删除用户“" + user.username + "”后无法恢复。",
+      confirmText: "删除用户",
+    });
+    if (!accepted) return;
     try {
       await deleteUser(user.username);
       toast.success("用户已删除");

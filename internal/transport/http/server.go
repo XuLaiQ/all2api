@@ -144,6 +144,9 @@ func NewServerWithAdapters(cfg config.Config, storage ports.Storage, logger *log
 	if routeSource, ok := storage.(ports.RouteSource); ok {
 		gatewayService.SetRouteSource(routeSource)
 	}
+	if mappingSource, ok := storage.(ports.ModelMappingSource); ok {
+		gatewayService.SetModelMappingSource(mappingSource)
+	}
 	server := &Server{
 		config: cfg,
 		health: health.NewService(storage),

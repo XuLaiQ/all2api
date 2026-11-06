@@ -5,6 +5,7 @@ import "context"
 type ModelDescriptor struct {
 	Channel      string
 	UpstreamID   string
+	PublicID     string
 	DisplayName  string
 	Capabilities []string
 }

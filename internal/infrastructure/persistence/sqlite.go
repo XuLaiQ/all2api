@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 11
+const SchemaVersion = 12
 
 var ErrDatabaseTooNew = errors.New("database schema is newer than this binary")
 
@@ -113,7 +113,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 		return fmt.Errorf("%w: found %d, supported through %d", ErrDatabaseTooNew, current, SchemaVersion)
 	}
 
-	if current < SchemaVersion {
+	if current < 11 {
 		contents, err := migrationFiles.ReadFile("migrations/0011_baseline.sql")
 		if err != nil {
 			return fmt.Errorf("read baseline migration: %w", err)
@@ -121,12 +121,32 @@ func (d *DB) Migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, string(contents)); err != nil {
 			return fmt.Errorf("apply baseline migration: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			"INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, unixepoch())",
-			SchemaVersion,
-		); err != nil {
-			return fmt.Errorf("record baseline migration: %w", err)
+	}
+	if current < 12 {
+		contents, err := migrationFiles.ReadFile("migrations/0012_model_public_id.sql")
+		if err != nil {
+			return fmt.Errorf("read model public id migration: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, string(contents)); err != nil {
+			return fmt.Errorf("apply model public id migration: %w", err)
+		}
+		if err := backfillModelPublicIDs(ctx, tx); err != nil {
+			return fmt.Errorf("backfill model public ids: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_models_public_id
+			ON models(channel, public_id) WHERE public_id != ''`); err != nil {
+			return fmt.Errorf("create model public id index: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (11, unixepoch())",
+	); err != nil {
+		return fmt.Errorf("record baseline migration: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (12, unixepoch())",
+	); err != nil {
+		return fmt.Errorf("record model public id migration: %w", err)
 	}
 
 	if err := ensureCompatibilityColumns(ctx, tx); err != nil {
@@ -153,8 +173,121 @@ func migrationVersion(ctx context.Context, tx *sql.Tx) (int, error) {
 	return int(version.Int64), nil
 }
 
-func ensureCompatibilityColumns(ctx context.Context, tx *sql.Tx) error {
-	columns := []struct {
+// backfillModelPublicIDs fills public_id for every model row that lacks one.
+// Slugs are derived from display_name (fallback upstream_id) and deduplicated
+// per channel with a numeric suffix so the partial unique index can be created
+// afterwards.
+func backfillModelPublicIDs(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "SELECT id, channel, upstream_id, display_name FROM models WHERE public_id = ''")
+	if err != nil {
+		return fmt.Errorf("read models for public id backfill: %w", err)
+	}
+	type pending struct {
+		id          string
+		channel     string
+		upstreamID  string
+		displayName string
+	}
+	pendingRows := make([]pending, 0)
+	for rows.Next() {
+		var item pending
+		if err := rows.Scan(&item.id, &item.channel, &item.upstreamID, &item.displayName); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan models for public id backfill: %w", err)
+		}
+		pendingRows = append(pendingRows, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate models for public id backfill: %w", err)
+	}
+	_ = rows.Close()
+
+	used := map[string]map[string]bool{}
+	taken, err := existingPublicIDs(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for channel, ids := range taken {
+		set := map[string]bool{}
+		for _, id := range ids {
+			set[id] = true
+		}
+		used[channel] = set
+	}
+	for _, item := range pendingRows {
+		base := slugModelID(item.displayName)
+		if base == "" {
+			base = slugModelID(item.upstreamID)
+		}
+		if base == "" {
+			base = "model"
+		}
+		channelUsed := used[item.channel]
+		if channelUsed == nil {
+			channelUsed = map[string]bool{}
+			used[item.channel] = channelUsed
+		}
+		candidate := allocateModelPublicID(base, channelUsed)
+		if _, err := tx.ExecContext(ctx, "UPDATE models SET public_id = ? WHERE id = ?", candidate, item.id); err != nil {
+			return fmt.Errorf("update model public id %s: %w", item.id, err)
+		}
+	}
+	return nil
+}
+
+func existingPublicIDs(ctx context.Context, tx *sql.Tx) (map[string][]string, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT channel, public_id FROM models WHERE public_id != ''")
+	if err != nil {
+		return nil, fmt.Errorf("read existing public ids: %w", err)
+	}
+	defer rows.Close()
+	result := map[string][]string{}
+	for rows.Next() {
+		var channel, publicID string
+		if err := rows.Scan(&channel, &publicID); err != nil {
+			return nil, fmt.Errorf("scan existing public ids: %w", err)
+		}
+		result[channel] = append(result[channel], publicID)
+	}
+	return result, rows.Err()
+}
+
+// slugModelID normalizes a model name into a public identifier: lowercase,
+// [a-z0-9-._] only, other characters collapsed to '-'.
+func slugModelID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastDash := true
+	for _, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z', char >= '0' && char <= '9', char == '.', char == '_':
+			builder.WriteRune(char)
+			lastDash = false
+		default:
+			if !lastDash {
+				builder.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func allocateModelPublicID(value string, used map[string]bool) string {
+	base := slugModelID(value)
+	if base == "" {
+		base = "model"
+	}
+	candidate := base
+	for suffix := 2; used[candidate]; suffix++ {
+		candidate = fmt.Sprintf("%s-%d", base, suffix)
+	}
+	used[candidate] = true
+	return candidate
+}
+
+func ensureCompatibilityColumns(ctx context.Context, tx *sql.Tx) error {	columns := []struct {
 		table      string
 		column     string
 		definition string

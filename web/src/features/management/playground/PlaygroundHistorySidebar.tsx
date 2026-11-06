@@ -24,7 +24,7 @@ type PlaygroundHistorySidebarProps = {
   response: unknown;
   copied: boolean;
   onStartNewConversation: () => void;
-  onClearConversations: () => void;
+  onClear: () => void;
   onOpenConversation: (id: string) => void;
   onDeleteConversation: (id: string, title: string) => void;
   onSidebarTabChange: (tab: PlaygroundSidebarTab) => void;
@@ -69,7 +69,7 @@ export function PlaygroundHistorySidebar({
   response,
   copied,
   onStartNewConversation,
-  onClearConversations,
+  onClear,
   onOpenConversation,
   onDeleteConversation,
   onSidebarTabChange,
@@ -82,6 +82,7 @@ export function PlaygroundHistorySidebar({
   const isConversationView = sidebarTab === "conversations";
   const currentLoading = isConversationView ? historyLoading : requestLoading;
   const currentTotal = isConversationView ? total : requestTotal;
+  const clearLabel = isConversationView ? "清空全部历史" : "清空请求记录";
 
   return (
     <aside className="playground-history" aria-label="调试台侧栏">
@@ -95,7 +96,7 @@ export function PlaygroundHistorySidebar({
             <Button variant="unstyled" className="playground-icon-button playground-history-new" onClick={onStartNewConversation} title="新建对话" aria-label="新建对话">
               <Plus size={17} aria-hidden="true" />
             </Button>
-            {role === "admin" && <Button variant="unstyled" className="playground-icon-button" onClick={onClearConversations} disabled={busy || deletingConversationId !== null} title="清空全部历史" aria-label="清空全部历史">
+            {role === "admin" && <Button variant="unstyled" className="playground-icon-button" onClick={onClear} disabled={busy || deletingConversationId !== null || (!isConversationView && (currentLoading || currentTotal === 0))} title={clearLabel} aria-label={clearLabel}>
               {deletingConversationId === "__all__" ? <RefreshCw size={15} className="spin" aria-hidden="true" /> : <Eraser size={15} aria-hidden="true" />}
             </Button>}
           </div>

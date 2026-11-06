@@ -28,12 +28,20 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	}
 	data := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		data = append(data, map[string]any{
-			"id":       item.Channel + "/" + item.UpstreamID,
+		publicID := item.PublicID
+		if publicID == "" {
+			publicID = item.UpstreamID
+		}
+		entry := map[string]any{
+			"id":       item.Channel + "/" + publicID,
 			"object":   "model",
 			"created":  0,
 			"owned_by": item.Channel,
-		})
+		}
+		if item.DisplayName != "" {
+			entry["display_name"] = item.DisplayName
+		}
+		data = append(data, entry)
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"object": "list", "data": data})
 }

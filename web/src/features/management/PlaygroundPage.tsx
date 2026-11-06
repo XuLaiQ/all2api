@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { useOutletContext } from "react-router-dom";
 import { ApiClientError } from "../../api/client";
 import { useToast } from "../../app/ToastContext"
-import { fetchModels, refreshModels, type ModelRecord } from "../models/modelsApi";
+import { useConfirm } from "../../app/ConfirmDialogContext";
+import { fetchAllModels, modelOptionLabel, type ModelRecord } from "../models/modelsApi";
 import { fetchChannels, type ChannelOverview } from "../usage/usageApi";
 import {
   clearPlaygroundConversations,
+  clearPlaygroundRuns,
   deletePlaygroundConversation,
   fetchPlaygroundConversation,
   fetchPlaygroundConversations,
@@ -29,6 +31,11 @@ import type {
   PlaygroundSidebarTab,
 } from "./playground/types";
 import "./PlaygroundPage.css";
+
+/** Playground submits the public model id; fall back to the upstream id for unsynced records. */
+function modelKey(item: Pick<ModelRecord, "public_id" | "upstream_id">): string {
+  return item.public_id || item.upstream_id;
+}
 
 function stripThinkMarkup(value: string): string {
   return value
@@ -202,6 +209,7 @@ const DEFAULT_GENERATION_SETTINGS: PlaygroundGenerationSettings = {
 export function PlaygroundPage() {
   const { role } = useOutletContext<{ role: "admin" | "viewer" }>();
   const toast = useToast();
+  const confirm = useConfirm();
   const [channels, setChannels] = useState<ChannelOverview[]>([]);
   const [models, setModels] = useState<ModelRecord[]>([]);
   const [conversations, setConversations] = useState<PlaygroundConversationSummary[]>([]);
@@ -222,7 +230,6 @@ export function PlaygroundPage() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsRetry, setModelsRetry] = useState(0);
   const [historyReload, setHistoryReload] = useState(0);
   const [requestReload, setRequestReload] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -234,7 +241,6 @@ export function PlaygroundPage() {
   const historyRequestRef = useRef(0);
   const requestListRequestRef = useRef(0);
   const sessionRevisionRef = useRef(0);
-  const modelsRequestRef = useRef(0);
 
   const { conversationId, channel, model, messages, response } = session;
 
@@ -262,7 +268,6 @@ export function PlaygroundPage() {
             return { ...current, channel: result.find((item) => item.enabled)?.slug ?? result[0]?.slug ?? "" };
           });
         }
-        setModelsRetry((value) => value + 1);
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) toast.error(cause instanceof ApiClientError ? cause.message : "读取渠道失败");
@@ -314,72 +319,39 @@ export function PlaygroundPage() {
   }, [sidebarTab, requestPage, requestPageSize, requestReload, toast]);
 
   useEffect(() => {
-    const requestId = ++modelsRequestRef.current;
-    const sessionRevisionAtStart = sessionRevisionRef.current;
-    if (!channel) {
-      setModels([]);
-      setSession((current) => ({ ...current, model: "" }));
-      setModelsLoading(false);
-      return undefined;
-    }
     const controller = new AbortController();
     setModelsLoading(true);
-    const loadModels = async () => {
-      let result = await fetchModels(1, { channel, enabled: true }, controller.signal, 200);
-      if (role === "admin") {
-        try {
-          await refreshModels(channel);
-          if (controller.signal.aborted || requestId !== modelsRequestRef.current) return;
-          result = await fetchModels(1, { channel, enabled: true }, controller.signal, 200);
-        } catch (cause: unknown) {
-          // Keep an observed cache usable when a provider is temporarily
-          // unavailable; a missing cache still surfaces the refresh error.
-          if (result.data.length === 0) throw cause;
-        }
-      }
-      if (controller.signal.aborted || requestId !== modelsRequestRef.current) return;
-      setModels(result.data);
-      if (sessionRevisionRef.current === sessionRevisionAtStart) {
-        setSession((current) => ({
-          ...current,
-          model: result.data.some((item) => item.upstream_id === current.model)
-            ? current.model
-            : result.data[0]?.upstream_id ?? "",
-        }));
-      }
-    };
-    loadModels()
+    fetchAllModels({ enabled: true }, controller.signal)
+      .then(setModels)
       .catch((cause: unknown) => {
-        if (!controller.signal.aborted && requestId === modelsRequestRef.current) {
+        if (!controller.signal.aborted) {
           setModels([]);
-          if (sessionRevisionRef.current === sessionRevisionAtStart) {
-            setSession((current) => ({ ...current, model: "" }));
-          }
           toast.error(cause instanceof ApiClientError ? cause.message : "读取模型广场失败");
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted && requestId === modelsRequestRef.current) setModelsLoading(false);
+        if (!controller.signal.aborted) setModelsLoading(false);
       });
     return () => controller.abort();
-  }, [channel, modelsRetry, role, toast]);
+  }, [toast]);
 
   const selectedChannel = useMemo(() => channels.find((item) => item.slug === channel), [channels, channel]);
+  const channelModels = useMemo(() => models.filter((item) => item.channel === channel), [channel, models]);
   const modeCapability = composerMode === "image" || composerMode === "video" ? composerMode : "chat";
   const modeModels = useMemo(
-    () => models.filter((item) => item.caps.includes(modeCapability)),
-    [models, modeCapability],
+    () => channelModels.filter((item) => item.caps.includes(modeCapability)),
+    [channelModels, modeCapability],
   );
   const availableModes = useMemo<ComposerMode[]>(
     () => [
-      ...(models.some((item) => item.caps.includes("chat")) ? ["chat" as const] : []),
-      ...(models.some((item) => item.caps.includes("image")) ? ["image" as const] : []),
-      ...(models.some((item) => item.caps.includes("video")) ? ["video" as const] : []),
+      ...(channelModels.some((item) => item.caps.includes("chat")) ? ["chat" as const] : []),
+      ...(channelModels.some((item) => item.caps.includes("image")) ? ["image" as const] : []),
+      ...(channelModels.some((item) => item.caps.includes("video")) ? ["video" as const] : []),
     ],
-    [models],
+    [channelModels],
   );
-  const selectedModel = useMemo(() => modeModels.find((item) => item.upstream_id === model), [modeModels, model]);
-  const modelLabel = selectedModel?.display_name ?? model;
+  const selectedModel = useMemo(() => modeModels.find((item) => modelKey(item) === model), [modeModels, model]);
+  const modelLabel = selectedModel ? modelOptionLabel(selectedModel) : model;
   function invalidateActiveRequest() {
     sessionRevisionRef.current += 1;
     submitAbortRef.current?.abort();
@@ -397,8 +369,8 @@ export function PlaygroundPage() {
     invalidateActiveRequest();
     setComposerMode(nextMode);
     const capability = nextMode === "image" || nextMode === "video" ? nextMode : "chat";
-    const nextModel = models.find((item) => item.caps.includes(capability));
-    setSession((current) => ({ ...current, model: nextModel?.upstream_id ?? "" }));
+    const nextModel = channelModels.find((item) => item.caps.includes(capability));
+    setSession((current) => ({ ...current, model: nextModel ? modelKey(nextModel) : "" }));
   }
 
   function handleModelChange(nextModel: string) {
@@ -407,6 +379,7 @@ export function PlaygroundPage() {
   }
 
   useEffect(() => {
+    if (modelsLoading) return;
     if (availableModes.length === 0) {
       setSession((current) => ({ ...current, model: "" }));
       return;
@@ -415,10 +388,16 @@ export function PlaygroundPage() {
       setComposerMode("chat");
       return;
     }
-    if (!modeModels.some((item) => item.upstream_id === model)) {
-      setSession((current) => ({ ...current, model: modeModels[0]?.upstream_id ?? "" }));
+    const matchingModel = modeModels.find((item) => item.public_id === model || item.upstream_id === model);
+    if (matchingModel) {
+      const canonicalID = modelKey(matchingModel);
+      if (canonicalID !== model) setSession((current) => ({ ...current, model: canonicalID }));
+      return;
     }
-  }, [availableModes, composerMode, modeModels, model]);
+    if (!modeModels.some((item) => modelKey(item) === model)) {
+      setSession((current) => ({ ...current, model: modeModels[0] ? modelKey(modeModels[0]) : "" }));
+    }
+  }, [availableModes, composerMode, modeModels, model, modelsLoading]);
 
   function startNewConversation() {
     sessionRevisionRef.current += 1;
@@ -470,7 +449,12 @@ export function PlaygroundPage() {
 
   async function clearConversations() {
     if (role !== "admin" || busy || deletingConversationId) return;
-    if (!window.confirm("确定清空当前账号的全部对话历史及请求记录吗？此操作不可撤销。")) return;
+    const accepted = await confirm({
+      title: "清空全部历史",
+      message: "清空当前账号全部对话及请求记录后无法恢复。",
+      confirmText: "清空历史",
+    });
+    if (!accepted) return;
     setDeletingConversationId("__all__");
     try {
       await clearPlaygroundConversations();
@@ -488,9 +472,42 @@ export function PlaygroundPage() {
     }
   }
 
+  async function clearRequestRecords() {
+    if (role !== "admin" || busy || deletingConversationId || requestLoading) return;
+    const accepted = await confirm({
+      title: "清空请求记录",
+      message: "清空所有账号 " + requestTotal + " 条请求记录？不可恢复。",
+      confirmText: "清空记录",
+    });
+    if (!accepted) return;
+    setDeletingConversationId("__all__");
+    try {
+      const result = await clearPlaygroundRuns();
+      setRequestRuns([]);
+      setRequestTotal(0);
+      setRequestPage(1);
+      setRequestReload((value) => value + 1);
+      toast.success("已清除 " + result.request_records_deleted + " 条请求记录");
+    } catch (cause: unknown) {
+      toast.error(cause instanceof ApiClientError ? cause.message : "清空请求记录失败");
+    } finally {
+      setDeletingConversationId(null);
+    }
+  }
+
+  function clearCurrentHistory() {
+    if (sidebarTab === "requests") void clearRequestRecords();
+    else void clearConversations();
+  }
+
   async function deleteConversation(id: string, title: string) {
     if (role !== "admin" || busy || deletingConversationId) return;
-    if (!window.confirm(`确定删除对话“${title}”及其请求记录吗？`)) return;
+    const accepted = await confirm({
+      title: "删除对话",
+      message: "删除对话“" + title + "”及其请求记录后无法恢复。",
+      confirmText: "删除",
+    });
+    if (!accepted) return;
     setDeletingConversationId(id);
     try {
       await deletePlaygroundConversation(id);
@@ -517,7 +534,7 @@ export function PlaygroundPage() {
 
   async function submit(event: FormEvent<HTMLFormElement>, images: string[]) {
     event.preventDefault();
-    const selected = modeModels.find((item) => item.upstream_id === model);
+    const selected = modeModels.find((item) => modelKey(item) === model);
     const prompt = message.trim();
     if (role !== "admin" || !channel || !selected || !prompt || busy || (composerMode === "psd" && images.length === 0)) return;
 
@@ -534,7 +551,7 @@ export function PlaygroundPage() {
       ...current,
       messages: [
         ...current.messages,
-        { id: createMessageId(), role: "user", content: prompt, model: selected.upstream_id },
+        { id: createMessageId(), role: "user", content: prompt, model: modelKey(selected) },
       ],
       response: null,
     }));
@@ -568,7 +585,7 @@ export function PlaygroundPage() {
           : generationSettings.videoRatio === "自动" ? "" : generationSettings.videoRatio;
         const result = await runPlaygroundGeneration({
           channel,
-          model: selected.upstream_id,
+          model: modelKey(selected),
           capability: composerMode,
           prompt,
           size: composerMode === "image" ? ratioToSize(ratio) : undefined,
@@ -582,7 +599,7 @@ export function PlaygroundPage() {
           ? responseError(result.response) || `生成失败（上游 HTTP ${result.response_status}）`
           : generationSummary(result.response, composerMode);
         setResult(result.response, result.conversation_id);
-        appendAssistant({ id: assistantId, role: failed ? "error" : "assistant", content, model: selected.upstream_id, raw: result.response });
+        appendAssistant({ id: assistantId, role: failed ? "error" : "assistant", content, model: modelKey(selected), raw: result.response });
         if (failed) toast.error(content);
         else {
           toast.success(generationSummary(result.response, composerMode));
@@ -592,7 +609,7 @@ export function PlaygroundPage() {
         if (!isCurrent()) return;
         const detail = cause instanceof ApiClientError ? cause.message : "媒体生成请求失败";
         toast.error(detail);
-        appendAssistant({ id: assistantId, role: "error", content: detail, model: selected.upstream_id });
+        appendAssistant({ id: assistantId, role: "error", content: detail, model: modelKey(selected) });
       } finally {
         if (submitAbortRef.current === submitController) submitAbortRef.current = null;
         if (isCurrent()) setBusy(false);
@@ -603,19 +620,19 @@ export function PlaygroundPage() {
     if (composerMode === "search" || composerMode === "ppt" || composerMode === "psd") {
       try {
         if (composerMode === "search") {
-          const result = await runPlaygroundSearch({ channel, model: selected.upstream_id, prompt }, submitController.signal);
+          const result = await runPlaygroundSearch({ channel, model: modelKey(selected), prompt }, submitController.signal);
           if (!isCurrent()) return;
           const sources = result.sources.length > 0
             ? `\n\n来源：\n${result.sources.map((source) => `- [${source.title || source.url}](${source.url})`).join("\n")}`
             : "";
           setResult(result, result.conversation_id);
-          appendAssistant({ id: assistantId, role: "assistant", content: `${result.answer || "（空响应）"}${sources}`, model: selected.upstream_id, raw: result });
+          appendAssistant({ id: assistantId, role: "assistant", content: `${result.answer || "（空响应）"}${sources}`, model: modelKey(selected), raw: result });
           toast.success("搜索请求已完成");
           setHistoryReload((value) => value + 1);
         } else {
           const result = await runPlaygroundFileTask({
             channel,
-            model: selected.upstream_id,
+            model: modelKey(selected),
             kind: composerMode,
             prompt,
             base64_images: images,
@@ -628,7 +645,7 @@ export function PlaygroundPage() {
           const failed = result.status !== "success";
           const content = failed ? result.error || "文件任务失败" : `文件已生成。${links ? `\n\n${links}` : ""}`;
           setResult(result);
-          appendAssistant({ id: assistantId, role: failed ? "error" : "assistant", content, model: selected.upstream_id, raw: result });
+          appendAssistant({ id: assistantId, role: failed ? "error" : "assistant", content, model: modelKey(selected), raw: result });
           if (failed) toast.error(content);
           else {
             toast.success("文件已生成");
@@ -639,7 +656,7 @@ export function PlaygroundPage() {
         if (!isCurrent()) return;
         const detail = cause instanceof ApiClientError ? cause.message : "调试请求失败";
         toast.error(detail);
-        appendAssistant({ id: assistantId, role: "error", content: detail, model: selected.upstream_id });
+        appendAssistant({ id: assistantId, role: "error", content: detail, model: modelKey(selected) });
       } finally {
         if (submitAbortRef.current === submitController) submitAbortRef.current = null;
         if (isCurrent()) setBusy(false);
@@ -655,12 +672,12 @@ export function PlaygroundPage() {
           ? `请执行录音转写：${prompt}`
           : prompt;
     streamAbortRef.current = submitController;
-    appendAssistant({ id: assistantId, role: "assistant", content: "", model: selected.upstream_id });
+    appendAssistant({ id: assistantId, role: "assistant", content: "", model: modelKey(selected) });
     try {
       let streamError = "";
       const result = await runPlaygroundStream({
         channel,
-        model: selected.upstream_id,
+        model: modelKey(selected),
         conversation_id: conversationId ?? undefined,
         messages: [...contextMessages, { role: "user", content: runtimePrompt }],
       }, (streamEvent) => {
@@ -759,7 +776,7 @@ export function PlaygroundPage() {
           response={response}
           copied={copied}
           onStartNewConversation={startNewConversation}
-          onClearConversations={() => void clearConversations()}
+          onClear={clearCurrentHistory}
           onOpenConversation={(id) => void openConversation(id)}
           onDeleteConversation={(id, title) => void deleteConversation(id, title)}
           onSidebarTabChange={setSidebarTab}

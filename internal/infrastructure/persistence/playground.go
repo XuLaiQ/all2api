@@ -113,6 +113,39 @@ func (d *DB) ClearPlaygroundConversations(ctx context.Context, actor string, aud
 	return result, nil
 }
 
+func (d *DB) ClearPlaygroundRuns(ctx context.Context, audit ports.AuditEvent) (int, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var deleted int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM playground_runs").Scan(&deleted); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM playground_runs"); err != nil {
+		return 0, err
+	}
+	audit.Target = "all"
+	if audit.Action == "" {
+		audit.Action = "clear_playground_runs"
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_logs(ts,actor,action,target,detail,ip) VALUES(unixepoch(),?,?,?,?,?)", audit.Actor, audit.Action, audit.Target, audit.Detail, audit.IP); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	committed = true
+	return deleted, nil
+}
+
 func (d *DB) DeletePlaygroundConversation(ctx context.Context, actor, id string, audit ports.AuditEvent) (int, error) {
 	if _, err := d.GetPlaygroundConversation(ctx, actor, id); err != nil {
 		return 0, err

@@ -5,6 +5,7 @@ import { ApiClientError, apiClient, onUnauthorized } from "../api/client";
 import { Button } from "./controls/Button";
 import { LoginPage } from "../features/auth/LoginPage";
 import { ToastProvider } from "./Toast";
+import { ConfirmDialogProvider } from "./ConfirmDialog";
 
 type AuthState =
   | { status: "checking" }
@@ -132,6 +133,7 @@ export function AppShell() {
   }
 
   return (
+    <ConfirmDialogProvider>
     <ToastProvider>
       <div className="app-frame">
       <header className="app-header">
@@ -238,5 +240,6 @@ export function AppShell() {
       </div>
       </div>
     </ToastProvider>
+    </ConfirmDialogProvider>
   );
 }

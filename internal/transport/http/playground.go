@@ -94,6 +94,27 @@ func (s *Server) playgroundConversation(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) playgroundRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		user, ok := s.requireAdmin(w, r, true)
+		if !ok {
+			return
+		}
+		if user.Role != "admin" {
+			writeAdminError(w, r, 403, "forbidden", "admin role required", nil)
+			return
+		}
+		if s.playground == nil {
+			writeAdminError(w, r, 503, "service_unavailable", "playground storage is unavailable", nil)
+			return
+		}
+		deleted, err := s.playground.ClearRuns(r.Context(), ports.AuditEvent{Actor: user.Username, Action: "clear_playground_runs", IP: s.clientIP(r)})
+		if err != nil {
+			writeAdminError(w, r, 503, "service_unavailable", err.Error(), nil)
+			return
+		}
+		writeJSON(w, r, 200, map[string]any{"data": map[string]int{"request_records_deleted": deleted}})
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeAdminError(w, r, 405, "request_error", "method not allowed", nil)
 		return
